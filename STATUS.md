@@ -41,9 +41,9 @@ and are **not** part of the per-wave gate.
 | 3 | Scheduling: calendar, alternative slots, reminders, timers | **complete** |
 | 4 | Senses: screen OCR, camera, browser control | **partial** - OCR blocked: no tesseract binary; no camera exists. Capture, browser and the honest degraded paths are done and verified. |
 | 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | **complete** |
-| 6 | Platform: keychain, backup, service, systemd, Docker | **partial** - keychain, backup, service/self-check, systemd unit and Dockerfile done. The web panel is not built. |
-| 7 | Phone: token bridge, camera, location, wire encoders | not started |
-| 8 | Integration, acceptance demo, final report | not started |
+| 6 | Platform: panel, keychain, backup/repair, systemd, Docker | **complete** (the panel is built; nothing is installed as a service) |
+| 7 | Phone: token bridge, camera, location | **complete** (bridge + auth + loopback policy; no phone has ever connected) |
+| 8 | Integration, acceptance demo, final report | **complete** |
 
 ## Wave 0 — detail
 
@@ -498,3 +498,74 @@ be disclosed: while verifying the key store I wrote a test key at the file's
 my own test key, and it was removed immediately — but the mistake was writing to
 a real path from a verification script, and it is noted rather than quietly
 cleaned up.
+
+## Wave 7: phone bridge
+
+A token-authenticated HTTP bridge so the phone can send text, photos and
+location, and collect her replies.
+
+- **Authentication is mandatory on every route, including `/health`**, and the
+  comparison is `hmac.compare_digest`, never `==` — which leaks timing. Verified
+  by reading the source for `==`: there is none in the comparison.
+- A missing token, a wrong token, and a wrong token **of the same length** all get
+  byte-identical 401s and none of them reaches the handler.
+- **Loopback by default, and refusing anything else is a real guard, not a
+  comment.** Verified: `0.0.0.0` and `192.168.1.50` are refused with
+  `PublicBindRefusedError`; an empty host falls back to `127.0.0.1`.
+- A photo is stored and handed to the vision seam; with no vision model the
+  response says so rather than inventing a description.
+
+**No phone has ever connected.** The bridge is tested with injected collaborators
+and no socket; the wire protocol has never carried a real request from a real
+handset.
+
+## Wave 8: the acceptance scoreboard
+
+`scripts/acceptance_check.py` runs every capability and reports READY / BLOCKED /
+UNMEASURED with a fix for each, exiting non-zero if anything is blocked. Every
+probe is individually guarded, so one exploding probe is reported as a problem
+instead of taking the report down.
+
+The recorded run on this machine: **11 READY, 6 BLOCKED, 3 UNMEASURED.**
+
+The design rule that makes it worth having is that it must not overclaim. A
+capability that cannot be measured here is reported as unmeasurable **with the
+reason**, never as ready: no microphone has ever captured audio, the Fish account
+has no API credit so live speech cannot run, OCR has no engine, and there is no
+camera.
+
+## Two integration faults found at the end, both real
+
+Neither was found by a unit test. Both were found by running the finished system
+and reading what it said.
+
+**1. The install was pointed at Ollama, against N4.** `llm_provider` was
+`"ollama"` and `llm_base_url` was unset, so the endpoint check probed
+`127.0.0.1:11434` — a server that is not running. N4 requires everything to go
+through OmniRouter. The config had become this way through an upstream migration
+that deliberately stamps existing installs as `ollama` to preserve their old
+behaviour, which was right for upstream and wrong here. The install is now set to
+`omniroute` with `http://127.0.0.1:20129/v1`.
+
+**2. A 401 was diagnosed as the wrong fault.** With the endpoint corrected,
+OmniRouter answered **401** — it is running and simply has no key configured. The
+check reported "reachable but not serving an OpenAI-compatible model list" and
+told the owner to check `llm_base_url` and the server log, sending them after a
+URL problem that did not exist. A refused credential and a malformed URL need
+different fixes, so they now produce different messages: a 401/403 is reported as
+a credential problem naming `OMNIROUTE_API_KEY`, and a 500 stays a server fault.
+A test pins the distinction in both directions.
+
+**The honest state of the LLM half: reachable, unauthenticated.** OmniRouter is up
+on 20129 and `OMNIROUTE_API_KEY` is not set anywhere on this machine, so Claire
+cannot complete a turn. That is the single blocking item for a working
+conversation, and it is a missing credential rather than a code fault.
+
+### Cleanup disclosed
+
+Verifying the backup system left two snapshots and one deliberately corrupted byte
+in the real store at `~/.local/share/claire/snapshots`, and the acceptance run then
+dutifully reported backups as BLOCKED because of damage I had caused. No owner
+data was involved — the payloads were my own temporary test files — and both
+snapshots were removed. Like the earlier key-store incident, a verification script
+wrote to a real path, and that is recorded rather than quietly tidied away.

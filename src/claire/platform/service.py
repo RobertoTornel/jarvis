@@ -926,6 +926,43 @@ def probe_llm_endpoint(sc: "SelfCheck") -> CheckResult:
             data={**data, "status_code": status_code, "served_models": served},
         )
 
+    if status_code in (401, 403):
+        # A credential problem, not a URL problem. Reporting this as "not serving
+        # an OpenAI-compatible model list" sends the owner to check the base_url
+        # and the server log when the actual fix is a key - measured on this very
+        # machine, where OmniRouter on loopback answers 401 with no key set, which
+        # is easy to mistake for "the URL is wrong".
+        if key:
+            detail = (
+                f"{safe} answered HTTP {status_code} for /models - the endpoint is "
+                "reachable but REJECTED the configured credential "
+                f"({secret_fingerprint(key)})."
+            )
+            fix = (
+                f"Check the credential: the key in {config_path()} or "
+                f"OMNIROUTE_API_KEY in {default_env_file()} is being refused. "
+                f"Confirm with: curl -sS -H 'Authorization: Bearer <key>' "
+                f"{redact_url(models_url)}"
+            )
+        else:
+            detail = (
+                f"{safe} answered HTTP {status_code} for /models - the endpoint is "
+                "reachable but requires a credential and none is configured."
+            )
+            fix = (
+                f"Set OMNIROUTE_API_KEY=<key> in {default_env_file()} (mode 0600), "
+                f"or set llm_api_key in {config_path()}. A loopback model server "
+                "that needs no key (e.g. a plain Ollama) is the only case this "
+                "should be left empty."
+            )
+        return CheckResult(
+            name="llm_endpoint",
+            status=STATUS_MISSING,
+            detail=detail,
+            fix=fix,
+            data={**data, "status_code": status_code, "api_key": secret_fingerprint(key)},
+        )
+
     return CheckResult(
         name="llm_endpoint",
         status=STATUS_PROBLEM,

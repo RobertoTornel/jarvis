@@ -1009,3 +1009,72 @@ def test_dockerfile_healthcheck_asks_the_self_check(docker_text: str) -> None:
 
     assert healthchecks, "the image should report its own health"
     assert any("claire.platform.service" in rest and "--self-check" in rest for rest in healthchecks)
+
+
+# --------------------------------------------------------------------------- #
+# 3b. A 401 is a credential problem, and must be diagnosed as one
+# --------------------------------------------------------------------------- #
+
+class TestUnauthorisedIsDiagnosedAsACredentialProblem:
+    """Regression: a 401 used to be reported as a URL problem.
+
+    Measured on this machine: OmniRouter answers 401 on loopback when no key is
+    set. The generic branch told the owner that the endpoint was "reachable but
+    not serving an OpenAI-compatible model list" and to check ``llm_base_url`` and
+    the server log - sending them after the wrong fault entirely. A refused
+    credential and a wrong URL need different fixes and must not share a message.
+    """
+
+    def _check(self, status_code, **settings):
+        return (
+            SelfCheck(
+                settings=_fake_settings(**settings),
+                http_get=lambda url, headers, timeout: (status_code, b""),
+                now=lambda: "T",
+            )
+            .run(order=("llm_endpoint",))
+            .get("llm_endpoint")
+        )
+
+    def test_401_with_no_key_configured_names_the_missing_credential(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+        monkeypatch.setattr(service, "default_env_file", lambda: tmp_path / "claire.env")
+        monkeypatch.setattr(service, "config_path", lambda: tmp_path / "config.json")
+
+        check = self._check(401)
+
+        assert check.status == STATUS_MISSING
+        assert "credential" in check.detail.lower()
+        assert "OMNIROUTE_API_KEY" in check.fix
+        # It must NOT send the owner hunting for a URL fault.
+        assert "llm_base_url" not in check.fix
+
+    def test_401_with_a_key_configured_says_the_key_was_rejected(self, monkeypatch):
+        monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+        key = "sk-live-rejected-key-abcdef123456"
+
+        check = self._check(401, llm_api_key=key)
+
+        assert check.status == STATUS_MISSING
+        assert "reject" in check.detail.lower()
+        assert key not in json.dumps(check.to_dict())
+        assert check.fix
+
+    def test_403_gets_the_same_credential_treatment(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OMNIROUTE_API_KEY", raising=False)
+        monkeypatch.setattr(service, "default_env_file", lambda: tmp_path / "claire.env")
+        monkeypatch.setattr(service, "config_path", lambda: tmp_path / "config.json")
+
+        check = self._check(403)
+
+        assert check.status == STATUS_MISSING
+        assert "credential" in check.detail.lower()
+
+    def test_other_http_errors_stay_a_problem_not_a_missing_credential(self):
+        """A 500 is the server's fault, not a missing key - keep them distinct."""
+
+        check = self._check(500)
+
+        assert check.status == STATUS_PROBLEM
+        assert "500" in check.detail
+        assert "credential" not in check.detail.lower()
