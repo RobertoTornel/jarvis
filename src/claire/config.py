@@ -544,22 +544,20 @@ def get_default_config() -> Dict[str, Any]:
         "use_stdin": False,
 
         # Screen Capture
-        "allowlist_bundles": [
-            "com.apple.Terminal",
-            "com.googlecode.iterm2",
-            "com.microsoft.VSCode",
-            "com.jetbrains.intellij",
-        ],
+        # Empty by default: these were macOS application bundle identifiers
+        # (com.apple.Terminal and friends) and Claire is Linux-only. Linux screen
+        # capture is allowlisted by application/window name in the senses wave,
+        # not by bundle id.
+        "allowlist_bundles": [],
 
 
         # Text-to-Speech
-        # Default stays "piper" for now: the FishTTS engine does not exist
-        # yet and the current factory silently falls back, which would be a
-        # silent failure. The default flips to "fish" in Wave 1 with the
-        # engine; "fish" is accepted here ahead of that so configs can opt
-        # in early. Piper and Chatterbox stay as offline fallbacks.
+        # Fish is the default conversation voice (D6). An unknown engine name now
+        # raises instead of silently becoming Piper, so pointing this at an engine
+        # that does not exist fails loudly rather than speaking in the wrong voice.
+        # Piper and Chatterbox remain available as offline fallbacks.
         "tts_enabled": True,
-        "tts_engine": "piper",  # "piper" (default) | "chatterbox" | "fish"
+        "tts_engine": "fish",  # "fish" (default) | "piper" | "chatterbox"
         "tts_voice": None,
         "tts_rate": 200,  # Words per minute (WPM), 200=normal
         "tts_chatterbox_device": "cuda",  # "cuda" (recommended), "auto", or "cpu"
@@ -819,9 +817,11 @@ def load_settings() -> Settings:
     use_stdin = bool(merged.get("use_stdin", False))
     active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
-    tts_engine = str(merged.get("tts_engine", "piper")).lower()
-    if tts_engine not in ("piper", "chatterbox", "fish"):
-        tts_engine = "piper"  # Default to piper if invalid value (default flips to fish in Wave 1 with the engine)
+    tts_engine = str(merged.get("tts_engine", "fish")).strip().lower()
+    # Deliberately NOT coerced to a known value. This used to rewrite anything
+    # unrecognised to "piper", which is a silent substitution: the user configures
+    # one voice and hears another. The TTS factory raises a ValueError naming the
+    # supported engines instead, and the daemon reports that honestly.
     tts_voice_val = merged.get("tts_voice")
     tts_voice = None if tts_voice_val in (None, "", "null") else str(tts_voice_val)
     tts_rate_val = merged.get("tts_rate")

@@ -12,7 +12,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 from urllib.parse import urlparse
 
 from ..debug import debug_log
@@ -1012,6 +1012,37 @@ class PiperTTS:
         return self._last_spoken_text
 
 
+# ============================================================================
+# TTS engine selection
+# ============================================================================
+# The names the factory will build. Anything else is a *configuration error*,
+# never a fallback: silently handing back Piper for a name we did not recognise
+# means the user asks for one voice and hears another (rule N10).
+SUPPORTED_TTS_ENGINES = ("piper", "chatterbox", "fish")
+
+
+def _normalise_engine_name(engine: Any) -> str:
+    """Return the lowercase engine name, tolerating None without raising."""
+    if engine is None:
+        return ""
+    return str(engine).strip().lower()
+
+
+def __getattr__(name: str):
+    """Expose ``FishTTS`` on this module without importing it up front.
+
+    ``fish_tts`` pulls in ``fish_client``; importing this module must stay cheap
+    and must never touch a key file. Consumers that only probe for the engine
+    (``hasattr(tts_module, "FishTTS")``) still see it, and the real import
+    happens the first time the attribute — or the factory's ``"fish"`` branch —
+    is actually used.
+    """
+    if name == "FishTTS":
+        from .fish_tts import FishTTS
+        return FishTTS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def create_tts_engine(
     engine: str = "piper",
     enabled: bool = True,
@@ -1029,14 +1060,33 @@ def create_tts_engine(
     piper_noise_scale: float = 0.667,
     piper_noise_w: float = 0.8,
     piper_sentence_silence: float = 0.2,
+    # Fish Audio parameters (all optional: ``config`` supplies the defaults)
+    config: Any = None,
+    fish_voice_id: Optional[str] = None,
+    fish_key_file: Optional[str] = None,
+    fish_latency: Optional[str] = None,
+    fish_model: Optional[str] = None,
 ):
     """Factory function to create the appropriate TTS engine.
 
-    Supported engines:
+    Supported engines (see :data:`SUPPORTED_TTS_ENGINES`):
     - "piper" (default): Neural TTS with auto-download, exact duration tracking
     - "chatterbox": AI voice with emotion control (requires PyTorch)
+    - "fish": Fish Audio streaming TTS (needs a key file and a voice id)
+
+    The name is matched case-insensitively. An unrecognised name raises
+    ``ValueError`` rather than quietly building a different engine: a silent
+    substitution would speak in a voice the user did not ask for.
+
+    For ``"fish"``, each ``fish_*`` keyword wins over the attribute of the same
+    name on ``config`` (read with :func:`getattr`, so a config that predates the
+    Fish fields still works). ``voice`` is deliberately *not* reused as the Fish
+    voice id: it carries a Piper/Chatterbox voice name, and handing that to Fish
+    would be exactly the wrong-voice substitution this factory refuses to make.
     """
-    if engine.lower() == "chatterbox":
+    name = _normalise_engine_name(engine)
+
+    if name == "chatterbox":
         return ChatterboxTTS(
             enabled=enabled,
             voice=voice,
@@ -1046,8 +1096,28 @@ def create_tts_engine(
             exaggeration=exaggeration,
             cfg_weight=cfg_weight,
         )
-    else:
-        # Default to Piper TTS
+
+    if name == "fish":
+        # Imported here, not at module scope: importing ``fish_tts`` pulls in
+        # ``fish_client``, and importing this module must stay cheap and must not
+        # read a key file.
+        from .fish_tts import FishTTS
+
+        def _fish_option(explicit, attr):
+            if explicit is not None:
+                return explicit
+            return getattr(config, attr, None)
+
+        return FishTTS(
+            config=config,
+            enabled=enabled,
+            voice_id=_fish_option(fish_voice_id, "fish_voice_id"),
+            key_file=_fish_option(fish_key_file, "fish_key_file"),
+            latency=_fish_option(fish_latency, "fish_latency"),
+            model=_fish_option(fish_model, "fish_model"),
+        )
+
+    if name == "piper":
         return PiperTTS(
             enabled=enabled,
             voice=voice,
@@ -1059,6 +1129,12 @@ def create_tts_engine(
             noise_w=piper_noise_w,
             sentence_silence=piper_sentence_silence,
         )
+
+    supported = ", ".join(repr(n) for n in SUPPORTED_TTS_ENGINES)
+    raise ValueError(
+        f"Unknown TTS engine {engine!r}: supported engines are {supported}. "
+        f"Refusing to substitute a different engine for {engine!r}."
+    )
 
 
 def json_escape_ps(s: str) -> str:

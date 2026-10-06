@@ -13,7 +13,7 @@ import queue
 import sys
 import platform
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, TYPE_CHECKING, Any, Callable, Literal
 from datetime import datetime
 
@@ -27,6 +27,8 @@ from ..utils.audio_lock import portaudio_lock
 from ..utils.audio_capture import mono_capture, open_input_stream, resolve_input_device
 from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command, is_stop_command_echo
 from .transcript_buffer import TranscriptBuffer
+from .transcript import SOURCE_STREAMING_FALLBACK, TurnTranscript
+from .turn import TurnAssembler
 from .intent_judge import (
     IntentJudge,
     _is_low_power_mode_enabled,
@@ -78,6 +80,12 @@ class _TranscriptionJob:
     capture_generation: int
     captured_during_tts: bool
     captured_tts_start_time: float
+    # Provisional streaming text (D3/D4) for the utterance this job belongs to,
+    # captured when the utterance finished so it can never go stale. Empty when
+    # no streaming recogniser is configured.
+    provisional_text: str = ""
+    provisional_started_at: Optional[float] = None
+    provisional_finalized_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,10 @@ class _TranscriptionResult:
     capture_generation: int
     captured_during_tts: bool
     captured_tts_start_time: float
+    # The utterance's two transcripts. When present, downstream reads its
+    # authoritative accessor instead of ``text`` (decision D3/D4).
+    turn: Optional[TurnTranscript] = None
+    provisional_text: str = ""
 
 # Audio processing imports (optional)
 try:
@@ -465,6 +477,19 @@ class VoiceListener(threading.Thread):
         # own locale even while later utterances are being transcribed.
         self._last_detected_language: Optional[str] = None
 
+        # Two recognisers (D3/D4), both built lazily on first use so a missing
+        # model can never crash startup: the streaming one supplies provisional
+        # text for wake detection, the authoritative one transcribes the turn.
+        self._authoritative_stt: Optional[Any] = None
+        self._authoritative_stt_failed = False
+        self._authoritative_stt_reason: Optional[str] = None
+        self._streaming_stt: Optional[Any] = None
+        self._streaming_stt_checked = False
+        self._streaming_partial_text = ""
+        self._streaming_segment_started_at: Optional[float] = None
+        self._stt_degradation_logged = False
+        self._turn_assembler = TurnAssembler()
+
         # Audio processing components
         self._whisper_backend: Optional[str] = None  # "mlx" or "faster-whisper"
         self._whisper_device: Optional[str] = None  # "cpu" or "cuda" (resolved from CTranslate2)
@@ -608,13 +633,15 @@ class VoiceListener(threading.Thread):
         debug_log(f"scheduling hot window activation (echo_tolerance={self.state_manager.echo_tolerance}s, hot_window={self.state_manager.hot_window_seconds}s)", "voice")
         self.state_manager.schedule_hot_window_activation(self.cfg.voice_debug)
 
-    def _process_transcript(self, text: str, utterance_energy: float = 0.0, utterance_start_time: float = 0.0, utterance_end_time: float = 0.0, *, generation: int, captured_during_tts: bool, captured_tts_start_time: float) -> None:
+    def _process_transcript(self, text: str, utterance_energy: float = 0.0, utterance_start_time: float = 0.0, utterance_end_time: float = 0.0, *, generation: int, captured_during_tts: bool, captured_tts_start_time: float, provisional_text: str = "") -> None:
         """
         Process a transcript from speech recognition.
 
         Args:
             text: Transcribed text from audio
             utterance_energy: Pre-calculated energy from the utterance frames
+            provisional_text: The streaming recogniser's text for the same
+                utterance. Wake-detection evidence only; never acted on.
         """
         if not self._transcription_is_current(generation):
             return
@@ -630,6 +657,10 @@ class VoiceListener(threading.Thread):
             return
 
         text_lower = text.strip().lower()
+        # Provisional streaming text for this same utterance: wake-detection
+        # evidence only (decision D3/D4). Every query below is extracted from
+        # ``text_lower``, which is the authoritative transcript.
+        provisional_lower = (provisional_text or "").strip().lower()
 
         # Reset wake timestamp — it must reflect only the current utterance.
         # If this utterance contains a wake word, the early-beep check below
@@ -721,11 +752,10 @@ class VoiceListener(threading.Thread):
                 self._set_face_state_listening()
                 debug_log("early beep: hot window active", "voice")
             else:
-                # Not in hot window — check for wake word
-                wake_word = getattr(self.cfg, "wake_word", "claire")
-                aliases = list(set(getattr(self.cfg, "wake_aliases", [])) | {wake_word})
-                fuzzy_ratio = float(getattr(self.cfg, "wake_fuzzy_ratio", 0.78))
-                if is_wake_word_detected(text_lower, wake_word, aliases, fuzzy_ratio):
+                # Not in hot window — check for wake word. The provisional
+                # streaming text counts as evidence here; the query itself is
+                # still taken from the authoritative transcript.
+                if self._wake_word_seen(text_lower, provisional_lower):
                     self._wake_timestamp = utterance_start_time
                     self._start_thinking_tune()
                     self._set_face_state_listening()
@@ -1241,7 +1271,7 @@ class VoiceListener(threading.Thread):
         aliases = set(getattr(self.cfg, "wake_aliases", [])) | {wake_word}
         fuzzy_ratio = float(getattr(self.cfg, "wake_fuzzy_ratio", 0.78))
 
-        wake_detected = is_wake_word_detected(text_lower, wake_word, list(aliases), fuzzy_ratio)
+        wake_detected = self._wake_word_seen(text_lower, provisional_lower)
         debug_log(f"wake word check: '{wake_word}' in '{text_lower}' → {wake_detected}", "voice")
 
         if wake_detected:
@@ -1413,6 +1443,10 @@ class VoiceListener(threading.Thread):
 
             # Clear wake detection state
             self._wake_timestamp = None
+
+            # The streaming segment belongs to the audio being cleared: drop its
+            # provisional text so it cannot vouch for a later utterance.
+            self._reset_streaming_segment()
 
             # Drain the audio queue
             try:
@@ -1641,6 +1675,260 @@ class VoiceListener(threading.Thread):
             )
         self._audio_peak = 0.0
 
+    # -- two recognisers (D3/D4) -------------------------------------------
+
+    def _get_authoritative_stt_engine(self) -> Optional[Any]:
+        """Build the authoritative recogniser lazily, or ``None`` if it cannot.
+
+        The factories raise *named* errors for a missing model, a missing
+        backend or a bad path. Those are caught here and turned into a recorded
+        reason, because the honest degradation path is to keep transcribing
+        with the existing Whisper engine and mark the turn degraded — never to
+        crash at startup and never to pretend a Parakeet transcript exists.
+        """
+        engine = getattr(self, "_authoritative_stt", None)
+        if engine is not None:
+            return engine
+        if getattr(self, "_authoritative_stt_failed", False):
+            return None
+        from .stt import create_stt_engine
+
+        try:
+            engine = create_stt_engine(self.cfg)
+        except Exception as exc:
+            self._authoritative_stt_failed = True
+            self._authoritative_stt_reason = self._stt_unavailable_reason(exc)
+            debug_log(
+                f"authoritative STT engine unavailable: {self._authoritative_stt_reason}",
+                "voice",
+            )
+            return None
+        self._authoritative_stt = engine
+        self._authoritative_stt_reason = None
+        return engine
+
+    def _stt_unavailable_reason(self, exc: BaseException) -> str:
+        """A degradation reason that names the setting an operator must fix."""
+        model_path = str(getattr(self.cfg, "stt_model_path", "") or "").strip()
+        if not model_path:
+            return (
+                "stt_model_path is not set, so no authoritative Parakeet "
+                "transcript was produced "
+                f"({type(exc).__name__}: {exc})"
+            )
+        return (
+            f"stt_model_path={model_path!r} produced no authoritative Parakeet "
+            f"transcript ({type(exc).__name__}: {exc})"
+        )
+
+    def _note_stt_degradation(self, reason: str) -> None:
+        """Surface a degraded voice pipeline once, in the voice log."""
+        if getattr(self, "_stt_degradation_logged", False):
+            return
+        self._stt_degradation_logged = True
+        debug_log(f"voice pipeline degraded: {reason}", "voice")
+        print(f"  ⚠️  Voice transcript degraded: {reason}", flush=True)
+
+    def _get_streaming_stt_engine(self) -> Optional[Any]:
+        """Build the always-on streaming recogniser lazily.
+
+        ``create_streaming_stt_engine`` returns ``None`` when streaming is
+        unconfigured, and raises a named error when it is configured but
+        unusable; both leave wake detection exactly as it was before D3/D4.
+        """
+        engine = getattr(self, "_streaming_stt", None)
+        if engine is not None:
+            return engine
+        if getattr(self, "_streaming_stt_checked", False):
+            return None
+        self._streaming_stt_checked = True
+        from .stt import create_streaming_stt_engine
+
+        try:
+            engine = create_streaming_stt_engine(self.cfg)
+        except Exception as exc:
+            debug_log(
+                f"streaming STT engine unavailable; wake detection uses the turn "
+                f"transcript ({type(exc).__name__}: {exc})",
+                "voice",
+            )
+            engine = None
+        self._streaming_stt = engine
+        return engine
+
+    def _feed_streaming_stt(self, frame) -> None:
+        """Feed one captured frame to the provisional recogniser.
+
+        Audio reaches sherpa-onnx only through ``accept_waveform``: that method
+        owns the ``recognizer.is_ready()`` guard which prevents the process-wide
+        abort sherpa raises when ``decode_stream`` runs before its feature
+        window has filled. The recognizer is never touched directly.
+        """
+        engine = getattr(self, "_streaming_stt", None)
+        if engine is None:
+            engine = self._get_streaming_stt_engine()
+            if engine is None:
+                return
+        try:
+            rate = int(getattr(self, "_stream_samplerate", self._samplerate))
+            engine.accept_waveform(frame, rate)
+            self._streaming_partial_text = engine.partial_text() or ""
+            if getattr(self, "_streaming_segment_started_at", None) is None:
+                self._streaming_segment_started_at = time.monotonic()
+        except Exception as exc:
+            debug_log(
+                f"streaming STT feed failed ({type(exc).__name__}: {exc}); "
+                "disabling it for this session",
+                "voice",
+            )
+            self._streaming_stt = None
+            self._streaming_stt_checked = True
+            self._streaming_partial_text = ""
+
+    def _provisional_text(self) -> str:
+        """Provisional streaming text so far, for wake matching only."""
+        return (getattr(self, "_streaming_partial_text", "") or "").strip()
+
+    def _reset_streaming_segment(self) -> None:
+        """Start a new streaming segment, discarding incremental state."""
+        self._streaming_partial_text = ""
+        self._streaming_segment_started_at = None
+        engine = getattr(self, "_streaming_stt", None)
+        if engine is None:
+            return
+        try:
+            engine.reset()
+        except Exception as exc:
+            debug_log(f"streaming STT reset failed ({type(exc).__name__}: {exc})", "voice")
+            self._streaming_stt = None
+            self._streaming_stt_checked = True
+
+    def _finalize_streaming_segment(self) -> str:
+        """Flush the streaming recogniser and return its final provisional text."""
+        engine = getattr(self, "_streaming_stt", None)
+        partial = self._provisional_text()
+        if engine is None:
+            return partial
+        try:
+            text = engine.finalize() or ""
+        except Exception as exc:
+            debug_log(f"streaming STT finalize failed ({type(exc).__name__}: {exc})", "voice")
+            self._streaming_stt = None
+            self._streaming_stt_checked = True
+            text = ""
+        self._reset_streaming_segment()
+        return (text.strip() or partial)
+
+    def _decode_utterance(self, audio) -> tuple[str, Optional[str], tuple, Optional[str], Optional[str]]:
+        """The authoritative transcript for one utterance, honestly sourced.
+
+        Returns ``(text, language, low_confidence_events, source,
+        degraded_reason)``. A ``degraded_reason`` means the configured
+        authoritative engine did not run and the existing Whisper path answered
+        instead: the text is real but the turn must be marked degraded.
+        """
+        engine = self._get_authoritative_stt_engine()
+        if engine is not None:
+            try:
+                result = engine.transcribe(audio, int(self._samplerate))
+            except Exception as exc:
+                reason = self._stt_unavailable_reason(exc)
+                self._note_stt_degradation(reason)
+                debug_log(f"authoritative STT decode failed: {reason}", "voice")
+            else:
+                return (
+                    result.text,
+                    result.language,
+                    tuple(result.low_confidence_events),
+                    self._source_for_engine(engine),
+                    None,
+                )
+        else:
+            reason = (
+                getattr(self, "_authoritative_stt_reason", None)
+                or "stt_model_path is not set, so no authoritative Parakeet "
+                   "transcript was produced"
+            )
+            self._note_stt_degradation(reason)
+
+        text, language, low_confidence_events = self._transcribe_audio(audio)
+        return text, language, low_confidence_events, SOURCE_STREAMING_FALLBACK, reason
+
+    @staticmethod
+    def _source_for_engine(engine) -> str:
+        """The transcript source string for a working authoritative engine."""
+        name = str(getattr(engine, "name", "") or "")
+        if not name:
+            try:
+                name = str(engine.identity().engine or "")
+            except Exception:
+                name = ""
+        return name or "authoritative"
+
+    def _assembler(self) -> TurnAssembler:
+        """The turn assembler, created on demand for partially built listeners."""
+        assembler = getattr(self, "_turn_assembler", None)
+        if assembler is None:
+            assembler = TurnAssembler()
+            self._turn_assembler = assembler
+        return assembler
+
+    def _build_turn(
+        self,
+        provisional: str,
+        authoritative: str,
+        source: Optional[str],
+        degraded_reason: Optional[str],
+        provisional_started_at: Optional[float],
+        provisional_finalized_at: Optional[float],
+        authoritative_started_at: float,
+        authoritative_finalized_at: float,
+    ) -> Optional[TurnTranscript]:
+        """Assemble this utterance's two transcripts, or ``None`` if silent."""
+        if not (authoritative or "").strip():
+            return None
+        timings = dict(
+            provisional_started_at=provisional_started_at,
+            provisional_finalized_at=provisional_finalized_at,
+            authoritative_started_at=authoritative_started_at,
+            authoritative_finalized_at=authoritative_finalized_at,
+        )
+        if degraded_reason:
+            # ``build_degraded`` is the honest constructor for "the
+            # authoritative engine did not run": it records the reason and the
+            # fallback source. The text the turn acts on is still the transcript
+            # that did run (Whisper), not the provisional streaming guess.
+            turn = self._assembler().build_degraded(
+                provisional or authoritative, degraded_reason
+            )
+            return replace(turn, authoritative_text=authoritative, **timings)
+        return self._assembler().build(
+            provisional, authoritative, source or "authoritative", **timings
+        )
+
+    def _wake_word_seen(self, text_lower: str, provisional_lower: str = "") -> bool:
+        """Whether this utterance addressed Claire by name.
+
+        The provisional streaming text may *satisfy* wake detection — that is
+        the streaming recogniser's job (D3/D4) — but it is evidence only: the
+        query itself is always extracted from the authoritative transcript, so
+        nothing downstream can act on provisional text.
+        """
+        wake_word = getattr(self.cfg, "wake_word", "claire")
+        aliases = list(set(getattr(self.cfg, "wake_aliases", [])) | {wake_word})
+        fuzzy_ratio = float(getattr(self.cfg, "wake_fuzzy_ratio", 0.78))
+        if is_wake_word_detected(text_lower, wake_word, aliases, fuzzy_ratio):
+            return True
+        if provisional_lower and provisional_lower != text_lower:
+            if is_wake_word_detected(provisional_lower, wake_word, aliases, fuzzy_ratio):
+                debug_log(
+                    f"wake word seen only in provisional streaming text: "
+                    f"'{provisional_lower[:80]}'",
+                    "voice",
+                )
+                return True
+        return False
+
     def _start_transcription_worker(self) -> None:
         if self._should_stop or self._transcription_worker_thread is not None:
             return
@@ -1667,15 +1955,30 @@ class VoiceListener(threading.Thread):
                 continue
             decode_started = time.monotonic()
             try:
-                text, language, low_confidence_events = self._transcribe_audio(job.audio)
+                text, language, low_confidence_events, source, degraded_reason = (
+                    self._decode_utterance(job.audio)
+                )
             except Exception as exc:
                 debug_log(f"transcription worker error: {exc}", "voice")
                 text, language, low_confidence_events = "", None, ()
+                source, degraded_reason = None, None
+            decode_finished = time.monotonic()
             if not self._transcription_is_current(job.capture_generation):
                 continue
+            provisional = getattr(job, "provisional_text", "") or ""
+            turn = self._build_turn(
+                provisional,
+                text,
+                source,
+                degraded_reason,
+                getattr(job, "provisional_started_at", None),
+                getattr(job, "provisional_finalized_at", None),
+                decode_started,
+                decode_finished,
+            )
             if text or low_confidence_events:
                 self._report_transcription_performance(
-                    len(job.audio) / self._samplerate, time.monotonic() - decode_started,
+                    len(job.audio) / self._samplerate, decode_finished - decode_started,
                 )
             result = _TranscriptionResult(
                 text=text, language=language, low_confidence_events=low_confidence_events,
@@ -1683,6 +1986,8 @@ class VoiceListener(threading.Thread):
                 capture_generation=job.capture_generation,
                 captured_during_tts=job.captured_during_tts,
                 captured_tts_start_time=job.captured_tts_start_time,
+                turn=turn,
+                provisional_text=provisional,
             )
             while self._transcription_is_current(job.capture_generation):
                 try:
@@ -1760,6 +2065,18 @@ class VoiceListener(threading.Thread):
             return
         self._last_detected_language = result.language
         text = result.text
+        turn = getattr(result, "turn", None)
+        if turn is not None:
+            # The utterance text that flows on to the turn handler is the
+            # authoritative one. Provisional streaming text stays in the turn
+            # as wake-detection evidence and is never acted on (D3/D4).
+            text = turn.authoritative_for("turn handler")
+            debug_log(
+                f"turn transcripts: source={turn.source!r} degraded={turn.degraded} "
+                f"divergent={turn.divergent}",
+                "voice",
+            )
+        provisional_text = getattr(result, "provisional_text", "") or ""
         if not text or not text.strip():
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
@@ -1785,6 +2102,7 @@ class VoiceListener(threading.Thread):
             generation=result.capture_generation,
             captured_during_tts=result.captured_during_tts,
             captured_tts_start_time=result.captured_tts_start_time,
+            **({"provisional_text": provisional_text} if provisional_text else {}),
         )
 
     def _audio_frames(self, buf):
@@ -2706,6 +3024,12 @@ class VoiceListener(threading.Thread):
                                 debug_log(f"utterance reached capture limit ({current_max_frames * frame_ms} ms)", "voice")
                             self._finalize_utterance()
                             self._pre_roll.clear()
+                    # The streaming recogniser is fed frame by frame for
+                    # provisional wake detection (D3/D4). It happens inside the
+                    # audio-state lock so it is serialised with the segment
+                    # reset in _clear_audio_buffers, and only ever through
+                    # accept_waveform() — never the recognizer directly.
+                    self._feed_streaming_stt(frame)
 
 
     def _finalize_utterance(self) -> None:
@@ -2761,6 +3085,12 @@ class VoiceListener(threading.Thread):
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
             return
 
+        # Close the streaming segment and keep the provisional text with the
+        # utterance it belongs to, so the turn's two transcripts can never drift
+        # apart (D3/D4).
+        provisional_finalized_at = time.monotonic()
+        provisional_started_at = getattr(self, "_streaming_segment_started_at", None)
+        provisional_text = self._finalize_streaming_segment()
         job = _TranscriptionJob(
             audio=audio,
             start_time=utterance_start_time,
@@ -2779,6 +3109,9 @@ class VoiceListener(threading.Thread):
                 )
             ),
             captured_tts_start_time=self.echo_detector._tts_start_time,
+            provisional_text=provisional_text,
+            provisional_started_at=provisional_started_at,
+            provisional_finalized_at=provisional_finalized_at,
         )
         try:
             self._transcription_jobs_q.put_nowait(job)

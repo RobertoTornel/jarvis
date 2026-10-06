@@ -15,7 +15,7 @@ Claire's default language route is **OmniRouter**: an OpenAI-compatible endpoint
 
 Pick the provider after speech recognition in the Setup Wizard, or under **⚙️ Settings → 🔌 LLM Provider**. No JSON editing required. On the OpenAI-compatible page the wizard does the legwork for you: it auto-detects running local servers, offers a one-click preset for your app, and when you press **Connect** it loads the server's model list and checks the chosen model for chat, tool calling, and embeddings, so you know it works before you finish setup.
 
-Both provider paths include a model-memory budget. Ollama uses its known model estimates; the OpenAI-compatible page lets you edit estimates because servers usually expose model names but not their memory needs. A server on another machine has a separate budget from Whisper on this machine. Estimates are guidance, not a guarantee: quantisation, context length and concurrent workloads affect actual use.
+Both provider paths include a model-memory budget. Ollama uses its known model estimates; the OpenAI-compatible page lets you edit estimates because servers usually expose model names but not their memory needs. A server on another machine has a separate budget from the speech recogniser on this machine. Estimates are guidance, not a guarantee: quantisation, context length and concurrent workloads affect actual use.
 
 Tested OpenAI-compatible servers:
 
@@ -61,9 +61,9 @@ Leave `embedding_provider` empty to use the same provider as chat. With no worki
 <details>
 <summary><strong>Power and Startup</strong></summary>
 
-Claire favours fast first responses by default: it warms Whisper, the chat
-model, and the intent judge before announcing that it is listening. On laptops
-where heat and battery matter more than instant first-token latency,
+Claire favours fast first responses by default: it warms the speech recogniser,
+the chat model, and the intent judge before announcing that it is listening. On
+laptops where heat and battery matter more than instant first-token latency,
 enable **⚙️ Settings → ✨ Features → Low Power Mode**.
 
 ```json
@@ -73,13 +73,75 @@ enable **⚙️ Settings → ✨ Features → Low Power Mode**.
 ```
 
 Low Power Mode skips LLM startup warmup and shortens Ollama model residency for
-the intent judge from 30 minutes to 1 minute. Whisper still warms so voice input
-is ready. The first LLM-backed request after startup or idle may be slower.
+the intent judge from 30 minutes to 1 minute. The speech recogniser still warms so
+voice input is ready. The first LLM-backed request after startup or idle may be
+slower.
+
+</details>
+
+<details>
+<summary><strong>Speech-to-Text Engines (Parakeet and the streaming zipformer)</strong></summary>
+
+Claire runs **two recognisers with different jobs**. Which engines run is a
+configuration choice, never a code change; the model itself is a path.
+
+```json
+{
+  "stt_engine": "parakeet",
+  "stt_model_path": "/path/to/parakeet.nemo",
+  "stt_model_kind": "auto",
+  "stt_device": "cpu",
+  "streaming_stt_engine": "sherpa",
+  "streaming_stt_model_dir": "~/.local/share/claire/models/sherpa-onnx-streaming-zipformer-en-20M",
+  "streaming_stt_num_threads": 2
+}
+```
+
+#### Parakeet - the authoritative recogniser
+
+The text a turn acts on (intent, tool calls, the reply, memory) comes from the
+authoritative engine, `stt_engine`, which is `"parakeet"` by default. **Swapping it
+is a change of `stt_model_path` alone** - including dropping in your own finetuned
+Parakeet. No code changes.
+
+- `stt_model_path`: a `*.nemo` checkpoint, or a directory holding an ONNX export.
+  `examples/config.json` ships it as `""`, which means **"not configured"**: an
+  empty value raises a named error naming the path and the fix rather than
+  producing an empty transcript that would look like "the user said nothing".
+- `stt_model_kind`: `"auto"` (default; decides from the path), `"nemo"` or `"onnx"`.
+- `stt_device`: `"cpu"` (default) or `"cuda"`. The value is recorded in the
+  engine's identity; the Parakeet engine executes on CPU today, so `"cuda"` is
+  reported honestly rather than silently ignored.
+- Set `stt_engine` to `"faster_whisper"` to make Whisper the authoritative
+  recogniser instead; the `whisper_*` settings in the next section then apply.
+
+#### Streaming zipformer - the always-on recogniser (optional)
+
+With `streaming_stt_engine` set to `"sherpa"` (the default), a sherpa-onnx
+zipformer transducer runs continuously on microphone audio. Its output is
+**provisional by definition**: it is used for wake-word matching and pre-wake
+context only, and must never become the text a turn acts on. Wake matching is the
+one place a cheap, always-on partial transcript is worth having.
+
+- `streaming_stt_model_dir`: the zipformer export directory. The streaming engine
+  is optional, not a hard requirement: set `"streaming_stt_engine": ""` to disable
+  it entirely, and wake detection then runs on whatever the authoritative path
+  produces.
+- `streaming_stt_num_threads`: CPU threads for the streaming decoder (default `2`).
+- A missing model directory, a missing component file, or an unimportable
+  `sherpa_onnx` package raises a named error (`SttModelMissingError` /
+  `SttBackendUnavailableError`) that names the exact path and the fix. An unknown
+  engine name raises as well. None of these degrade into an empty transcript: an
+  empty string from the streaming engine means "this segment contained no speech",
+  never "the model was missing".
 
 </details>
 
 <details>
 <summary><strong>Speech Recognition (Whisper)</strong></summary>
+
+These settings apply when `stt_engine` is `"faster_whisper"` (Whisper as the
+authoritative recogniser). With the default `"parakeet"` the keys are ignored.
 
 #### Language Modes
 - **Multilingual** (default, 99 languages): `"whisper_model": "medium"`
@@ -119,6 +181,56 @@ Whisper sometimes produces confident but false transcriptions during silence or 
 - `"whisper_no_speech_threshold": 0.5`: drops any segment whose `no_speech_prob` is at or above this value, regardless of `avg_logprob`. Catches the case where Whisper is confident about a hallucinated phrase but its own no-speech signal says the audio was silent. Applies to the faster-whisper backend.
 
 Both thresholds are exposed in the Settings window under *Whisper*.
+
+</details>
+
+<details>
+<summary><strong>Wake Word</strong></summary>
+
+```json
+{
+  "wake_word": "claire",
+  "wake_aliases": ["clair", "clare", "claira", "claya", "klair", "klare", "claires"],
+  "wake_fuzzy_ratio": 0.82
+}
+```
+
+- `wake_word`: the primary name, matched exactly at word boundaries (`"claire"`).
+- `wake_aliases`: the mishearings a recogniser actually produces, matched exactly.
+  `claya` is in this list because its similarity to `claire` is only 0.5455 — no
+  safe fuzzy threshold admits it (a threshold low enough to admit `claya` also
+  admits the ordinary word `clay` at 0.6000), so it is carried by the curated list,
+  which is what an alias list is for.
+- `wake_fuzzy_ratio`: the similarity floor for the approximate match that runs
+  *after* the exact word-boundary match, on the near-misses recognisers emit.
+
+#### Why the fuzzy ratio is 0.82
+
+At the previous default of `0.78` the fuzzy fallback was too loose and woke her on
+ordinary English — `"care"` scores 0.8000 against `claire` (and `"lair"` 0.8000),
+so *"I do not care"* woke her. `0.82` sits above that worst ordinary word (a 0.02
+margin) and at or below the weakest genuine mishearing that must still match,
+`claira` at 0.8333:
+
+| Token | Ratio vs `claire` | Outcome |
+|-------|-------------------|---------|
+| `claires` | 0.9231 | genuine mishearing, fuzzy-accepted |
+| `clair` | 0.9091 | genuine mishearing, fuzzy-accepted |
+| `clare` | 0.9091 | genuine mishearing, fuzzy-accepted |
+| `klair`, `klare` | 0.9091 | accepted after folding `k` to `c` (same /k/ before /l/) |
+| `claira` | 0.8333 | genuine mishearing, fuzzy-accepted |
+| **`claire`** | **1.0000** | exact match (not fuzzy) |
+| `care`, `lair` | 0.8000 | **false positive at 0.78**, rejected at 0.82 |
+| `claya` | 0.5455 | alias list only, below any safe threshold |
+
+It cannot be pushed higher without breaking real speech, because `claira` has to
+keep matching when only another alias is configured (`claira` and the obscure word
+`claret` both score 0.8333, so no threshold that keeps one can exclude the other).
+
+Two independent defences therefore apply, so loosening the ratio alone cannot
+reintroduce the false wake: the token must clear `0.82` **and** start with the
+primary name's onset consonant cluster (`k` folded to `c`), which is what rejects
+`care`, `lair` and `declare` even if `0.78` is configured explicitly.
 
 </details>
 
@@ -174,18 +286,18 @@ Field logs show `🧩 Memory digest: …` and `🧩 Tool digest: …` lines when
   "tts_engine": "fish",
   "fish_voice_id": "your-cloned-voice-id",
   "fish_key_file": "~/.config/claire/fish_api_key",
-  "fish_latency": "normal",
-  "fish_model": "your-fish-model-id"
+  "fish_latency": "low",
+  "fish_model": "s1"
 }
 ```
 
 - `tts_engine`: which synthesis engine to use - `"fish"` (cloud), `"piper"` (offline default fallback), or `"chatterbox"` (offline, optional).
 - `tts_voice`: the generic voice selector; leave `null` to use the engine's default.
 - `tts_rate`: speaking rate in words per minute, `200` = normal.
-- `fish_voice_id`: the cloned voice to speak with.
-- `fish_key_file`: path to a `0600` file **outside the repository** holding the Fish Audio key. The key value is never written to `config.json` and is never printed or logged.
-- `fish_latency`: `"low"` for the fastest synthesis at some quality cost, or `"normal"` (default).
-- `fish_model`: the Fish Audio model that serves the voice.
+- `fish_voice_id`: the cloned voice to speak with (the Fish Audio voice id; `null` falls back to the engine voice).
+- `fish_key_file`: path to a `0600` file **outside the repository** holding the Fish Audio key. The key value is never written to `config.json` and is never printed or logged. A missing file, an empty one, or permissions looser than `0600` raises a named error (`FishKeyFileMissingError`, `FishKeyFileEmptyError`, `FishKeyFilePermissionsError`) that carries the exact path, and an unknown `tts_engine` raises rather than substituting a different engine — there is no silent fallback to another voice.
+- `fish_latency`: `"low"` is the default and the only setting suitable for conversation; `"normal"` makes Fish Audio wait roughly 3.4 s *before the first audio* and that wait grows with the length of the reply, which to a listener is indistinguishable from being ignored. Do not make `"normal"` the conversation default — it is opt-in only, for offline or pre-rendered audio.
+- `fish_model`: the Fish Audio model that serves the voice (`"s1"` by default).
 
 **Piper TTS (offline fallback)** - Neural TTS that auto-downloads on first use (~60MB):
 - Works out of the box - no setup required
@@ -378,7 +490,7 @@ Get API key at [composio.dev](https://composio.dev)
 
 **Warmup passes but intent detection times out?** Warmup checks model loading with a small request, not a full intent decision. Intent detection has its own `intent_judge_timeout_sec` (6 seconds by default), separate from chat. A timeout does not necessarily mean your server is offline; the log shows the configured limit.
 
-**Model downloads look paused?** Open **Logs** from the tray. The download card shows real transferred bytes, percentage, speed and estimated time remaining when available, without flooding the activity timeline. If updates pause, it shows how long it has been waiting. Whisper's first download can be large; loading and warming up are shown separately after its files are ready.
+**Model downloads look paused?** Open **Logs** from the tray. The download card shows real transferred bytes, percentage, speed and estimated time remaining when available, without flooding the activity timeline. If updates pause, it shows how long it has been waiting. A speech recogniser's first download can be large; loading and warming up are shown separately after its files are ready.
 
 <details>
 <summary><strong>Common issues</strong></summary>

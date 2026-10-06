@@ -35,21 +35,102 @@ if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
     except Exception:
         pass
 
-from typing import Optional
+from typing import Any, Optional
 from faster_whisper import WhisperModel
 
 from .config import load_settings
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
-from .output.tts import create_tts_engine
+from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
 from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
 from .listening.listener import VoiceListener
 from .utils.location import get_location_context, is_location_available
 
 
+class _UnavailableTTS:
+    """Stand-in for a TTS engine that could not be initialised.
+
+    Speech output is unavailable, so this never speaks and never claims to be
+    speaking. It exists so the face-widget poller (``get_tts_engine()``) and
+    the voice listener can keep asking the same questions they always ask
+    without a ``None`` crash — while ``enabled`` stays honestly ``False``.
+    """
+
+    enabled = False
+    unavailable_reason = "speech output unavailable: no TTS engine was initialised"
+
+    def is_speaking(self) -> bool:
+        """No engine means nothing can be audible."""
+        return False
+
+    def speak(self, text: Any = None, completion_callback: Any = None,
+              **kwargs: Any) -> bool:
+        """Accept the call and report that nothing was spoken."""
+        debug_log(f"{self.unavailable_reason}; dropping reply: {text!r}", "tts")
+        return False
+
+    def interrupt(self) -> None:
+        """Nothing to interrupt."""
+        return None
+
+    def start(self) -> None:
+        """Nothing to start."""
+        return None
+
+    def stop(self) -> None:
+        """Nothing to stop."""
+        return None
+
+
+def _initialize_tts_engine(cfg) -> Optional[Any]:
+    """Build the configured TTS engine, degrading honestly when it cannot.
+
+    Returns the engine, or ``None`` when it could not be built — an
+    unrecognised ``tts_engine`` name, a missing voice model, a missing Fish
+    key, and so on. The reason is printed, naming the configured value and the
+    engines that do exist: an unknown name is never quietly substituted,
+    because speaking in a voice the user did not ask for is worse than not
+    speaking at all.
+    """
+    engine_name = getattr(cfg, "tts_engine", None)
+    print(f"🔊 Initializing TTS engine ({engine_name})...", flush=True)
+    try:
+        tts = create_tts_engine(
+            engine=engine_name,
+            enabled=cfg.tts_enabled,
+            voice=cfg.tts_voice,
+            rate=cfg.tts_rate,
+            # Chatterbox parameters
+            device=cfg.tts_chatterbox_device,
+            audio_prompt_path=cfg.tts_chatterbox_audio_prompt,
+            exaggeration=cfg.tts_chatterbox_exaggeration,
+            cfg_weight=cfg.tts_chatterbox_cfg_weight,
+            # Piper parameters
+            piper_model_path=cfg.tts_piper_model_path,
+            piper_speaker=cfg.tts_piper_speaker,
+            piper_length_scale=cfg.tts_piper_length_scale,
+            piper_noise_scale=cfg.tts_piper_noise_scale,
+            piper_noise_w=cfg.tts_piper_noise_w,
+            piper_sentence_silence=cfg.tts_piper_sentence_silence,
+        )
+    except Exception as exc:
+        # Not swallowed: the configured name, the failure and the supported
+        # engines are all reported, and Claire keeps running without speech.
+        supported = ", ".join(repr(name) for name in SUPPORTED_TTS_ENGINES)
+        print(f"❌ TTS engine {engine_name!r} could not be initialised: {exc}", flush=True)
+        print(f"   Supported engines are: {supported}", flush=True)
+        print("  ⚠️ Speech output unavailable. Claire will continue without spoken replies.", flush=True)
+        debug_log(f"TTS engine init failed for {engine_name!r}: {exc}", "tts")
+        return None
+    return tts
+
+
 def _start_tts_engine(tts) -> None:
     """Start local speech output and report its runtime availability."""
+    if tts is None or isinstance(tts, _UnavailableTTS):
+        print("  ⚠️ Speech output unavailable (no TTS engine was initialised).", flush=True)
+        return
     if not tts.enabled:
         print("  🔇 TTS disabled", flush=True)
         return
@@ -665,7 +746,13 @@ def is_stop_requested() -> bool:
 
 
 def get_tts_engine():
-    """Get the global TTS engine for speaking state polling (used by face widget)."""
+    """Get the global TTS engine for speaking state polling (used by face widget).
+
+    Never ``None`` once ``main()`` has run: when speech output could not be
+    initialised this returns an unavailable stand-in that reports
+    ``enabled == False`` and ``is_speaking() == False``, so a poller can call
+    those without a guard.
+    """
     return _global_tts_engine
 
 
@@ -981,26 +1068,13 @@ def main(smoke_test: bool = False) -> None:
     else:
         print("📍 Location services disabled", flush=True)
 
-    # Initialize TTS
-    print(f"🔊 Initializing TTS engine ({cfg.tts_engine})...", flush=True)
-    tts = create_tts_engine(
-        engine=cfg.tts_engine,
-        enabled=cfg.tts_enabled,
-        voice=cfg.tts_voice,
-        rate=cfg.tts_rate,
-        # Chatterbox parameters
-        device=cfg.tts_chatterbox_device,
-        audio_prompt_path=cfg.tts_chatterbox_audio_prompt,
-        exaggeration=cfg.tts_chatterbox_exaggeration,
-        cfg_weight=cfg.tts_chatterbox_cfg_weight,
-        # Piper parameters
-        piper_model_path=cfg.tts_piper_model_path,
-        piper_speaker=cfg.tts_piper_speaker,
-        piper_length_scale=cfg.tts_piper_length_scale,
-        piper_noise_scale=cfg.tts_piper_noise_scale,
-        piper_noise_w=cfg.tts_piper_noise_w,
-        piper_sentence_silence=cfg.tts_piper_sentence_silence,
-    )
+    # Initialize TTS. A failure here (an unknown engine name, a missing voice
+    # model, a missing key) disables speech output; it must not take the whole
+    # daemon down. ``_initialize_tts_engine`` reports the reason and returns
+    # None, which becomes an explicitly unavailable engine reference.
+    tts = _initialize_tts_engine(cfg)
+    if tts is None:
+        tts = _UnavailableTTS()
     _global_tts_engine = tts  # Expose for face widget speaking animation
     _start_tts_engine(tts)
 
