@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import struct
 import sys
+import threading
 import time
 import types
 import wave
@@ -248,3 +249,32 @@ def test_stream_callback_wraps_seamlessly(monkeypatch):
         assert seen_wrap
     finally:
         tp.stop_tune()
+
+
+class TestFallbackSpinnerKeepsStdoutClean:
+    """The no-audio fallback spinner must never write to stdout.
+
+    Regression: `_play_fallback_tune` wrote "\\r[claire] <spinner> processing..."
+    to stdout. On a machine with no usable audio device (this test host) the
+    fallback runs whenever the thinking tune plays, and its output landed inside
+    the captured stdout of unrelated tests — corrupting
+    `scripts/measure_voice_latency.py --json`, which parses stdout as JSON and
+    failed with "Expecting value: line 1 column 3". stdout is a data channel;
+    a decorative spinner belongs on stderr.
+    """
+
+    @pytest.mark.unit
+    def test_fallback_spinner_writes_only_to_stderr(self, capsys):
+        player = TunePlayer()
+        t = threading.Thread(target=player._play_fallback_tune, daemon=True)
+        t.start()
+        time.sleep(0.45)  # several 0.2 s spinner ticks
+        player._stop_event.set()
+        t.join(timeout=2.0)
+
+        captured = capsys.readouterr()
+        assert captured.out == "", (
+            "the fallback spinner wrote to stdout, which corrupts --json output: "
+            f"{captured.out!r}"
+        )
+        assert "processing" in captured.err, "the spinner should still be visible on stderr"

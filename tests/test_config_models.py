@@ -236,3 +236,47 @@ class TestModelConsistency:
                 f"({SUPPORTED_CHAT_MODELS[DEFAULT_CHAT_MODEL]['vram']}) because the intent judge "
                 f"(gemma4:e2b) always runs alongside the chat model"
             )
+
+
+class TestWakeDefaultsMatchDetector:
+    """The wake defaults in config.py must not drift from wake_detection.py.
+
+    config.py cannot import wake_detection at module level (wake_detection
+    imports .debug, which imports config), so the two values are duplicated and
+    these tests are what keeps them honest.
+    """
+
+    @pytest.mark.unit
+    def test_default_config_aliases_match_detector_constant(self):
+        from claire.config import get_default_config
+        from claire.listening.wake_detection import CLAIRE_WAKE_ALIASES
+
+        assert list(get_default_config()["wake_aliases"]) == list(CLAIRE_WAKE_ALIASES)
+
+    @pytest.mark.unit
+    def test_default_config_ratio_matches_detector_constant(self):
+        from claire.config import get_default_config
+        from claire.listening.wake_detection import DEFAULT_WAKE_FUZZY_RATIO
+
+        assert get_default_config()["wake_fuzzy_ratio"] == DEFAULT_WAKE_FUZZY_RATIO
+
+    @pytest.mark.unit
+    def test_ratio_is_tight_enough_to_exclude_the_word_care(self):
+        """The exact bug this default fixes: 0.78 woke her on "care"."""
+        from claire.config import get_default_config
+        from claire.listening.wake_detection import is_wake_word_detected
+
+        ratio = get_default_config()["wake_fuzzy_ratio"]
+        assert ratio > 0.8000, "0.78 let the ordinary word 'care' match 'claire'"
+        assert is_wake_word_detected("care", "claire", [], fuzzy_ratio=ratio) is False
+        assert is_wake_word_detected("the coast is clear", "claire", [], fuzzy_ratio=ratio) is False
+
+    @pytest.mark.unit
+    def test_loader_supplies_aliases_when_config_omits_them(self):
+        """A config written before the aliases existed still wakes her."""
+        from claire.config import load_settings
+        from claire.listening.wake_detection import CLAIRE_WAKE_ALIASES
+
+        settings = load_settings()
+        assert settings.wake_aliases == list(CLAIRE_WAKE_ALIASES)
+        assert settings.wake_word == "claire"

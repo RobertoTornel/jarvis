@@ -1,6 +1,7 @@
 from __future__ import annotations
 import io
 import struct
+import sys
 import threading
 import time
 from typing import Optional
@@ -268,18 +269,27 @@ class TunePlayer:
             self._is_playing.clear()
 
     def _play_fallback_tune(self) -> None:
-        """Fallback for environments without a usable audio output."""
+        """Fallback for environments without a usable audio output.
+
+        The spinner goes to *stderr*, never stdout. It is a decorative progress
+        indicator, and stdout is a data channel: `claire ... --json` and
+        `scripts/measure_voice_latency.py --json` emit machine-readable output
+        there. Writing the spinner to stdout corrupted that output whenever the
+        fallback ran (which is exactly what happens on a machine with no usable
+        audio device), producing "Expecting value: line 1 column 3" instead of
+        parseable JSON.
+        """
         patterns = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         i = 0
         while not self._stop_event.is_set():
             try:
                 print(f"\r[claire] {patterns[i % len(patterns)]} processing...",
-                      end="", flush=True)
+                      end="", flush=True, file=sys.stderr)
                 time.sleep(0.2)
                 i += 1
             except Exception:
                 break
         try:
-            print("\r" + " " * 30 + "\r", end="", flush=True)
+            print("\r" + " " * 30 + "\r", end="", flush=True, file=sys.stderr)
         except Exception:
             pass

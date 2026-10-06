@@ -167,6 +167,21 @@ class Settings:
     whisper_min_audio_duration: float
     whisper_min_word_length: int
 
+    # Speech-to-text engine selection (D4)
+    #
+    # Two recognisers with different jobs: `stt_engine` transcribes the turn and
+    # produces the authoritative text; `streaming_stt_engine` is the always-on
+    # recogniser whose output is provisional and used only for wake detection and
+    # pre-wake context. Swapping in a finetuned Parakeet is a change of
+    # `stt_model_path` alone, never a code change.
+    stt_engine: str  # "parakeet" | "faster_whisper"
+    stt_model_path: str  # a *.nemo file, or a directory holding an ONNX export
+    stt_model_kind: str  # "auto" | "nemo" | "onnx"
+    stt_device: str  # "cpu" | "cuda"
+    streaming_stt_engine: str  # "sherpa" | "" (disabled)
+    streaming_stt_model_dir: str
+    streaming_stt_num_threads: int
+
     # Voice Activity Detection (VAD)
     vad_enabled: bool
     vad_aggressiveness: int
@@ -578,8 +593,14 @@ def get_default_config() -> Dict[str, Any]:
 
         # Wake Word Detection
         "wake_word": "claire",
+        # Mirrors CLAIRE_WAKE_ALIASES in listening/wake_detection.py, which is the
+        # single source of truth. It is duplicated here only because that module
+        # imports .debug, which imports this one at module level; a test
+        # (test_wake_defaults_match_detector) pins the two together.
         "wake_aliases": ["clair", "clare", "claira", "claya", "klair", "klare", "claires"],
-        "wake_fuzzy_ratio": 0.78,
+        # Mirrors DEFAULT_WAKE_FUZZY_RATIO. 0.78 was too loose: the ordinary word
+        # "care" matches "claire" at 0.800 and woke her.
+        "wake_fuzzy_ratio": 0.82,
 
         # Whisper Speech Recognition
         "whisper_model": "medium",
@@ -591,6 +612,18 @@ def get_default_config() -> Dict[str, Any]:
         "whisper_no_speech_threshold": 0.5,  # Hard cutoff: reject segments where no_speech_prob >= this
         "whisper_min_audio_duration": 0.15,
         "whisper_min_word_length": 1,
+
+        # Speech-to-text engine selection (D4). Parakeet v2 is the authoritative
+        # recogniser; the streaming zipformer is the always-on listener. An empty
+        # stt_model_path means "not configured", which must surface as a named
+        # error rather than an empty transcript.
+        "stt_engine": "parakeet",
+        "stt_model_path": "",
+        "stt_model_kind": "auto",
+        "stt_device": "cpu",
+        "streaming_stt_engine": "sherpa",
+        "streaming_stt_model_dir": "~/.local/share/claire/models/sherpa-onnx-streaming-zipformer-en-20M",
+        "streaming_stt_num_threads": 2,
 
         # Voice Activity Detection (VAD)
         "vad_enabled": True,
@@ -830,8 +863,16 @@ def load_settings() -> Settings:
     voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
     voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
     wake_word = str(merged.get("wake_word", "claire")).strip().lower()
+    # Imported lazily, not at module level: listening.wake_detection imports
+    # .debug, and .debug imports this module, so a module-level import here
+    # would be an import cycle. By the time load_settings() runs, this module
+    # is fully defined and the import is safe.
+    from .listening.wake_detection import CLAIRE_WAKE_ALIASES, DEFAULT_WAKE_FUZZY_RATIO
+
     wake_aliases = [a.strip().lower() for a in _ensure_list(merged.get("wake_aliases")) if a.strip()]
-    wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", 0.78))
+    if not wake_aliases:
+        wake_aliases = list(CLAIRE_WAKE_ALIASES)
+    wake_fuzzy_ratio = float(merged.get("wake_fuzzy_ratio", DEFAULT_WAKE_FUZZY_RATIO))
     whisper_model = _expand_model_reference(merged.get("whisper_model")) or "medium"
     whisper_backend = os.environ.get("CLAIRE_WHISPER_BACKEND", "").lower() or str(merged.get("whisper_backend", "auto")).lower()
     if whisper_backend not in ("auto", "mlx", "faster-whisper"):
@@ -935,6 +976,21 @@ def load_settings() -> Settings:
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
     whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
+    stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower()
+    if stt_engine not in ("parakeet", "faster_whisper"):
+        stt_engine = "parakeet"
+    stt_model_path = str(merged.get("stt_model_path", "") or "").strip()
+    stt_model_kind = str(merged.get("stt_model_kind", "auto")).strip().lower()
+    if stt_model_kind not in ("auto", "nemo", "onnx"):
+        stt_model_kind = "auto"
+    stt_device = str(merged.get("stt_device", "cpu")).strip().lower()
+    if stt_device not in ("cpu", "cuda"):
+        stt_device = "cpu"
+    streaming_stt_engine = str(merged.get("streaming_stt_engine", "sherpa")).strip().lower()
+    if streaming_stt_engine not in ("sherpa", ""):
+        streaming_stt_engine = "sherpa"
+    streaming_stt_model_dir = str(merged.get("streaming_stt_model_dir", "") or "").strip()
+    streaming_stt_num_threads = int(merged.get("streaming_stt_num_threads", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
     llm_tools_timeout_sec = float(merged.get("llm_tools_timeout_sec", 300.0))
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
@@ -1021,6 +1077,13 @@ def load_settings() -> Settings:
         whisper_no_speech_threshold=whisper_no_speech_threshold,
         whisper_min_audio_duration=whisper_min_audio_duration,
         whisper_min_word_length=whisper_min_word_length,
+        stt_engine=stt_engine,
+        stt_model_path=stt_model_path,
+        stt_model_kind=stt_model_kind,
+        stt_device=stt_device,
+        streaming_stt_engine=streaming_stt_engine,
+        streaming_stt_model_dir=streaming_stt_model_dir,
+        streaming_stt_num_threads=streaming_stt_num_threads,
 
         # Voice Activity Detection (VAD)
         vad_enabled=vad_enabled,
