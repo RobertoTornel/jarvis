@@ -607,3 +607,94 @@ The general lesson, recorded because it recurred: **a command run with a helper
 environment variable is not evidence about how the program behaves by default.**
 `PYTHONPATH=src` made a broken install look like a working one for the whole
 build.
+
+## What running the real service found that no test did
+
+Every "wired" claim in this document was made against unit tests and direct
+calls. Installing Claire as a systemd user service and starting her found three
+faults in the first two minutes, two of them serious, and one that invalidates a
+claim made earlier in this file.
+
+### 1. Claire could not see her own API key (fixed)
+
+`default_env_file()` returns `/home/mana/.config/claire/claire.env`, and the
+self-check, the acceptance scoreboard and every error message tell the owner to
+put the key there. `config.py` called a bare `load_dotenv()`, which looks for
+`./.env` in the current working directory. Nothing ever opened that file. Fixed
+by loading it explicitly, with `override=False` so a real environment variable
+still wins. Fail-proven both ways.
+
+### 2. The daemon never passed its config to the TTS factory (fixed)
+
+`create_tts_engine` takes `config`, documented as "supplies the defaults", and
+the one caller omitted it. The Fish branch resolves its voice id, key file,
+latency and model through `getattr(config, attr, None)`, so every one of those
+fell back to `None`. The engine was built with no voice id and `start()` then
+refused, correctly, per N10:
+
+    FishConfigError: Fish Audio voice id is not configured for key file '...'
+
+**So Claire had no voice at all when run as a daemon.** The Fish *client* worked
+perfectly when called directly, which is precisely why every client-level test
+passed and why the acceptance scoreboard listed TTS as merely unmeasured rather
+than broken. Fixed with one argument, and pinned by five tests whose fail-proof
+run shows four going RED when the argument is removed.
+
+### 3. The daemon does not use the new speech recognisers at all (UNFIXED)
+
+This contradicts an earlier claim in this file and needs to be stated plainly.
+
+Wave 1 built the two-recogniser design: a streaming sherpa model for provisional
+text and wake detection, and Parakeet as the authoritative recogniser. Those
+modules exist, are unit-tested, and `create_stt_engine()` returns a working
+`ParakeetNemoEngine` that transcribes real speech correctly. **The daemon never
+calls it.** `listener.py` imports `faster_whisper`/`mlx_whisper` directly and
+runs the upstream Whisper pipeline, and `daemon.py` still prints
+`🎤 Using whisper model: medium`.
+
+So the running system ignores `stt_engine`, ignores `stt_model_path`, and
+ignores the 2.4 GB Parakeet model that was downloaded for it. What actually ran
+was Whisper `medium`, which then failed to load because the unit's
+`ProtectHome=read-only` stops HuggingFace writing its cache:
+
+    ❌ Failed to load Whisper model: Whisper model download download: OSError
+    Read-only file system: '/home/mana/.cache/huggingface'
+
+The unit is honest about this and Claire stays up, but she currently cannot
+hear. This is the same class of mistake as the un-wired `build_system_prompt`
+router in Wave 2: **a tested seam is not a wired feature, and only running the
+real program shows the difference.**
+
+### What the service did get right
+
+With those two fixes the unit installs, enables and starts, and reports:
+
+    ✅ TTS engine started
+    ✓ Dialogue memory initialized
+    🧠 Using chat model: cmd/deepseek/deepseek-v4.1-flash
+    📡 No MCP servers configured
+
+### Also verified by hand
+
+- **tesseract 5.3.4 installed**: the `ocr` capability moved from BLOCKED to
+  READY, and `read_screen()` read 184 characters off the real display.
+- **A webcam appeared.** The W4DS device is a UVC camera as well as a
+  microphone; `/dev/video0` now exists. The camera test that asserted "this
+  machine has no camera" was asserting machine state and went red for a good
+  reason; it now pins behaviour against an empty device directory instead.
+- **The microphone captures real audio** (peak 0.27, rms 0.022) and Parakeet
+  transcribed live speech accurately in ~1.1 s. But the wake phrase itself was
+  never captured: two attempts picked up unrelated room audio and a third was
+  silent. **Acoustic wake detection therefore remains UNPROVEN.** The detection
+  logic is fine - three control phrases all return True - so this is a capture
+  problem, not a detection one, and it is reported as unproven rather than
+  passed.
+
+### Dependency change, and its cost
+
+Installing `nemo_toolkit[asr]` (required to load the `.nemo` Parakeet model)
+upgraded `huggingface_hub` 0.36.2 → 1.33.0 and `transformers` 4.46.3 → 5.19.0.
+`transformers` 5.19 and `datasets` 5.1 both require `huggingface_hub>=1.31`, so
+this cannot be pinned back. Two tests in `test_log_progress.py` patched Hub
+internals that no longer exist (`_request_wrapper`, `refresh_xet_connection_info`)
+and were updated to the 1.x seams; the suite is green again at 3359 passed.

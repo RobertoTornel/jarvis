@@ -116,10 +116,18 @@ def _no_router_key(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_this_machine_has_no_camera_and_empty_is_the_tested_default():
-    devices = camera.detect_cameras()
-    assert devices == []
-    assert list(devices) == []
+def test_a_machine_with_no_video_devices_yields_an_empty_list(tmp_path):
+    """No video devices is a valid answer, and must not crash or invent one.
+
+    This test used to assert the *machine's* state - "this one has no camera" -
+    by calling ``detect_cameras()`` with no arguments and asserting ``[]``. That
+    became false the moment a USB webcam was plugged in, and it would then fail
+    for a reason that was entirely good news. Machine state belongs in the
+    acceptance scoreboard, which reports it with context; a unit test should pin
+    behaviour, so this points the scan at an empty directory instead.
+    """
+    assert camera.detect_cameras(tmp_path) == []
+    assert list(camera.detect_cameras(tmp_path)) == []
 
 
 def test_detect_cameras_reads_devices_and_sysfs_metadata(tmp_path):

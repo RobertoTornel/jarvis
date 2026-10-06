@@ -145,13 +145,25 @@ def test_slow_download_does_not_fake_progress(qapp, monkeypatch):
 
 
 def test_native_hub_byte_progress_reaches_non_terminal_desktop(monkeypatch):
-    """Exercise the installed Hub HTTP transport without network or model data."""
+    """Exercise the installed Hub HTTP transport without network or model data.
+
+    Note on the seam: this patches whatever request helper the *installed*
+    ``huggingface_hub`` actually uses. On 0.36 that was ``_request_wrapper``; on
+    1.x the symbol is gone and ``http_get`` enters ``http_stream_backoff`` as a
+    context manager instead. The upgrade was not optional - ``transformers`` and
+    ``datasets`` both require ``huggingface_hub>=1.31`` - so the test follows the
+    library rather than pinning the library to the test.
+    """
     from desktop_app import app  # Configures non-terminal progress before daemon launch.
     from huggingface_hub.file_download import http_get
-    from unittest.mock import Mock
+    from unittest.mock import MagicMock, Mock
     response = Mock(status_code=200, headers={"Content-Length": "1000000"})
-    response.iter_content.return_value = [b"x" * 1_000_000]
-    monkeypatch.setattr("huggingface_hub.file_download._request_wrapper", lambda **kw: response)
+    # 1.x streams through iter_bytes(chunk_size=...); 0.36 used iter_content().
+    response.iter_bytes.return_value = [b"x" * 1_000_000]
+    backoff = MagicMock()
+    backoff.__enter__.return_value = response
+    backoff.__exit__.return_value = False
+    monkeypatch.setattr("huggingface_hub.file_download.http_stream_backoff", lambda **kw: backoff)
     lines = []
     monkeypatch.setattr("sys.stderr", LogStream(lines.append))
     destination = io.BytesIO()
@@ -223,24 +235,65 @@ def test_subprocess_carriage_returns_reach_progress_card(qapp):
 
 
 def test_native_xet_byte_progress_reaches_desktop(monkeypatch, tmp_path):
-    """The large-file transport reports bytes as well as ordinary HTTP."""
+    """The large-file transport reports bytes as well as ordinary HTTP.
+
+    Follows the same rule as the HTTP test above: fake whatever the *installed*
+    hub actually calls. In 0.36 ``xet_get`` took a ``progress_updater`` list and
+    a bare ``hf_xet.download_files``; 1.x drives a real session and a download
+    group, imports ``refresh_xet_connection_info`` from ``utils._xet`` at call
+    time, and hands the reporter to ``start_download_file`` as
+    ``progress_callback``. The library's own ``XetDownloadProgressReporter`` is
+    left real on purpose - it is the thing whose output our desktop logger has to
+    render, so faking it would test nothing.
+    """
     from desktop_app import app
     from huggingface_hub.file_download import xet_get
     from types import SimpleNamespace
     import sys
+
     connection = SimpleNamespace(endpoint='unused', access_token='unused', expiration_unix_epoch=0)
-    monkeypatch.setattr('huggingface_hub.file_download.refresh_xet_connection_info', lambda **kw: connection)
-    def download_files(*args, **kwargs):
-        kwargs['progress_updater'][0](250_000)
-        kwargs['progress_updater'][0](750_000)
+    monkeypatch.setattr('huggingface_hub.utils._xet.refresh_xet_connection_info', lambda **kw: connection)
+
+    class _FakeGroup:
+        def __init__(self, callback):
+            self._callback = callback
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def start_download_file(self, file_info, path):
+            # Report the same two byte counts the old API reported.
+            for done in (250_000, 1_000_000):
+                self._callback(SimpleNamespace(
+                    total_bytes_completed=done,
+                    total_transfer_bytes_completed=done,
+                    total_bytes=1_000_000,
+                    total_bytes_completion_rate=1_000_000.0,
+                    total_transfer_bytes_completion_rate=1_000_000.0,
+                ))
+
+    class _FakeSession:
+        def new_file_download_group(self, **kwargs):
+            # 1.x hands the reporter in here, not to start_download_file.
+            return _FakeGroup(kwargs.get('progress_callback'))
+
+    monkeypatch.setattr('huggingface_hub.utils._xet.get_xet_session', lambda: _FakeSession())
     monkeypatch.setitem(sys.modules, 'hf_xet', SimpleNamespace(
-        PyXetDownloadInfo=lambda **kwargs: kwargs, download_files=download_files,
+        XetFileInfo=lambda file_hash, file_size=None: SimpleNamespace(file_hash=file_hash, file_size=file_size),
     ))
     lines = []
     monkeypatch.setattr('sys.stderr', LogStream(lines.append))
     xet_get(incomplete_path=tmp_path / 'weights.incomplete',
-            xet_file_data=SimpleNamespace(file_hash='unused'), headers={},
+            xet_file_data=SimpleNamespace(file_hash='unused', refresh_route=None), headers={},
             expected_size=1_000_000, displayed_filename='weights.npz')
     progress = [parse_progress(line) for line in lines if parse_progress(line)]
     assert progress[-1].percent == 100
-    assert '1.00M/1.00M' in progress[-1].detail
+    # Assert the byte count reached the desktop without pinning the library's
+    # cosmetics: 1.x renders "1.00MB / 1.00MB, 1.00MB/s" where 0.36 rendered
+    # "1.00M/1.00M". The property that matters is that both the total and the
+    # completed count arrive, not the exact spacing around them.
+    assert '1.00M' in progress[-1].detail
+    assert progress[-1].detail.count('1.00M') >= 2

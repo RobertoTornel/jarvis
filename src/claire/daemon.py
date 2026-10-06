@@ -100,6 +100,12 @@ def _initialize_tts_engine(cfg) -> Optional[Any]:
             engine=engine_name,
             enabled=cfg.tts_enabled,
             voice=cfg.tts_voice,
+            # ``config`` supplies every Fish default (voice id, key file, latency,
+            # model). Without it each `_fish_option` fallback reads from None, so
+            # the engine is built with no voice id and `start()` then refuses -
+            # correctly, per N10, and Claire ends up silent. This one argument is
+            # the difference between Fish working and Fish never working.
+            config=cfg,
             rate=cfg.tts_rate,
             # Chatterbox parameters
             device=cfg.tts_chatterbox_device,

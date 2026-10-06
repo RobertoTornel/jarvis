@@ -721,9 +721,45 @@ def export_example_config(include_db_path: bool = False) -> Dict[str, Any]:
     return config
 
 
+def runtime_env_file() -> Path:
+    """The 0600 file that holds Claire's runtime secrets, such as the API key.
+
+    This is the path the systemd unit loads via ``EnvironmentFile=`` and the
+    path the self-check, the acceptance scoreboard and every "where do I put the
+    key" error message point the owner at. ``$CLAIRE_ENV_FILE`` overrides it, and
+    otherwise ``$XDG_CONFIG_HOME`` is honoured before the ``~/.config`` default,
+    matching :func:`claire.platform.service.default_env_file`.
+    """
+    explicit = os.environ.get("CLAIRE_ENV_FILE")
+    if explicit:
+        return Path(explicit).expanduser()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "claire" / "claire.env"
+    return Path.home() / ".config" / "claire" / "claire.env"
+
+
+def load_runtime_env() -> None:
+    """Read the runtime env file into ``os.environ``, without overriding it.
+
+    Regression: this used to be a bare ``load_dotenv()`` with no path, which
+    looks in the *current working directory* for ``./.env``. So every diagnostic
+    told the owner to put the key in ``~/.config/claire/claire.env`` while the
+    loader never opened that file - the advice and the behaviour disagreed, and
+    the only way the key ever arrived was a harness that sourced the file itself
+    or a systemd unit that set it. ``override=False`` throughout: a real
+    environment variable always outranks the file, so a one-off
+    ``OMNIROUTE_API_KEY=... python -m claire`` still wins.
+    """
+    load_dotenv(override=False)
+    path = runtime_env_file()
+    if path.is_file():
+        load_dotenv(path, override=False)
+
+
 def load_settings() -> Settings:
     # Load environment for debug toggles and optional config file path only
-    load_dotenv(override=False)
+    load_runtime_env()
 
     # Resolve config path
     cfg_path_env = os.environ.get("CLAIRE_CONFIG_PATH")
