@@ -3,7 +3,7 @@ import pytest
 
 from evals.helpers import voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply.enrichment import digest_loop_for_max_turns
+from claire.reply.enrichment import digest_loop_for_max_turns
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 CASES = [

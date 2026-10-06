@@ -7,15 +7,15 @@ import textwrap
 
 import pytest
 
-from jarvis.memory.db import Database
-from jarvis.utils.vector_store import PythonVectorStore
+from claire.memory.db import Database
+from claire.utils.vector_store import PythonVectorStore
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def diary(tmp_path, monkeypatch):
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store', lambda path, dimension: PythonVectorStore(path))
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store', lambda path, dimension: PythonVectorStore(path))
     db = Database(str(tmp_path / 'diary.db'))
     db._python_vector_store = PythonVectorStore(db.db_path)
     yield db
@@ -67,9 +67,9 @@ def test_sqlite_vss_keyword_ranking(tmp_path):
     result = subprocess.run([sys.executable, '-c', textwrap.dedent('''
         import json, sys, sqlite_vss
         from unittest.mock import patch
-        from jarvis.memory.db import Database
-        from jarvis.utils.vector_store import PythonVectorStore
-        with patch('jarvis.utils.vector_store.get_best_vector_store', side_effect=lambda path, dimension: PythonVectorStore(path)):
+        from claire.memory.db import Database
+        from claire.utils.vector_store import PythonVectorStore
+        with patch('claire.utils.vector_store.get_best_vector_store', side_effect=lambda path, dimension: PythonVectorStore(path)):
             diary = Database(sys.argv[1])
         diary.conn.enable_load_extension(True)
         sqlite_vss.load(diary.conn)
@@ -107,7 +107,7 @@ def test_unicode_keyword_match_participates_in_hybrid_ranking(diary, word):
 
 def test_multilingual_keywords_keep_or_recall_without_embeddings(diary):
     from types import SimpleNamespace
-    from jarvis.memory.conversation import search_conversation_memory_by_keywords
+    from claire.memory.conversation import search_conversation_memory_by_keywords
     diary.upsert_conversation_summary('2026-01-01', '京都')
     diary.upsert_conversation_summary('2026-01-02', 'cycling')
     diary.upsert_conversation_summary('2026-02-01', 'Unrelated recent notes')

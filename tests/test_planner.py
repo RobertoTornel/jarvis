@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.reply import planner as planner_mod
-from jarvis.reply.planner import (
+from claire.reply import planner as planner_mod
+from claire.reply.planner import (
     MAX_STEPS,
     SEARCH_MEMORY_DIRECTIVE,
     _is_trivial_plan,
@@ -98,24 +98,24 @@ class TestPlannerModelTier:
     follows, so the two must be matched — never the fast model."""
 
     def test_tracks_chat_model(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = _cfg(ollama_chat_model="gemma4:e2b")
         assert resolve_model(cfg, Tier.CHAT) == "gemma4:e2b"
 
     def test_ignores_fast_model(self):
         # Planner must track the chat model — not the fast tier. Upgrading
         # the chat model through setup must upgrade the planner too.
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = _cfg(fast_model="router-x", ollama_chat_model="chat-y")
         assert resolve_model(cfg, Tier.CHAT) == "chat-y"
 
     def test_upgrading_chat_model_upgrades_planner(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = _cfg(ollama_chat_model="gpt-oss:20b")
         assert resolve_model(cfg, Tier.CHAT) == "gpt-oss:20b"
 
     def test_returns_empty_when_no_candidates(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = _cfg(ollama_chat_model="")
         assert resolve_model(cfg, Tier.CHAT) == ""
 

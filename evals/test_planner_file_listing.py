@@ -5,9 +5,9 @@ import pytest
 
 from evals.helpers import voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply.planner import plan_query, resolve_next_tool_call, tool_steps_of
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.local_files import LocalFilesTool
+from claire.reply.planner import plan_query, resolve_next_tool_call, tool_steps_of
+from claire.tools.base import ToolContext
+from claire.tools.builtin.local_files import LocalFilesTool
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 CASES = [

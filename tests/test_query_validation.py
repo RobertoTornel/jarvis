@@ -11,7 +11,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 import time
 
-from jarvis.listening.wake_detection import is_wake_word_detected
+from claire.listening.wake_detection import is_wake_word_detected
 
 
 class TestWakeWordValidation:
@@ -22,26 +22,26 @@ class TestWakeWordValidation:
     2. Intent judge says directed=true
     """
 
-    def test_wake_word_detected_with_jarvis(self):
-        """Wake word detection finds 'jarvis' in text."""
-        text = "hey jarvis what time is it"
-        assert is_wake_word_detected(text, "jarvis", []) is True
+    def test_wake_word_detected_with_claire(self):
+        """Wake word detection finds 'claire' in text."""
+        text = "hey claire what time is it"
+        assert is_wake_word_detected(text, "claire", []) is True
 
     def test_wake_word_detected_with_alias(self):
         """Wake word detection finds alias."""
         text = "hey assistant what time is it"
-        assert is_wake_word_detected(text, "jarvis", ["assistant"]) is True
+        assert is_wake_word_detected(text, "claire", ["assistant"]) is True
 
     def test_wake_word_not_detected_without_wake_word(self):
         """Wake word detection returns False when no wake word present."""
         text = "how are you"
-        assert is_wake_word_detected(text, "jarvis", []) is False
+        assert is_wake_word_detected(text, "claire", []) is False
 
     def test_wake_word_not_detected_similar_but_different(self):
         """Wake word detection doesn't match similar words."""
         text = "I was jarring some preserves"
-        # "jarring" is similar to "jarvis" but should not match with high threshold
-        assert is_wake_word_detected(text, "jarvis", [], fuzzy_ratio=0.9) is False
+        # "jarring" is similar to "claire" but should not match with high threshold
+        assert is_wake_word_detected(text, "claire", [], fuzzy_ratio=0.9) is False
 
     def test_bug_scenario_no_wake_word_in_query(self):
         """
@@ -49,7 +49,7 @@ class TestWakeWordValidation:
         but there's no wake word - this should be rejected in wake word mode.
         """
         text = "how are you"
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         # In wake word mode (not hot window), we need to verify wake word
@@ -58,13 +58,13 @@ class TestWakeWordValidation:
         if not could_be_hot_window:
             # Check if wake word is present
             has_wake_word = is_wake_word_detected(text, wake_word, aliases)
-            # This should be False - there's no "jarvis" in "how are you"
+            # This should be False - there's no "claire" in "how are you"
             assert has_wake_word is False, "Should reject - no wake word in text"
 
     def test_valid_query_with_wake_word(self):
         """Valid scenario: Wake word is present in the query."""
-        text = "jarvis what's the weather"
-        wake_word = "jarvis"
+        text = "claire what's the weather"
+        wake_word = "claire"
         aliases = []
 
         has_wake_word = is_wake_word_detected(text, wake_word, aliases)
@@ -73,7 +73,7 @@ class TestWakeWordValidation:
     def test_hot_window_mode_no_wake_word_needed(self):
         """In hot window mode, wake word is not required."""
         text = "tell me more"
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         # In hot window mode, we don't check for wake word
@@ -89,18 +89,18 @@ class TestWakeWordValidation:
     def test_wake_word_with_fuzzy_match(self):
         """Fuzzy matching catches slight variations."""
         text = "hey jarv what time is it"  # Slight typo
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
-        # With lower fuzzy ratio (0.7), "jarv" might match "jarvis"
+        # With lower fuzzy ratio (0.7), "jarv" might match "claire"
         result = is_wake_word_detected(text, wake_word, aliases, fuzzy_ratio=0.7)
-        # "jarv" to "jarvis" ratio is about 0.73
+        # "jarv" to "claire" ratio is about 0.73
         assert result is True
 
     def test_wake_word_case_insensitive(self):
         """Wake word detection is case insensitive."""
-        text = "JARVIS what time is it"
-        wake_word = "jarvis"
+        text = "CLAIRE what time is it"
+        wake_word = "claire"
         aliases = []
 
         # Function expects lowercase text
@@ -119,7 +119,7 @@ class TestIntentJudgeWakeWordValidation:
         text_lower = "how are you"
         could_be_hot_window = False  # Wake word mode
         wake_timestamp = None  # No wake word detected by audio detector
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         # Intent judge (incorrectly) returns directed=true
@@ -142,10 +142,10 @@ class TestIntentJudgeWakeWordValidation:
 
     def test_intent_judge_directed_accepted_with_wake_word(self):
         """Intent judge directed=true is accepted when wake word is present."""
-        text_lower = "jarvis what's the weather"
+        text_lower = "claire what's the weather"
         could_be_hot_window = False  # Wake word mode
         wake_timestamp = None  # Doesn't matter, text has wake word
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         intent_judgment_directed = True
@@ -168,7 +168,7 @@ class TestIntentJudgeWakeWordValidation:
         text_lower = "what's the weather"  # Wake word might be trimmed already
         could_be_hot_window = False  # Wake word mode
         wake_timestamp = 1000.5  # Wake word was detected by audio detector
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         intent_judgment_directed = True
@@ -191,7 +191,7 @@ class TestIntentJudgeWakeWordValidation:
         text_lower = "tell me more"
         could_be_hot_window = True  # Hot window mode
         wake_timestamp = None
-        wake_word = "jarvis"
+        wake_word = "claire"
         aliases = []
 
         intent_judgment_directed = True
@@ -243,12 +243,12 @@ class TestWakeTimestampCapture:
         listener._wake_timestamp = None
         listener.tts = None
         listener.cfg = MagicMock()
-        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_word = "claire"
         listener.cfg.wake_aliases = []
         listener.cfg.wake_fuzzy_ratio = 0.78
 
         # Simulate the logic from _process_transcript early beep section
-        text_lower = "jarvis what's the weather tomorrow"
+        text_lower = "claire what's the weather tomorrow"
         utterance_start_time = 1000.5
         in_hot_window = False
 
@@ -268,7 +268,7 @@ class TestWakeTimestampCapture:
         listener = MagicMock()
         listener._wake_timestamp = None
         listener.cfg = MagicMock()
-        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_word = "claire"
         listener.cfg.wake_aliases = []
         listener.cfg.wake_fuzzy_ratio = 0.78
 
@@ -292,11 +292,11 @@ class TestWakeTimestampCapture:
         listener = MagicMock()
         listener._wake_timestamp = None
         listener.cfg = MagicMock()
-        listener.cfg.wake_word = "jarvis"
+        listener.cfg.wake_word = "claire"
         listener.cfg.wake_aliases = []
         listener.cfg.wake_fuzzy_ratio = 0.78
 
-        text_lower = "jarvis what's the weather"
+        text_lower = "claire what's the weather"
         utterance_start_time = 1000.5
         in_hot_window = True
 
@@ -410,8 +410,8 @@ class TestHotWindowQueryValidation:
 
     def test_interrupt_during_tts(self):
         """Interrupt during TTS should work with wake word."""
-        current_segment = "jarvis stop talking"
-        wake_word = "jarvis"
+        current_segment = "claire stop talking"
+        wake_word = "claire"
 
         has_wake_word = is_wake_word_detected(current_segment.lower(), wake_word, [])
         assert has_wake_word is True
@@ -468,7 +468,7 @@ class TestHotWindowEchoRejection:
         """
         # User's real follow-up (no wake word needed in hot window)
         followup_text = "no that's you i was talking to google"
-        wake_word = "jarvis"
+        wake_word = "claire"
 
         # This doesn't have wake word
         has_wake_word = is_wake_word_detected(followup_text, wake_word, [])
@@ -500,15 +500,15 @@ class TestQueryValidationNotUsed:
         """
         FALSE NEGATIVE: Valid synthesized query rejected due to paraphrasing.
 
-        User says: "Jarvis what do you think"
+        User says: "Claire what do you think"
         LLM synthesizes: "share your thoughts on the weather"
         These have almost no word overlap - validation would reject valid query!
         """
-        text = "jarvis what do you think"
+        text = "claire what do you think"
         synthesized_query = "share your thoughts on the weather"
 
         # Remove wake word for fair comparison
-        text_without_wake = text.replace("jarvis", "").strip()
+        text_without_wake = text.replace("claire", "").strip()
 
         # Check 1: substring match
         assert synthesized_query not in text
@@ -528,20 +528,20 @@ class TestQueryValidationNotUsed:
         """
         FALSE NEGATIVE: Valid query with heavy context synthesis rejected.
 
-        Multi-person conversation about iPhone, user asks "Jarvis how much"
+        Multi-person conversation about iPhone, user asks "Claire how much"
         LLM synthesizes: "how much does the new iPhone 15 Pro Max cost in the UK"
         """
-        text = "jarvis how much"
+        text = "claire how much"
         synthesized_query = "how much does the new iPhone 15 Pro Max cost in the UK"
 
-        text_without_wake = text.replace("jarvis", "").strip()  # "how much"
+        text_without_wake = text.replace("claire", "").strip()  # "how much"
 
         # Substring check passes! "how much" is in the query
         assert text_without_wake in synthesized_query
 
         # But what if user said it differently?
-        text2 = "jarvis what's the price"
-        text2_without_wake = text2.replace("jarvis", "").strip()  # "what's the price"
+        text2 = "claire what's the price"
+        text2_without_wake = text2.replace("claire", "").strip()  # "what's the price"
 
         # This would FAIL - different phrasing
         assert text2_without_wake not in synthesized_query
@@ -595,19 +595,19 @@ class TestQueryValidationNotUsed:
         Wake word check is reliable - no false positives or negatives.
 
         If user says "how are you" without wake word:
-        - Wake word check correctly rejects (no "jarvis")
+        - Wake word check correctly rejects (no "claire")
 
-        If user says "jarvis what do you think":
-        - Wake word check correctly accepts (has "jarvis")
+        If user says "claire what do you think":
+        - Wake word check correctly accepts (has "claire")
         - LLM can synthesize any query it wants
         """
         # Case 1: No wake word - correctly rejected
         text_no_wake = "how are you"
-        assert is_wake_word_detected(text_no_wake, "jarvis", []) is False
+        assert is_wake_word_detected(text_no_wake, "claire", []) is False
 
         # Case 2: Has wake word - correctly accepted
-        text_with_wake = "jarvis what do you think"
-        assert is_wake_word_detected(text_with_wake, "jarvis", []) is True
+        text_with_wake = "claire what do you think"
+        assert is_wake_word_detected(text_with_wake, "claire", []) is True
 
         # The LLM can then synthesize: "what do you think about the weather"
         # We trust the LLM's synthesis because the wake word validated user intent

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont
 
-from .themes import JARVIS_THEME_STYLESHEET, COLORS
+from .themes import CLAIRE_THEME_STYLESHEET, COLORS
 
 # IPC protocol prefix - must match daemon.py
 DIARY_IPC_PREFIX = "__DIARY__:"
@@ -52,8 +52,8 @@ class DiaryUpdateDialog(QDialog):
             Qt.WindowType.WindowTitleHint
         )
 
-        # Apply the shared Jarvis theme
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+        # Apply the shared Claire theme
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
@@ -100,7 +100,7 @@ class DiaryUpdateDialog(QDialog):
         layout.addWidget(self.diary_text, stretch=1)
 
         # Hint at bottom
-        hint = QLabel("Please wait while Jarvis saves your conversations...")
+        hint = QLabel("Please wait while Claire saves your conversations...")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint.setObjectName("subtitle")
         layout.addWidget(hint)

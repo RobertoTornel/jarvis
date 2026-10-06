@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-import src.jarvis.output.tts as tts
+import src.claire.output.tts as tts
 
 pytestmark = pytest.mark.unit
 

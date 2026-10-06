@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.memory import conversation
-from jarvis.memory.db import Database
-from jarvis.utils.vector_store import PythonVectorStore
+from claire.memory import conversation
+from claire.memory.db import Database
+from claire.utils.vector_store import PythonVectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -14,7 +14,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(params=['python', 'default'])
 def diary(request, tmp_path, monkeypatch):
     if request.param == 'python':
-        monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store',
+        monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store',
                             lambda path, dimension: PythonVectorStore(path))
     db = Database(str(tmp_path / 'diary.db'))
     yield db

@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 @pytest.mark.integration
 def test_mcp_tools_integrated_with_reply_engine():
     """Test that MCP tools are properly integrated with the reply engine's tool discovery."""
-    from jarvis.tools.registry import discover_mcp_tools, generate_tools_description, BUILTIN_TOOLS
+    from claire.tools.registry import discover_mcp_tools, generate_tools_description, BUILTIN_TOOLS
 
     # Mock MCP client
     class FakeMCPClient:
@@ -27,7 +27,7 @@ def test_mcp_tools_integrated_with_reply_engine():
                 ]
             return []
 
-    with patch('jarvis.tools.registry.MCPClient', FakeMCPClient):
+    with patch('claire.tools.registry.MCPClient', FakeMCPClient):
         # Test discovery
         mcps_config = {"test-server": {"command": "fake"}}
         mcp_tools, _errors = discover_mcp_tools(mcps_config)
@@ -51,7 +51,7 @@ def test_mcp_tools_integrated_with_reply_engine():
 @pytest.mark.integration 
 def test_mcp_tool_execution_in_context():
     """Test MCP tool execution with proper context and error handling."""
-    from jarvis.tools.registry import run_tool_with_retries, ToolExecutionResult
+    from claire.tools.registry import run_tool_with_retries, ToolExecutionResult
     
     class MockDB:
         pass
@@ -69,7 +69,7 @@ def test_mcp_tool_execution_in_context():
         def invoke_tool(self, server_name, tool_name, arguments):
             return {"text": f"Executed {tool_name} on {server_name}", "isError": False}
     
-    with patch('jarvis.tools.registry.MCPClient', FakeMCPClient):
+    with patch('claire.tools.registry.MCPClient', FakeMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
             cfg=MockConfig(),
@@ -88,7 +88,7 @@ def test_mcp_tool_execution_in_context():
 @pytest.mark.integration
 def test_mcp_error_handling_in_context():
     """Test that MCP errors are properly handled in execution context."""
-    from jarvis.tools.registry import run_tool_with_retries
+    from claire.tools.registry import run_tool_with_retries
     
     class MockDB:
         pass
@@ -106,7 +106,7 @@ def test_mcp_error_handling_in_context():
         def invoke_tool(self, server_name, tool_name, arguments):
             return {"text": "Tool failed", "isError": True}
     
-    with patch('jarvis.tools.registry.MCPClient', FailingMCPClient):
+    with patch('claire.tools.registry.MCPClient', FailingMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
             cfg=MockConfig(),
@@ -129,7 +129,7 @@ def test_mcp_exception_with_empty_message_still_yields_diagnosable_error():
     trailing colon — callers need at least the exception type name to
     diagnose the failure from the log line alone.
     """
-    from jarvis.tools.registry import run_tool_with_retries
+    from claire.tools.registry import run_tool_with_retries
 
     class MockDB:
         pass
@@ -146,7 +146,7 @@ def test_mcp_exception_with_empty_message_still_yields_diagnosable_error():
         def invoke_tool(self, server_name, tool_name, arguments):
             raise TimeoutError()  # empty str(e), as raised on a bare invoke timeout
 
-    with patch('jarvis.tools.registry.MCPClient', TimingOutMCPClient):
+    with patch('claire.tools.registry.MCPClient', TimingOutMCPClient):
         result = run_tool_with_retries(
             db=MockDB(),
             cfg=MockConfig(),

@@ -1,5 +1,5 @@
 import pytest
-from jarvis.config import get_default_config, load_settings
+from claire.config import get_default_config, load_settings
 
 
 @pytest.mark.unit
@@ -28,7 +28,7 @@ def test_load_settings_normalizes_mcps(monkeypatch, tmp_path):
     )
 
     # Point loader to our temporary config
-    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+    monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
     s = load_settings()
     assert isinstance(s.mcps, dict)
     assert "fs" in s.mcps

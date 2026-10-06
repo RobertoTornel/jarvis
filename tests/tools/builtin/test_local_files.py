@@ -6,9 +6,9 @@ import tempfile
 import os
 from pathlib import Path
 
-from src.jarvis.tools.builtin.local_files import LocalFilesTool
-from src.jarvis.tools.base import ToolContext
-from src.jarvis.tools.types import ToolExecutionResult
+from src.claire.tools.builtin.local_files import LocalFilesTool
+from src.claire.tools.base import ToolContext
+from src.claire.tools.types import ToolExecutionResult
 
 
 class TestLocalFilesTool:

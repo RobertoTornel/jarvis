@@ -1,5 +1,5 @@
 """
-⚙️ Jarvis Settings Window
+⚙️ Claire Settings Window
 
 Auto-generated settings UI driven by config metadata.
 Reads/writes config.json directly and groups settings by category.
@@ -22,12 +22,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QFont
 
-from jarvis.config import (
+from claire.config import (
     get_default_config, load_config,
     default_config_path, _save_json, _load_json,
     SUPPORTED_CHAT_MODELS,
 )
-from jarvis.debug import debug_log
+from claire.debug import debug_log
 from desktop_app.themes import apply_theme
 from desktop_app.mcp_catalogue import CATALOGUE, CATALOGUE_BY_NAME, MCPEntry
 
@@ -84,23 +84,6 @@ def _is_default_value(val: Any, default_val: Any) -> bool:
     if val == default_val:
         return True
     return val is None and default_val in (None, "")
-
-
-def _dictation_hotkey_choices() -> list:
-    """Build platform-aware dictation hotkey dropdown choices."""
-    from jarvis.dictation.dictation_engine import format_hotkey_display
-    from jarvis.config import _default_dictation_hotkey
-    default = _default_dictation_hotkey()
-    options = [
-        ("ctrl+alt", format_hotkey_display("ctrl+alt")),
-        ("ctrl+cmd", format_hotkey_display("ctrl+cmd")),
-        ("ctrl+shift+d", format_hotkey_display("ctrl+shift+d")),
-        ("ctrl+shift", format_hotkey_display("ctrl+shift")),
-    ]
-    return [
-        (val, f"{label} (default)" if val == default else label)
-        for val, label in options
-    ]
 
 
 def _build_field_metadata() -> List[FieldMeta]:
@@ -236,7 +219,7 @@ def _build_field_metadata() -> List[FieldMeta]:
 
     # --- Wake Word ---
     f("wake_word", "Wake Word",
-      "Primary wake word to activate Jarvis",
+      "Primary wake word to activate Claire",
       "wake", "str")
     f("wake_fuzzy_ratio", "Fuzzy Match Ratio",
       "How loosely to match the wake word (0.0–1.0)",
@@ -362,21 +345,6 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("tune_enabled", "Startup Tune",
       "Play startup sound",
       "features", "bool")
-    f("dictation_enabled", "Dictation Mode",
-      "Hold a hotkey to record speech, release to paste transcription into any app",
-      "features", "bool")
-    f("dictation_hotkey", "Dictation Hotkey",
-      "Key combination to hold for dictation. Double-tap for hands-free mode.",
-      "features", "choice", choices=_dictation_hotkey_choices())
-    f("dictation_filler_removal", "Filler Word Removal",
-      "Use the local LLM to remove filler words (um, uh, like) from dictation output",
-      "features", "bool")
-    f("dictation_thinking_enabled", "Dictation Thinking Mode",
-      "Let the LLM think when cleaning dictation (adds latency after each dictation)",
-      "features", "bool")
-    f("dictation_custom_dictionary", "Custom Dictionary",
-      "Correction rules for dictation. Use 'wrong -> right' format (e.g. 'Jarvice -> Jarvis')",
-      "features", "list")
 
     # --- Advanced ---
     f("echo_energy_threshold", "Echo Energy Threshold",
@@ -426,7 +394,7 @@ class SettingsWindow(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("⚙️ Jarvis Settings")
+        self.setWindowTitle("⚙️ Claire Settings")
         self.setMinimumSize(780, 560)
         self.resize(840, 620)
         self._widgets: Dict[str, Any] = {}  # key -> widget
@@ -450,7 +418,7 @@ class SettingsWindow(QDialog):
         header.setObjectName("title")
         layout.addWidget(header)
 
-        subtitle = QLabel("Changes are saved to config.json. Restart Jarvis to apply.")
+        subtitle = QLabel("Changes are saved to config.json. Restart Claire to apply.")
         subtitle.setObjectName("subtitle")
         layout.addWidget(subtitle)
 
@@ -744,7 +712,7 @@ class SettingsWindow(QDialog):
 
         # Header
         desc = QLabel(
-            "MCP (Model Context Protocol) servers give Jarvis extra tools — "
+            "MCP (Model Context Protocol) servers give Claire extra tools — "
             "file access, web search, databases, and more."
         )
         desc.setWordWrap(True)
@@ -814,7 +782,7 @@ class SettingsWindow(QDialog):
                 display = f"🔌 {name}"
             self._mcp_list.addItem(display)
         if self._mcp_list.count() == 0:
-            self._mcp_detail.setText("No MCP servers configured. Add one to extend Jarvis's capabilities.")
+            self._mcp_detail.setText("No MCP servers configured. Add one to extend Claire's capabilities.")
         else:
             self._mcp_list.setCurrentRow(0)
 
@@ -951,7 +919,7 @@ class SettingsWindow(QDialog):
             debug_log("settings saved to config.json", "settings")
             QMessageBox.information(
                 self, "✅ Saved",
-                "Settings saved. Restart Jarvis for changes to take effect."
+                "Settings saved. Restart Claire for changes to take effect."
             )
             self.accept()
         else:
@@ -1062,7 +1030,7 @@ class _MCPCatalogueDialog(QDialog):
         node_warning = QLabel(
             "⚠️  <b>Node.js not found.</b> Most MCP servers require Node.js. "
             "<a href='https://nodejs.org/' style='color: #f59e0b;'>Download Node.js</a> "
-            "and restart Jarvis to use them."
+            "and restart Claire to use them."
         )
         node_warning.setOpenExternalLinks(True)
         node_warning.setWordWrap(True)
@@ -1157,7 +1125,7 @@ class _MCPCatalogueDialog(QDialog):
     def _is_node_available() -> bool:
         """Check if Node.js (npx) is available on the system."""
         try:
-            from jarvis.tools.external.mcp_client import _resolve_command
+            from claire.tools.external.mcp_client import _resolve_command
             _resolve_command("npx")
             return True
         except (FileNotFoundError, Exception):

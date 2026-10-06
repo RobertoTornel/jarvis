@@ -11,7 +11,7 @@ import pytest
 import re
 
 from evals.tool_routing import requires_judge_llm, route_tools
-from jarvis.llm import get_embedding_backend
+from claire.llm import get_embedding_backend
 
 
 # =============================================================================
@@ -73,8 +73,8 @@ class TestToolSelectionFiltering:
         if not any(name == model or name == model + ":latest" for name in available):
             pytest.skip("🧰 Selected embedding evaluation model is unavailable")
 
-        from jarvis.tools.selection import select_tools, ToolSelectionStrategy
-        from jarvis.tools.registry import BUILTIN_TOOLS
+        from claire.tools.selection import select_tools, ToolSelectionStrategy
+        from claire.tools.registry import BUILTIN_TOOLS
 
         selected = select_tools(
             query=query,
@@ -123,7 +123,7 @@ class TestToolSelectionFilteringLLM:
         must_include,
         max_tools,
     ):
-        from jarvis.tools.registry import BUILTIN_TOOLS
+        from claire.tools.registry import BUILTIN_TOOLS
 
         selected, model_reply = route_tools(mock_config, query)
 

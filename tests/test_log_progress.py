@@ -90,7 +90,7 @@ def test_progress_card_coalesces_updates_and_keeps_errors(qapp):
 
 
 def test_cached_whisper_path_and_loading_message(monkeypatch, capsys, tmp_path):
-    from jarvis.listening.model_download import prepare_mlx_model
+    from claire.listening.model_download import prepare_mlx_model
     import huggingface_hub
     monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **kwargs: str(tmp_path))
     assert prepare_mlx_model("test/whisper") == str(tmp_path)
@@ -100,7 +100,7 @@ def test_cached_whisper_path_and_loading_message(monkeypatch, capsys, tmp_path):
 
 
 def test_download_failure_does_not_claim_model_loaded(monkeypatch, capsys):
-    from jarvis.listening.model_download import prepare_mlx_model
+    from claire.listening.model_download import prepare_mlx_model
     import huggingface_hub
     import pytest
     def fail(**kwargs):
@@ -164,7 +164,7 @@ def test_native_hub_byte_progress_reaches_non_terminal_desktop(monkeypatch):
 
 @pytest.mark.parametrize("known_size", [True, False])
 def test_piper_updates_are_throttled_and_complete(tmp_path, monkeypatch, known_size):
-    from jarvis.output import tts
+    from claire.output import tts
     from unittest.mock import Mock
     response = Mock(headers={"content-length": "1000000"} if known_size else {})
     response.iter_content.side_effect = lambda **kw: iter([b"x" * 1000] * 1000)

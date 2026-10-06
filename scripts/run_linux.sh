@@ -11,6 +11,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 export PYTHONPATH="$REPO_ROOT/src"
-# Allow override via JARVIS_CONFIG_PATH; otherwise use default search path in code
-export JARVIS_VOICE_DEBUG=${JARVIS_VOICE_DEBUG:-0}
-python -m jarvis.daemon
+# Allow override via CLAIRE_CONFIG_PATH; otherwise use default search path in code
+export CLAIRE_VOICE_DEBUG=${CLAIRE_VOICE_DEBUG:-0}
+# Canonical entry point: src/claire/__main__.py -> claire.cli -> claire.daemon
+python -m claire

@@ -92,7 +92,7 @@ def call_nutrition_extraction(
     """
     from types import SimpleNamespace
     from unittest.mock import patch
-    from jarvis.tools.builtin.nutrition import log_meal
+    from claire.tools.builtin.nutrition import log_meal
 
     rows = []
     answers = []
@@ -330,8 +330,8 @@ class TestNutritionToolIntegration:
         """
         Test that LogMealTool properly extracts and stores macros.
         """
-        from jarvis.tools.builtin.nutrition.log_meal import LogMealTool
-        from jarvis.tools.base import ToolContext
+        from claire.tools.builtin.nutrition.log_meal import LogMealTool
+        from claire.tools.base import ToolContext
 
         mock_config = voice_config()
         mock_config.use_stdin = True
@@ -472,7 +472,7 @@ class TestNutritionModelComparison:
 @requires_judge_llm
 def test_logged_meal_has_non_empty_follow_ups():
     """Coaching must emit useful text after its reasoning budget."""
-    from jarvis.tools.builtin.nutrition.log_meal import generate_followups_for_meal
+    from claire.tools.builtin.nutrition.log_meal import generate_followups_for_meal
     followups = generate_followups_for_meal(
         voice_config(), 'grilled chicken with broccoli', '~300 kcal, 35g protein',
     )

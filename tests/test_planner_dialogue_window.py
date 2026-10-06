@@ -2,15 +2,15 @@
 from unittest.mock import patch
 
 import pytest
-from jarvis.reply import engine
-from jarvis.tools.types import ToolExecutionResult
+from claire.reply import engine
+from claire.tools.types import ToolExecutionResult
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize('tool_count', [0, 3, 7])
 def test_followup_entity_survives_native_tool_messages(monkeypatch, mock_config, db, dialogue_memory, tool_count):
-    monkeypatch.setattr('jarvis.reply.planner.call_llm_direct', lambda **kwargs: pytest.fail('🧠 Concrete fixture must not infer'))
+    monkeypatch.setattr('claire.reply.planner.call_llm_direct', lambda **kwargs: pytest.fail('🧠 Concrete fixture must not infer'))
     mock_config.location_enabled = False
     entity = 'Natsume Sōseki'
     dialogue_memory.add_message('user', f'Tell me about {entity}.')

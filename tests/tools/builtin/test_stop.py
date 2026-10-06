@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import Mock
 
-from src.jarvis.tools.builtin.stop import StopTool, STOP_SIGNAL
-from src.jarvis.tools.base import ToolContext
-from src.jarvis.tools.types import ToolExecutionResult
+from src.claire.tools.builtin.stop import StopTool, STOP_SIGNAL
+from src.claire.tools.base import ToolContext
+from src.claire.tools.types import ToolExecutionResult
 
 
 class TestStopTool:
@@ -47,7 +47,7 @@ class TestStopTool:
         """Test that stop signal is a unique value unlikely to be confused with real content."""
         assert STOP_SIGNAL.startswith("__")
         assert STOP_SIGNAL.endswith("__")
-        assert "JARVIS" in STOP_SIGNAL
+        assert "CLAIRE" in STOP_SIGNAL
         assert "STOP" in STOP_SIGNAL
 
 
@@ -56,13 +56,13 @@ class TestStopSignalIntegration:
 
     def test_stop_tool_in_registry(self):
         """Test that stop tool is registered in BUILTIN_TOOLS."""
-        from src.jarvis.tools.registry import BUILTIN_TOOLS
+        from src.claire.tools.registry import BUILTIN_TOOLS
 
         assert "stop" in BUILTIN_TOOLS
         assert isinstance(BUILTIN_TOOLS["stop"], StopTool)
 
     def test_stop_tool_always_available(self):
         """Test that stop tool is available to all profiles via BUILTIN_TOOLS."""
-        from src.jarvis.tools.registry import BUILTIN_TOOLS
+        from src.claire.tools.registry import BUILTIN_TOOLS
 
         assert "stop" in BUILTIN_TOOLS, "stop tool must be in BUILTIN_TOOLS"

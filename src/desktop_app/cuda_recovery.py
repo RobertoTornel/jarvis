@@ -4,7 +4,7 @@ The Inno Setup installer ships a PowerShell script (`install_cuda.ps1`) that
 downloads cuBLAS and cuDNN into `{app}\\cuda`. That step runs once during
 install and may fail silently — slow connections truncate the 643 MB cuDNN
 wheel, AV quarantines the unsigned engines DLL, the user dismisses a UAC
-prompt. When that happens the runtime probe in `jarvis.listening.listener`
+prompt. When that happens the runtime probe in `claire.listening.listener`
 falls back to CPU and the only documented fix used to be "reinstall the app",
 which doesn't help because the `.cuda_installed` marker tricks the installer
 into skipping the CUDA step.
@@ -144,7 +144,7 @@ def _quote_arg(arg: str) -> str:
 def run_action(action: CudaRecoveryAction) -> bool:
     """Launch the recovery script with UAC elevation.
 
-    `install_cuda.ps1` writes into `Program Files\\Jarvis\\cuda`, which a
+    `install_cuda.ps1` writes into `Program Files\\Claire\\cuda`, which a
     standard user account cannot write to. ShellExecuteW with the `runas`
     verb triggers the UAC prompt; without it the script silently fails
     its first file write and the user is no better off than before.

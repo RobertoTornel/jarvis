@@ -3,13 +3,13 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from jarvis.listening.intent_judge import (
+from claire.listening.intent_judge import (
     IntentJudge,
     IntentJudgeConfig,
     IntentJudgment,
     create_intent_judge,
 )
-from jarvis.listening.transcript_buffer import TranscriptSegment
+from claire.listening.transcript_buffer import TranscriptSegment
 
 
 class TestIntentJudgeConfig:
@@ -18,7 +18,7 @@ class TestIntentJudgeConfig:
     def test_default_config(self):
         """Default config has reasonable values."""
         config = IntentJudgeConfig()
-        assert config.assistant_name == "Jarvis"
+        assert config.assistant_name == "Claire"
         assert config.model == "gemma4:e2b"
         assert config.timeout_sec == 15.0
         assert config.aliases == []
@@ -59,7 +59,7 @@ class TestIntentJudge:
     def test_init(self):
         """Can initialize intent judge."""
         judge = IntentJudge()
-        assert judge.config.assistant_name == "Jarvis"
+        assert judge.config.assistant_name == "Claire"
 
     def test_init_with_config(self):
         """Can initialize with custom config."""
@@ -92,7 +92,7 @@ class TestIntentJudge:
         """User prompt includes transcript."""
         judge = IntentJudge()
         segments = [
-            TranscriptSegment("hello jarvis", 1000.0, 1001.0),
+            TranscriptSegment("hello claire", 1000.0, 1001.0),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -101,7 +101,7 @@ class TestIntentJudge:
             last_tts_finish_time=0.0,
             in_hot_window=False,
         )
-        assert "hello jarvis" in prompt
+        assert "hello claire" in prompt
 
     def test_build_user_prompt_hot_window(self):
         """User prompt indicates hot window mode."""
@@ -121,7 +121,7 @@ class TestIntentJudge:
     def test_build_user_prompt_normalises_aliases(self):
         """Aliases (Whisper variants) are replaced with the assistant name in the prompt."""
         config = IntentJudgeConfig(
-            assistant_name="Jarvis",
+            assistant_name="Claire",
             aliases=["jervis", "jaivis", "jar is"],
         )
         judge = IntentJudge(config)
@@ -141,11 +141,11 @@ class TestIntentJudge:
         assert "Jaivis" not in prompt
         assert "Jar is" not in prompt
         # Each aliased segment is rewritten to use the primary wake word.
-        assert prompt.count("Jarvis") >= 3
+        assert prompt.count("Claire") >= 3
 
     def test_build_user_prompt_alias_word_boundary(self):
         """Alias normalisation respects word boundaries (won't eat substrings)."""
-        config = IntentJudgeConfig(assistant_name="Jarvis", aliases=["jar"])
+        config = IntentJudgeConfig(assistant_name="Claire", aliases=["jar"])
         judge = IntentJudge(config)
         segments = [
             TranscriptSegment("put the jar on the table", 1000.0, 1001.0),
@@ -159,7 +159,7 @@ class TestIntentJudge:
         )
         # "jar" as a standalone word still gets normalised — that's expected
         # given the user configured it as an alias.
-        assert "Jarvis" in prompt
+        assert "Claire" in prompt
         # But "jarring" would NOT be replaced if it appeared.
         segments2 = [TranscriptSegment("the noise was jarring", 1000.0, 1001.0)]
         prompt2 = judge._build_user_prompt(
@@ -170,11 +170,11 @@ class TestIntentJudge:
             in_hot_window=False,
         )
         assert "jarring" in prompt2
-        assert "Jarvisring" not in prompt2
+        assert "Clairering" not in prompt2
 
     def test_build_user_prompt_no_aliases_unchanged(self):
         """With no aliases configured, segment text is passed through unchanged."""
-        config = IntentJudgeConfig(assistant_name="Jarvis", aliases=[])
+        config = IntentJudgeConfig(assistant_name="Claire", aliases=[])
         judge = IntentJudge(config)
         segments = [TranscriptSegment("Jervis what time", 1000.0, 1001.0)]
         prompt = judge._build_user_prompt(
@@ -260,10 +260,10 @@ class TestIntentJudge:
         }
 
         segments = [
-            TranscriptSegment("jarvis what time is it", 1000.0, 1002.0),
+            TranscriptSegment("claire what time is it", 1000.0, 1002.0),
         ]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend', return_value=backend):
+        with patch('claire.listening.intent_judge.get_llm_backend', return_value=backend):
             result = judge.judge(
                 segments,
                 wake_timestamp=1000.5,
@@ -288,9 +288,9 @@ class TestIntentJudge:
                 "content": '{"directed": true, "query": "time", "stop": false, "confidence": "high", "reasoning": "ok"}'
             }
         }
-        segments = [TranscriptSegment("jarvis time", 1000.0, 1001.0)]
+        segments = [TranscriptSegment("claire time", 1000.0, 1001.0)]
 
-        with patch("jarvis.listening.intent_judge.get_llm_backend", return_value=backend):
+        with patch("claire.listening.intent_judge.get_llm_backend", return_value=backend):
             judge.judge(segments)
 
         extra_options = backend.chat.call_args.kwargs["extra_options"]
@@ -308,9 +308,9 @@ class TestIntentJudge:
                 "content": '{"directed": true, "query": "time", "stop": false, "confidence": "high", "reasoning": "ok"}'
             }
         }
-        segments = [TranscriptSegment("jarvis time", 1000.0, 1001.0)]
+        segments = [TranscriptSegment("claire time", 1000.0, 1001.0)]
 
-        with patch("jarvis.listening.intent_judge.get_llm_backend", return_value=backend):
+        with patch("claire.listening.intent_judge.get_llm_backend", return_value=backend):
             judge.judge(segments)
 
         extra_options = backend.chat.call_args.kwargs["extra_options"]
@@ -324,7 +324,7 @@ class TestIntentJudge:
 
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend', return_value=backend):
+        with patch('claire.listening.intent_judge.get_llm_backend', return_value=backend):
             result = judge.judge(segments)
 
         assert result is None
@@ -335,7 +335,7 @@ class TestIntentJudge:
         judge = IntentJudge()
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             _gb.return_value.chat.return_value = None
             result = judge.judge(segments)
 
@@ -356,7 +356,7 @@ class TestIntentJudge:
 
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             _gb.return_value.chat.return_value = None
             judge.judge(segments)
 
@@ -374,7 +374,7 @@ class TestIntentJudge:
 
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             _gb.return_value.chat.return_value = None
             judge.judge(segments)
 
@@ -394,7 +394,7 @@ class TestIntentJudge:
 
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             import requests as _rq
             _gb.return_value.chat.side_effect = _rq.ConnectionError("refused")
             judge.judge(segments)
@@ -412,7 +412,7 @@ class TestIntentJudge:
         judge = IntentJudge()
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             _gb.return_value.chat.return_value = None
             judge.judge(segments)
 
@@ -427,7 +427,7 @@ class TestIntentJudge:
         judge = IntentJudge()
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend') as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend') as _gb:
             _gb.return_value.chat.side_effect = real_requests.ConnectionError(
                 "HTTPConnectionPool(host='internal-server.example.com', port=11434)"
             )
@@ -446,7 +446,7 @@ class TestIntentJudge:
         backend.chat.return_value = {"message": {"content": '{"directed": false, "query": "", "stop": false, "confidence": "high", "reasoning": "ok"}'}}
         segments = [TranscriptSegment("test", 1000.0, 1001.0)]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend', return_value=backend):
+        with patch('claire.listening.intent_judge.get_llm_backend', return_value=backend):
             result = judge.judge(segments)
 
         assert result is not None
@@ -490,7 +490,7 @@ class TestResponseParserRobustness:
         boundaries.
         """
         config = IntentJudgeConfig(
-            assistant_name="Jarvis",
+            assistant_name="Claire",
             aliases=["chavis", "jervis"],
         )
         judge = IntentJudge(config)
@@ -507,13 +507,13 @@ class TestResponseParserRobustness:
         assert "chavis" not in result.query.lower(), (
             f"Alias leaked into query: {result.query!r}"
         )
-        assert "Jarvis" in result.query, (
+        assert "Claire" in result.query, (
             f"Expected canonical name in query, got: {result.query!r}"
         )
 
     def test_parse_response_no_aliases_leaves_query_untouched(self):
         """With an empty alias list, the query passes through verbatim."""
-        config = IntentJudgeConfig(assistant_name="Jarvis", aliases=[])
+        config = IntentJudgeConfig(assistant_name="Claire", aliases=[])
         judge = IntentJudge(config)
         response = (
             '{"directed": true, "query": "what is the weather like", '
@@ -535,7 +535,7 @@ class TestCreateIntentJudge:
         mock_cfg.fast_model = "gemma4:e2b"
         mock_cfg.ollama_base_url = "http://localhost:11434"
         mock_cfg.intent_judge_timeout_sec = 3.0
-        mock_cfg.wake_word = "jarvis"
+        mock_cfg.wake_word = "claire"
         mock_cfg.wake_aliases = []
 
         judge = create_intent_judge(mock_cfg)
@@ -549,7 +549,7 @@ class TestCreateIntentJudge:
         mock_cfg.fast_model = "gemma4:e2b"
         mock_cfg.ollama_base_url = "http://localhost:11434"
         mock_cfg.intent_judge_timeout_sec = 3.0
-        mock_cfg.wake_word = "jarvis"
+        mock_cfg.wake_word = "claire"
         mock_cfg.wake_aliases = []
 
         judge = create_intent_judge(mock_cfg)
@@ -569,7 +569,7 @@ class TestWarmUp:
         backend = MagicMock()
         backend.warm_up.return_value = True
         with patch(
-            "jarvis.listening.intent_judge.get_llm_backend", return_value=backend
+            "claire.listening.intent_judge.get_llm_backend", return_value=backend
         ) as gb:
             ok = judge.warm_up()
 
@@ -589,7 +589,7 @@ class TestWarmUp:
         backend = MagicMock()
         backend.warm_up.return_value = True
         with patch(
-            "jarvis.listening.intent_judge.get_llm_backend", return_value=backend
+            "claire.listening.intent_judge.get_llm_backend", return_value=backend
         ):
             assert judge.warm_up() is True
 
@@ -604,7 +604,7 @@ class TestWarmUp:
         backend = MagicMock()
         backend.warm_up.return_value = False
         with patch(
-            "jarvis.listening.intent_judge.get_llm_backend", return_value=backend
+            "claire.listening.intent_judge.get_llm_backend", return_value=backend
         ):
             assert judge.warm_up() is False
 
@@ -617,7 +617,7 @@ class TestWarmUp:
         backend = MagicMock()
         backend.warm_up.side_effect = RuntimeError("boom")
         with patch(
-            "jarvis.listening.intent_judge.get_llm_backend", return_value=backend
+            "claire.listening.intent_judge.get_llm_backend", return_value=backend
         ):
             assert judge.warm_up() is False
 
@@ -677,7 +677,7 @@ class TestEchoFollowUpPattern:
             ),
         ]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend', return_value=backend):
+        with patch('claire.listening.intent_judge.get_llm_backend', return_value=backend):
             result = judge.judge(
                 segments,
                 wake_timestamp=None,
@@ -700,7 +700,7 @@ class TestCurrentSegmentMarker:
         judge = IntentJudge()
         segments = [
             TranscriptSegment("old query from before", 1000.0, 1001.0),
-            TranscriptSegment("hello jarvis", 1002.0, 1003.0),  # New segment
+            TranscriptSegment("hello claire", 1002.0, 1003.0),  # New segment
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -708,19 +708,19 @@ class TestCurrentSegmentMarker:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=True,
-            current_text="hello jarvis",  # Mark this as current
+            current_text="hello claire",  # Mark this as current
         )
 
         # The current segment should be marked
         assert "CURRENT - JUDGE THIS" in prompt
         # Verify it's associated with the right segment
-        assert '"hello jarvis"' in prompt
+        assert '"hello claire"' in prompt
 
     def test_current_segment_not_marked_when_no_match(self):
         """Prompt doesn't mark segments when current_text doesn't match."""
         judge = IntentJudge()
         segments = [
-            TranscriptSegment("hello jarvis", 1000.0, 1001.0),
+            TranscriptSegment("hello claire", 1000.0, 1001.0),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -738,7 +738,7 @@ class TestCurrentSegmentMarker:
         """Current segment matching is case insensitive."""
         judge = IntentJudge()
         segments = [
-            TranscriptSegment("Hello Jarvis", 1000.0, 1001.0),
+            TranscriptSegment("Hello Claire", 1000.0, 1001.0),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -746,7 +746,7 @@ class TestCurrentSegmentMarker:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=True,
-            current_text="hello jarvis",  # Different case
+            current_text="hello claire",  # Different case
         )
 
         # Should still mark the segment
@@ -763,7 +763,7 @@ class TestCurrentSegmentMarker:
             TranscriptSegment("no thank you", 1002.0, 1003.0),
         ]
 
-        with patch('jarvis.listening.intent_judge.get_llm_backend', return_value=backend) as _gb:
+        with patch('claire.listening.intent_judge.get_llm_backend', return_value=backend) as _gb:
             judge.judge(
                 segments,
                 wake_timestamp=None,
@@ -822,7 +822,7 @@ class TestCrossSegmentContextInPrompt:
         judge = IntentJudge()
         segments = [
             TranscriptSegment("I think dinosaurs are cool", 1000.0, 1001.0),
-            TranscriptSegment("What do you think about that Jarvis", 1002.0, 1003.0),
+            TranscriptSegment("What do you think about that Claire", 1002.0, 1003.0),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -830,12 +830,12 @@ class TestCrossSegmentContextInPrompt:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=False,
-            current_text="What do you think about that Jarvis",
+            current_text="What do you think about that Claire",
         )
 
         # Both segments should be in the prompt — the first provides context
         assert "dinosaurs are cool" in prompt
-        assert "What do you think about that Jarvis" in prompt
+        assert "What do you think about that Claire" in prompt
         assert "CURRENT - JUDGE THIS" in prompt
 
 
@@ -850,8 +850,8 @@ class TestProcessedSegmentFiltering:
         """Processed segments are not included in the prompt."""
         judge = IntentJudge()
         segments = [
-            TranscriptSegment("jarvis whats the weather", 1000.0, 1001.0, processed=True),
-            TranscriptSegment("jarvis tell me a joke", 1002.0, 1003.0),
+            TranscriptSegment("claire whats the weather", 1000.0, 1001.0, processed=True),
+            TranscriptSegment("claire tell me a joke", 1002.0, 1003.0),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -859,7 +859,7 @@ class TestProcessedSegmentFiltering:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=True,
-            current_text="jarvis tell me a joke",
+            current_text="claire tell me a joke",
         )
 
         # The processed segment should NOT appear in the prompt
@@ -872,7 +872,7 @@ class TestProcessedSegmentFiltering:
         judge = IntentJudge()
         # This edge case shouldn't happen in practice, but handle it gracefully
         segments = [
-            TranscriptSegment("jarvis tell me a joke", 1000.0, 1001.0, processed=True),
+            TranscriptSegment("claire tell me a joke", 1000.0, 1001.0, processed=True),
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -880,7 +880,7 @@ class TestProcessedSegmentFiltering:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=True,
-            current_text="jarvis tell me a joke",  # Same as processed segment
+            current_text="claire tell me a joke",  # Same as processed segment
         )
 
         # Current segment should still be shown (it's what we're judging)
@@ -915,9 +915,9 @@ class TestProcessedSegmentFiltering:
         judge = IntentJudge()
         segments = [
             TranscriptSegment("I wonder about the weather", 1000.0, 1001.0),  # Context
-            TranscriptSegment("jarvis old query", 1001.0, 1002.0, processed=True),  # Processed
+            TranscriptSegment("claire old query", 1001.0, 1002.0, processed=True),  # Processed
             TranscriptSegment("Yeah me too", 1002.0, 1003.0),  # Context
-            TranscriptSegment("jarvis what do you think", 1003.0, 1004.0),  # Current
+            TranscriptSegment("claire what do you think", 1003.0, 1004.0),  # Current
         ]
         prompt = judge._build_user_prompt(
             segments,
@@ -925,7 +925,7 @@ class TestProcessedSegmentFiltering:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=True,
-            current_text="jarvis what do you think",
+            current_text="claire what do you think",
         )
 
         # Context segments (not processed, not wake word) should be preserved
@@ -947,8 +947,8 @@ class TestReasoningModelHandling:
         judge = IntentJudge()
         backend = MagicMock()
         backend.chat.return_value = response
-        segments = [TranscriptSegment("jarvis what time is it", 1000.0, 1002.0)]
-        with patch("jarvis.listening.intent_judge.get_llm_backend", return_value=backend):
+        segments = [TranscriptSegment("claire what time is it", 1000.0, 1002.0)]
+        with patch("claire.listening.intent_judge.get_llm_backend", return_value=backend):
             return judge.judge(segments, wake_timestamp=1000.5)
 
     def test_extracts_judgment_from_reasoning_content_when_content_empty(self):
@@ -958,7 +958,7 @@ class TestReasoningModelHandling:
             "message": {
                 "content": "",
                 "reasoning_content": (
-                    "The user said the wake word 'jarvis', so this is directed. "
+                    "The user said the wake word 'claire', so this is directed. "
                     '{"directed": true, "query": "what time is it", "stop": false, '
                     '"confidence": "high", "reasoning": "wake word detected"}'
                 ),
@@ -1105,7 +1105,7 @@ class TestReasoningModelHandling:
             }
         }
         segments = [TranscriptSegment("hi", 1000.0, 1001.0)]
-        with patch("jarvis.listening.intent_judge.get_llm_backend", return_value=backend):
+        with patch("claire.listening.intent_judge.get_llm_backend", return_value=backend):
             judge.judge(segments)
         extra = backend.chat.call_args.kwargs["extra_options"]
         assert extra["max_tokens"] == 1500

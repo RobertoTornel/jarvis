@@ -1,6 +1,6 @@
 """Run memory-digest evals through the configured local model."""
 from evals.helpers import voice_config
-from jarvis.reply import enrichment
+from claire.reply import enrichment
 
 
 def digest_for_eval(query: str, diary_entries: list[str]) -> str:

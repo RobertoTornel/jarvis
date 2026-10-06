@@ -10,7 +10,7 @@ while still catching actual partial echoes from long TTS responses.
 """
 
 import pytest
-from jarvis.listening.echo_detection import EchoDetector
+from claire.listening.echo_detection import EchoDetector
 
 
 class TestShortQueryBehavior:
@@ -127,7 +127,7 @@ class TestLongerEchoDetection:
         long_followups = [
             "what will the weather be like tomorrow",  # 7 words
             "should i bring an umbrella with me today",  # 8 words
-            "thanks jarvis that was very helpful information",  # 7 words
+            "thanks claire that was very helpful information",  # 7 words
             "can you tell me about the weekend forecast",  # 8 words
         ]
 

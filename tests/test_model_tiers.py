@@ -1,6 +1,6 @@
 """The two-tier model system: FAST (reflexes) and CHAT (the reply brain).
 
-Jarvis needs exactly two inference tiers plus embeddings:
+Claire needs exactly two inference tiers plus embeddings:
 
 - **FAST** — small, warm, low-latency model for real-time classification
   work with tiny strict-JSON outputs (the Model tiers table in llm.spec.md
@@ -9,7 +9,7 @@ Jarvis needs exactly two inference tiers plus embeddings:
   extracts knowledge.
 
 Users pick one model per tier (``fast_model`` / chat model); every context
-resolves through ``jarvis.llm.resolve_model(cfg, tier)``. These tests pin
+resolves through ``claire.llm.resolve_model(cfg, tier)``. These tests pin
 the mechanism (provider-aware defaults, explicit override wins, migration
 from the retired per-context keys), not specific model names.
 """
@@ -24,8 +24,8 @@ from types import SimpleNamespace
 def _load_settings_from(tmp_path, monkeypatch, cfg: dict, version: int = 2):
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps({"_config_version": version, **cfg}))
-    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
-    from jarvis.config import load_settings
+    monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
+    from claire.config import load_settings
     return load_settings(), cfg_path
 
 
@@ -33,7 +33,7 @@ class TestFastModelResolution:
     """cfg.fast_model always carries a resolved, provider-valid model name."""
 
     def test_ollama_path_defaults_to_small_pull(self, tmp_path, monkeypatch):
-        from jarvis.config import DEFAULT_FAST_MODEL
+        from claire.config import DEFAULT_FAST_MODEL
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {})
         assert settings.fast_model == DEFAULT_FAST_MODEL
 
@@ -61,7 +61,7 @@ class TestFastModelResolution:
         assert settings.fast_model == "small-served-model"
 
     def test_embedding_provider_does_not_affect_fast_tier(self, tmp_path, monkeypatch):
-        from jarvis.config import DEFAULT_FAST_MODEL
+        from claire.config import DEFAULT_FAST_MODEL
         settings, _ = _load_settings_from(tmp_path, monkeypatch, {
             "llm_provider": "ollama",
             "embedding_provider": "openai_compatible",
@@ -75,17 +75,17 @@ class TestResolveModel:
     """resolve_model(cfg, tier) is the single entry point for every context."""
 
     def test_fast_tier_returns_fast_model(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = SimpleNamespace(fast_model="tiny", llm_chat_model="big")
         assert resolve_model(cfg, Tier.FAST) == "tiny"
 
     def test_chat_tier_returns_chat_model(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = SimpleNamespace(fast_model="tiny", llm_chat_model="big")
         assert resolve_model(cfg, Tier.CHAT) == "big"
 
     def test_fast_tier_falls_back_to_chat_when_unset(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = SimpleNamespace(fast_model="", llm_chat_model="big")
         assert resolve_model(cfg, Tier.FAST) == "big"
 
@@ -156,7 +156,7 @@ class TestV3Migration:
         """A v2 config carrying the old *default* judge value (written by an
         older settings save) must not pin fast_model to it — the user never
         chose it, and pinning would block future default upgrades."""
-        from jarvis.config import DEFAULT_FAST_MODEL
+        from claire.config import DEFAULT_FAST_MODEL
         default_judge = DEFAULT_FAST_MODEL
         settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
             "intent_judge_model": default_judge,

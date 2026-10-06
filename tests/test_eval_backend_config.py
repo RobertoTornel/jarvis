@@ -114,7 +114,7 @@ def test_provider_override_applies_to_the_default_endpoint(monkeypatch):
 def test_planner_eval_reaches_the_selected_backend(monkeypatch, provider, url, expected):
     """The eval must generate a plan, rather than silently skip an unset model."""
     import requests
-    from jarvis.reply.planner import plan_query
+    from claire.reply.planner import plan_query
     if provider:
         monkeypatch.setenv('EVAL_JUDGE_PROVIDER', provider)
     if url:
@@ -154,7 +154,7 @@ def test_voice_evals_reach_selected_backend(monkeypatch, provider, url, expected
     monkeypatch.setenv('EVAL_JUDGE_BASE_URL', url)
     monkeypatch.setenv('EVAL_JUDGE_MODEL', 'synthetic-voice-model')
     monkeypatch.setattr(requests, 'get', lambda *args, **kw: SimpleNamespace(status_code=404))
-    monkeypatch.setattr('desktop_app.face_widget.get_jarvis_state', lambda: MagicMock())
+    monkeypatch.setattr('desktop_app.face_widget.get_claire_state', lambda: MagicMock())
     calls = []
     content = json.dumps(dict(directed=True, query=('random topic' if entry == 'processed' else 'weather'), stop=False,
                              confidence='high', reasoning='Addressed to the assistant'))
@@ -185,7 +185,7 @@ def test_voice_evals_reach_selected_backend(monkeypatch, provider, url, expected
     else:
         obj, _ = listener_eval._create_listener()
         try:
-            result = obj._intent_judge.judge([intent.create_transcript_segment('Jarvis weather')])
+            result = obj._intent_judge.judge([intent.create_transcript_segment('Claire weather')])
         finally:
             obj.state_manager.stop()
     assert result is not None and result.query == 'weather'

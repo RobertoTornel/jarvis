@@ -1,8 +1,8 @@
 """Malformed file paths cannot select or alter stringified filenames."""
 import os
 import pytest
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.local_files import LocalFilesTool
+from claire.tools.base import ToolContext
+from claire.tools.builtin.local_files import LocalFilesTool
 pytestmark = pytest.mark.unit
 
 @pytest.fixture

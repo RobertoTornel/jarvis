@@ -14,8 +14,8 @@ import tempfile
 
 import pytest
 
-from src.jarvis.memory.conversation import DialogueMemory
-from src.jarvis.memory.graph import (
+from src.claire.memory.conversation import DialogueMemory
+from src.claire.memory.graph import (
     BRANCH_DIRECTIVES,
     BRANCH_USER,
     BRANCH_WORLD,
@@ -121,7 +121,7 @@ class TestMutationListenerRegistry:
         rather than spin. Returns ``None`` — listener treats that as
         "unknown branch" and skips invalidation.
         """
-        from src.jarvis.memory.graph import MAX_TRAVERSAL_DEPTH
+        from src.claire.memory.graph import MAX_TRAVERSAL_DEPTH
 
         # Build a chain of MAX_TRAVERSAL_DEPTH + 2 nodes under user; the
         # tail node should still resolve because the walk can finish

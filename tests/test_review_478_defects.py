@@ -32,18 +32,18 @@ class TestCancellationCrossesTheProcessBoundary:
     cancel function locally sets a flag nobody reads."""
 
     def test_a_cancel_line_is_recognised(self):
-        from jarvis.daemon import CHAT_CANCEL_IPC_PREFIX, handle_chat_cancel_stdin_line
+        from claire.daemon import CHAT_CANCEL_IPC_PREFIX, handle_chat_cancel_stdin_line
 
         assert handle_chat_cancel_stdin_line(CHAT_CANCEL_IPC_PREFIX) is True
 
     def test_an_unrelated_line_is_left_for_other_handlers(self):
-        from jarvis.daemon import handle_chat_cancel_stdin_line
+        from claire.daemon import handle_chat_cancel_stdin_line
 
         assert handle_chat_cancel_stdin_line("SHUTDOWN") is False
         assert handle_chat_cancel_stdin_line('__CHAT_QUERY__:{"text":"hi"}') is False
 
     def test_the_cancel_line_sets_the_flag_the_worker_reads(self):
-        from jarvis import daemon
+        from claire import daemon
 
         event = threading.Event()
         with patch.object(daemon, "_chat_cancel_event", event):
@@ -52,7 +52,7 @@ class TestCancellationCrossesTheProcessBoundary:
         assert event.is_set()
 
     def test_a_cancel_with_no_query_in_flight_is_harmless(self):
-        from jarvis import daemon
+        from claire import daemon
 
         with patch.object(daemon, "_chat_cancel_event", None):
             assert daemon.handle_chat_cancel_stdin_line(daemon.CHAT_CANCEL_IPC_PREFIX) is True
@@ -105,12 +105,12 @@ class TestShutdownWaitsForAnInFlightChatWorker:
     ``run_reply_engine`` with the database open."""
 
     def test_shutdown_acquires_the_query_lock_before_closing(self):
-        from jarvis import daemon
+        from claire import daemon
 
         assert daemon.wait_for_chat_worker(timeout_sec=0.1) is True
 
     def test_shutdown_gives_up_rather_than_hanging_forever(self):
-        from jarvis import daemon
+        from claire import daemon
 
         daemon._chat_query_lock.acquire()
         try:
@@ -119,7 +119,7 @@ class TestShutdownWaitsForAnInFlightChatWorker:
             daemon._chat_query_lock.release()
 
     def test_the_lock_is_released_again_after_a_successful_wait(self):
-        from jarvis import daemon
+        from claire import daemon
 
         assert daemon.wait_for_chat_worker(timeout_sec=0.1) is True
         # A second call must still succeed: the wait must not leave the
@@ -196,7 +196,7 @@ class TestRuntimeStatusDoesNotBlockTheTray:
             )
         )
 
-        app_module.JarvisSystemTray.show_runtime_status(tray)
+        app_module.ClaireSystemTray.show_runtime_status(tray)
 
         deadline = time.time() + 5.0
         while time.time() < deadline and not ready.emit.called:

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.tools.builtin import weather
+from claire.tools.builtin import weather
 
 pytestmark = pytest.mark.unit
 

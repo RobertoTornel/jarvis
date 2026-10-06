@@ -3,7 +3,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from jarvis.listening import state_manager
+from claire.listening import state_manager
 
 pytestmark = pytest.mark.unit
 
@@ -33,8 +33,8 @@ class ManualTimer:
 @pytest.fixture
 def window(monkeypatch, tmp_path):
     from desktop_app import face_widget
-    monkeypatch.setattr(face_widget, "_get_jarvis_state_file", lambda: str(tmp_path / "face_state"))
-    monkeypatch.setattr(face_widget, "_jarvis_state_instance", None)
+    monkeypatch.setattr(face_widget, "_get_claire_state_file", lambda: str(tmp_path / "face_state"))
+    monkeypatch.setattr(face_widget, "_claire_state_instance", None)
     timers = []
 
     def timer(delay, callback):

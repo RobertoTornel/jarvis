@@ -23,8 +23,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jarvis.output import tune_player
-from jarvis.output.tune_player import (
+from claire.output import tune_player
+from claire.output.tune_player import (
     TunePlayer,
     _generate_thinking_pad_samples,
     _generate_thinking_pad_wav,

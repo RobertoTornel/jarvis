@@ -22,8 +22,8 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.llm.backend import ToolsNotSupportedError
-from jarvis.tools.types import ToolExecutionResult
+from claire.llm.backend import ToolsNotSupportedError
+from claire.tools.types import ToolExecutionResult
 
 
 def _tool_response(tool_name: str) -> dict:
@@ -63,7 +63,7 @@ def _patched_reply(engine_mod, fake_chat, **live_kwargs):
 def test_context_block_at_tail_of_system_message(mock_config, db, dialogue_memory):
     """The [Context: ...] line must sit at the END of the system message so
     the persona/guidance head stays byte-identical across calls."""
-    from jarvis.reply import engine as engine_mod
+    from claire.reply import engine as engine_mod
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE -> native tools
     mock_config.evaluator_enabled = False
@@ -95,7 +95,7 @@ def test_context_computed_once_per_reply_and_identical_across_loop_calls(
 ):
     """Every in-loop LLM call of one reply must send a byte-identical system
     message — the context is refreshed per reply, not per call."""
-    from jarvis.reply import engine as engine_mod
+    from claire.reply import engine as engine_mod
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE -> native tools
     mock_config.evaluator_enabled = False
@@ -149,7 +149,7 @@ def test_context_restored_after_native_to_text_fallback(
 ):
     """When the engine rebuilds the system message for the text-tool
     fallback, the context block must be re-appended at the tail."""
-    from jarvis.reply import engine as engine_mod
+    from claire.reply import engine as engine_mod
 
     mock_config.llm_chat_model = "gpt-oss:20b"
     mock_config.evaluator_enabled = False
@@ -191,7 +191,7 @@ def test_text_query_sees_voice_turns_from_the_shared_memory(
     engine injects the memory's recent turns into the model prompt. Here
     the turns were written by the audio path; the text query must see
     them verbatim, ahead of the current user message."""
-    from jarvis.reply import engine as engine_mod
+    from claire.reply import engine as engine_mod
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE -> native tools
     mock_config.evaluator_enabled = False

@@ -36,54 +36,54 @@ INTENT_JUDGE_TEST_CASES = [
     # Wake word + simple question (canonical directed+extract)
     IntentJudgeTestCase(
         name="wake_word_simple_question",
-        transcript="Jarvis what time is it",
+        transcript="Claire what time is it",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="time",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word at sentence end, adjacent to a named entity. Regression guard:
-    # the judge previously left "Jarvis" in the query, causing the reply engine
-    # to treat "Possessor Jarvis" as the film title instead of "Possessor".
+    # the judge previously left "Claire" in the query, causing the reply engine
+    # to treat "Possessor Claire" as the film title instead of "Possessor".
     IntentJudgeTestCase(
         name="wake_word_trailing_after_named_entity",
-        transcript="what do you know about the movie called Possessor Jarvis",
+        transcript="what do you know about the movie called Possessor Claire",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1001.5,
         expected_directed=True,
         expected_query_contains="possessor",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word mid-sentence (not at start, not at end). Ensures the judge
     # removes every occurrence, not just the leading one.
     IntentJudgeTestCase(
         name="wake_word_mid_sentence",
-        transcript="hey Jarvis what's the weather in London",
+        transcript="hey Claire what's the weather in London",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.3,
         expected_directed=True,
         expected_query_contains="weather",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word + command/imperative addressed to the assistant (not a question)
     IntentJudgeTestCase(
         name="wake_word_command_timer",
-        transcript="Jarvis set a timer for 5 minutes",
+        transcript="Claire set a timer for 5 minutes",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="timer",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word + statement/command to remember something
     IntentJudgeTestCase(
         name="wake_word_statement_remember",
-        transcript="Jarvis remind me to call mum at 5pm",
+        transcript="Claire remind me to call mum at 5pm",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
@@ -97,111 +97,111 @@ INTENT_JUDGE_TEST_CASES = [
     # word was clearly addressed to the assistant.
     IntentJudgeTestCase(
         name="wake_word_share_statement_burger",
-        transcript="Jarvis, I just ate a burger from McDonald's.",
+        transcript="Claire, I just ate a burger from McDonald's.",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="burger",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     IntentJudgeTestCase(
         name="wake_word_share_statement_feeling",
-        transcript="Jarvis I'm feeling a bit tired today",
+        transcript="Claire I'm feeling a bit tired today",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="tired",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word at the END of a declarative statement. Position of the wake
     # word must not affect directedness — this pattern must also be directed.
     IntentJudgeTestCase(
         name="wake_word_share_statement_trailing",
-        transcript="My flight just got cancelled, Jarvis",
+        transcript="My flight just got cancelled, Claire",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1001.5,
         expected_directed=True,
         expected_query_contains="flight",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Wake word at the END of a declarative statement that contains a
-    # capitalised brand/product name immediately before "Jarvis". Regression:
-    # gemma4:e2b misread "big Mac Jarvis" as the compound name "Mac Jarvis",
-    # treating "Jarvis" as a surname rather than the wake word, and returned
+    # capitalised brand/product name immediately before "Claire". Regression:
+    # gemma4:e2b misread "big Mac Claire" as the compound name "Mac Claire",
+    # treating "Claire" as a surname rather than the wake word, and returned
     # directed=false despite its own reasoning stating it found the wake word.
     IntentJudgeTestCase(
         name="wake_word_trailing_after_capitalised_brand",
-        transcript="I just ate a big Mac Jarvis",
+        transcript="I just ate a big Mac Claire",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1001.5,
         expected_directed=True,
         expected_query_contains="big Mac",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Self-contained imperative with an intentionally open subject ("something",
     # "anything", "a joke") — these are valid queries and must not be treated
     # as vague references or standalone "re-issue prior question" imperatives.
     # Regression: gemma4:e2b was returning directed=false with reasoning "no
-    # extractable query" on "Jarvis say something please" because it conflated
+    # extractable query" on "Claire say something please" because it conflated
     # the open subject with a topic-less question.
     IntentJudgeTestCase(
         name="wake_word_open_imperative_say_something",
-        transcript="Jarvis say something please",
+        transcript="Claire say something please",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="say something",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     IntentJudgeTestCase(
         name="wake_word_open_imperative_tell_me_a_joke",
-        transcript="Jarvis tell me a joke",
+        transcript="Claire tell me a joke",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="joke",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     IntentJudgeTestCase(
         name="wake_word_open_imperative_tell_me_anything",
-        transcript="Jarvis tell me anything",
+        transcript="Claire tell me anything",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="anything",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     IntentJudgeTestCase(
         name="wake_word_open_imperative_give_me_advice",
-        transcript="Jarvis give me advice please",
+        transcript="Claire give me advice please",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="advice",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     IntentJudgeTestCase(
         name="wake_word_open_imperative_surprise_me",
-        transcript="Jarvis surprise me",
+        transcript="Claire surprise me",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.5,
         expected_directed=True,
         expected_query_contains="surprise",
-        expected_query_not_contains="jarvis",
+        expected_query_not_contains="claire",
     ),
     # Same-segment context synthesis (distinct from simple wake+Q)
     IntentJudgeTestCase(
         name="context_synthesis_weather_opinion",
-        transcript="I think the weather is great today in London. What do you think, Jarvis?",
+        transcript="I think the weather is great today in London. What do you think, Claire?",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.8,
@@ -242,7 +242,7 @@ INTENT_JUDGE_TEST_CASES = [
     # Wake word only mentioned in narrative -> not directed
     IntentJudgeTestCase(
         name="mentioned_in_narrative_past_tense",
-        transcript="I told my friend about Jarvis yesterday",
+        transcript="I told my friend about Claire yesterday",
         last_tts_text="",
         in_hot_window=False,
         wake_timestamp=1000.8,
@@ -284,7 +284,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("and relatively windy, about 11 kilometers per hour", False),
             ("Okay, well, what about any new movies tomorrow?", False),
-            ("Jarvis, what about new movies tomorrow?", False),
+            ("Claire, what about new movies tomorrow?", False),
         ],
         last_tts_text="Tomorrow's weather in Kensington looks a bit gloomy, with overcast conditions expected. It'll be quite cool, around 6°C, and relatively windy, about 11 km/h.",
         in_hot_window=False,
@@ -313,7 +313,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("Let me tell you about", True),
             ("the history of", True),
-            ("Jarvis stop", False),
+            ("Claire stop", False),
         ],
         last_tts_text="Let me tell you about the history of ancient Rome.",
         in_hot_window=False,
@@ -340,7 +340,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("Did you see the game last night?", False),
             ("Yeah it was amazing", False),
-            ("The food here is excellent. Jarvis, what's the best dish to order?", False),
+            ("The food here is excellent. Claire, what's the best dish to order?", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -355,7 +355,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("I wonder what the weather will be like tomorrow", False),
             ("Yeah we should check before planning the picnic", False),
-            ("Jarvis what do you think", False),
+            ("Claire what do you think", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -369,7 +369,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("The new iPhone looks pretty cool", False),
             ("I heard the camera is amazing", False),
-            ("Jarvis how much does that cost", False),
+            ("Claire how much does that cost", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -398,7 +398,7 @@ MULTI_SEGMENT_TEST_CASES = [
         name="cross_segment_dinosaur_opinion",
         segments=[
             ("I think dinosaurs are cool", False),
-            ("What do you think about that Jarvis", False),
+            ("What do you think about that Claire", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -411,7 +411,7 @@ MULTI_SEGMENT_TEST_CASES = [
         name="cross_segment_answer_that_weather",
         segments=[
             ("Sorry, how's the weather today?", False),
-            ("Jarvis, answer that", False),
+            ("Claire, answer that", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -426,7 +426,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("How tall is Mount Everest", False),
             ("Charlie sands to that", False),
-            ("Jarvis answer that", False),
+            ("Claire answer that", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -440,7 +440,7 @@ MULTI_SEGMENT_TEST_CASES = [
         name="cross_segment_answered_that_whisper_variant",
         segments=[
             ("Sorry, how's the weather today?", False),
-            ("Jarvis answered that", False),
+            ("Claire answered that", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -454,7 +454,7 @@ MULTI_SEGMENT_TEST_CASES = [
         name="cross_segment_go_ahead_and_answer",
         segments=[
             ("What's the capital of Portugal", False),
-            ("Jarvis go ahead and answer", False),
+            ("Claire go ahead and answer", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -468,7 +468,7 @@ MULTI_SEGMENT_TEST_CASES = [
         name="cross_segment_imperative_superseded_by_new_question",
         segments=[
             ("How's the weather today?", False),
-            ("Jarvis, answer that — actually, what time is it?", False),
+            ("Claire, answer that — actually, what time is it?", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -533,7 +533,7 @@ MULTI_SEGMENT_TEST_CASES = [
             ("Did you see the Yankees game last night", False),
             ("I heard the camera is amazing on that phone", False),
             ("Yeah that was a great play in the ninth inning", False),
-            ("Jarvis how much does it cost", False),
+            ("Claire how much does it cost", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -554,7 +554,7 @@ MULTI_SEGMENT_TEST_CASES = [
             ("the new iPhone is out", False),
             ("yeah they lost again though", False),
             ("I want the pro model", False),
-            ("Jarvis what's the price", False),
+            ("Claire what's the price", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -574,7 +574,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("the AirPods sound great", False),
             ("yeah the bass is really punchy", False),
-            ("Jarvis how much do they cost", False),
+            ("Claire how much do they cost", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -601,7 +601,7 @@ MULTI_SEGMENT_TEST_CASES = [
     ),
     # Wake word mid-utterance after narrative buffer, addressing the assistant.
     # Real-world case: user was discussing Mata Hari in the background, then
-    # turned to the assistant with "Jarvis, do you know what she's talking about,
+    # turned to the assistant with "Claire, do you know what she's talking about,
     # about Mata Hari?". The small model mis-classified as "not directed" with
     # reasoning that contradicted the verdict. The wake word is mid-utterance
     # here but the trailing clause addresses the assistant directly ("do YOU
@@ -611,7 +611,7 @@ MULTI_SEGMENT_TEST_CASES = [
         segments=[
             ("The dude was a lie upon the lie", False),
             ("Mata Hari was never a traitor, she was an honest woman", False),
-            ("Jarvis, do you know what she's talking about, about Mata Hari?", False),
+            ("Claire, do you know what she's talking about, about Mata Hari?", False),
         ],
         last_tts_text="",
         in_hot_window=False,
@@ -647,7 +647,7 @@ def create_transcript_segment(
     processed: bool = False,
 ):
     """Create a TranscriptSegment for testing."""
-    from jarvis.listening.transcript_buffer import TranscriptSegment
+    from claire.listening.transcript_buffer import TranscriptSegment
     return TranscriptSegment(
         text=text,
         start_time=start_time,
@@ -660,11 +660,11 @@ def create_transcript_segment(
 
 def run_intent_judge(case: IntentJudgeTestCase):
     """Run the intent judge on a test case."""
-    from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
+    from claire.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
     cfg = voice_config()
     judge = IntentJudge(IntentJudgeConfig(
-        assistant_name="Jarvis",
+        assistant_name="Claire",
         cfg=cfg,
         model=cfg.fast_model,
         timeout_sec=10.0,
@@ -687,11 +687,11 @@ def run_intent_judge(case: IntentJudgeTestCase):
 
 def run_intent_judge_multi_segment(case: "MultiSegmentTestCase"):
     """Run the intent judge on a multi-segment test case."""
-    from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
+    from claire.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
     cfg = voice_config()
     judge = IntentJudge(IntentJudgeConfig(
-        assistant_name="Jarvis",
+        assistant_name="Claire",
         aliases=list(case.aliases or []),
         model=cfg.fast_model,
         cfg=cfg,
@@ -738,14 +738,14 @@ def is_intent_judge_available() -> bool:
 # Addressing another person about the assistant is a mention, including aliases.
 MENTION_ADDRESS_CASES = [
     ("partner_alias", "I'm talking to Jairus not you.", False, ["jairus"]),
-    ("partner_primary", "I'm talking to Jarvis, not you.", False, []),
-    ("partner_question", "Did you think I was talking to you? I'm talking to Jarvis, not you.", False, []),
-    ("partner_turkish", "Jarvis'le konuşuyorum, seninle değil.", False, []),
-    ("partner_spanish", "Estoy hablando con Jarvis, no contigo.", False, []),
-    ("direct_statement", "Jarvis, I'm feeling tired today.", True, []),
+    ("partner_primary", "I'm talking to Claire, not you.", False, []),
+    ("partner_question", "Did you think I was talking to you? I'm talking to Claire, not you.", False, []),
+    ("partner_turkish", "Claire'le konuşuyorum, seninle değil.", False, []),
+    ("partner_spanish", "Estoy hablando con Claire, no contigo.", False, []),
+    ("direct_statement", "Claire, I'm feeling tired today.", True, []),
     ("direct_alias", "Jairus, what time is it?", True, ["jairus"]),
-    ("direct_about_assistant", "Jarvis, tell me about yourself.", True, []),
-    ("direct_hearing", "Jarvis, can you hear me?", True, []),
+    ("direct_about_assistant", "Claire, tell me about yourself.", True, []),
+    ("direct_hearing", "Claire, can you hear me?", True, []),
 ]
 
 
@@ -820,7 +820,7 @@ class TestIntentJudgePromptQuality:
     """Tests for intent judge prompt construction quality."""
 
     def test_hot_window_mode_indicated_in_prompt(self):
-        from jarvis.listening.intent_judge import IntentJudge
+        from claire.listening.intent_judge import IntentJudge
 
         judge = IntentJudge()
         segments = [create_transcript_segment("hello")]
@@ -836,7 +836,7 @@ class TestIntentJudgePromptQuality:
         assert "HOT WINDOW" in prompt
 
     def test_tts_text_included_for_echo_detection(self):
-        from jarvis.listening.intent_judge import IntentJudge
+        from claire.listening.intent_judge import IntentJudge
 
         judge = IntentJudge()
         segments = [create_transcript_segment("The weather is nice")]
@@ -853,7 +853,7 @@ class TestIntentJudgePromptQuality:
         assert "nice and sunny" in prompt
 
     def test_system_prompt_has_echo_guidance(self):
-        from jarvis.listening.intent_judge import IntentJudge
+        from claire.listening.intent_judge import IntentJudge
 
         judge = IntentJudge()
         prompt = judge._build_system_prompt()
@@ -866,7 +866,7 @@ class TestIntentJudgeFallback:
     """Tests for intent judge fallback behaviour."""
 
     def test_returns_none_when_ollama_unavailable(self):
-        from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
+        from claire.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
         cfg = voice_config()
         cfg.llm_provider = "ollama"
@@ -937,22 +937,22 @@ class TestProcessedSegmentFiltering:
         if not is_intent_judge_available():
             pytest.skip("🎤 Selected voice evaluation model is unavailable")
 
-        from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
+        from claire.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
         cfg = voice_config()
         judge = IntentJudge(IntentJudgeConfig(
-            assistant_name="Jarvis", cfg=cfg, model=cfg.fast_model,
+            assistant_name="Claire", cfg=cfg, model=cfg.fast_model,
             timeout_sec=10.0,
         ))
 
         segments = [
             create_transcript_segment(
-                text="Jarvis what's the weather in London",
+                text="Claire what's the weather in London",
                 start_time=1000.0,
                 processed=True,
             ),
             create_transcript_segment(
-                text="Jarvis tell me a random topic",
+                text="Claire tell me a random topic",
                 start_time=1010.0,
                 processed=False,
             ),
@@ -964,7 +964,7 @@ class TestProcessedSegmentFiltering:
             last_tts_text="",
             last_tts_finish_time=0.0,
             in_hot_window=False,
-            current_text="Jarvis tell me a random topic",
+            current_text="Claire tell me a random topic",
         )
 
         assert result is not None

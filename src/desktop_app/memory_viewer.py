@@ -1,7 +1,7 @@
 """
-🧠 Jarvis Memory Viewer
+🧠 Claire Memory Viewer
 
-A beautiful web interface for exploring Jarvis's conversation memories.
+A beautiful web interface for exploring Claire's conversation memories.
 Run directly: python -m desktop_app.memory_viewer
 """
 
@@ -15,9 +15,9 @@ from typing import Any, Optional
 
 from flask import Flask, jsonify, request, Response
 
-from jarvis.config import load_settings
-from jarvis.debug import debug_log
-from jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from claire.config import load_settings
+from claire.debug import debug_log
+from claire.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
 
 
 app = Flask(__name__)
@@ -34,8 +34,8 @@ def _get_db_path() -> str:
         return settings.db_path
     except Exception:
         # Fallback to default path
-        base = Path.home() / ".local" / "share" / "jarvis"
-        return str(base / "jarvis.db")
+        base = Path.home() / ".local" / "share" / "claire"
+        return str(base / "claire.db")
 
 
 def get_db() -> sqlite3.Connection:
@@ -492,10 +492,10 @@ def graph_import_diary() -> Response:
     pipeline. Returns a streaming response with progress updates so the UI
     can show real-time feedback.
     """
-    from jarvis.config import load_settings
-    from jarvis.memory.db import Database
-    from jarvis.memory.graph_ops import update_graph_from_dialogue
-    from jarvis.llm import resolve_model, Tier
+    from claire.config import load_settings
+    from claire.memory.db import Database
+    from claire.memory.graph_ops import update_graph_from_dialogue
+    from claire.llm import resolve_model, Tier
 
     def generate():
         try:
@@ -588,12 +588,12 @@ def graph_consolidate_all() -> Response:
     once via `consolidate_all_populated_nodes`, streaming NDJSON
     progress so the UI can show per-node line-count deltas.
     """
-    from jarvis.config import load_settings
-    from jarvis.memory.graph_ops import (
+    from claire.config import load_settings
+    from claire.memory.graph_ops import (
         consolidate_all_populated_nodes,
         is_populated_node,
     )
-    from jarvis.llm import resolve_model, Tier
+    from claire.llm import resolve_model, Tier
 
     def generate():
         try:
@@ -674,9 +674,9 @@ def diary_scrub_deflections() -> Response:
     Requires the chat model to be running. Per-row rewrite failures are
     fail-open: the row is left untouched, the sweep continues.
     """
-    from jarvis.config import load_settings
-    from jarvis.memory.conversation import rewrite_all_diary_summaries
-    from jarvis.memory.db import Database
+    from claire.config import load_settings
+    from claire.memory.conversation import rewrite_all_diary_summaries
+    from claire.memory.db import Database
 
     def generate():
         db = None
@@ -764,9 +764,9 @@ def diary_optimise_topics() -> Response:
     Event payload contains only counts and the date — never raw tag strings
     — so this endpoint cannot leak diary content to the streaming UI.
     """
-    from jarvis.config import load_settings
-    from jarvis.memory.conversation import optimise_diary_topics
-    from jarvis.memory.db import Database
+    from claire.config import load_settings
+    from claire.memory.conversation import optimise_diary_topics
+    from claire.memory.db import Database
 
     def generate():
         db = None
@@ -847,7 +847,7 @@ def index() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🧠 Jarvis Memory</title>
+    <title>🧠 Claire Memory</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -2041,7 +2041,7 @@ def index() -> str:
         <div class="header-content">
             <div class="logo">
                 <span class="logo-icon">🧠</span>
-                <h1>Jarvis Memory</h1>
+                <h1>Claire Memory</h1>
             </div>
 
             <div class="search-container">
@@ -3800,7 +3800,7 @@ def main() -> None:
             pass
 
     print("\n" + "=" * 60)
-    print("🧠 Jarvis Memory Viewer")
+    print("🧠 Claire Memory Viewer")
     print("=" * 60)
     print(f"\n  📂 Database: {_get_db_path()}")
     print(f"  🌐 URL: http://localhost:{port}")

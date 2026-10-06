@@ -1,7 +1,7 @@
 """
 💬 Chat Window
 
-A text chat interface for Jarvis, alongside the existing voice path. Voice
+A text chat interface for Claire, alongside the existing voice path. Voice
 and text share one conversation (the daemon's global dialogue memory). See
 ``chat_window.spec.md`` for the full contract.
 
@@ -37,8 +37,8 @@ from PyQt6.QtWidgets import (
     QSizeGrip,
 )
 
-from jarvis.debug import debug_log
-from desktop_app.themes import COLORS, JARVIS_THEME_STYLESHEET, CHAT_THEME_STYLESHEET
+from claire.debug import debug_log
+from desktop_app.themes import COLORS, CLAIRE_THEME_STYLESHEET, CHAT_THEME_STYLESHEET
 
 
 class PhoneShell(QWidget):
@@ -86,13 +86,13 @@ class ChatTitleBar(QWidget):
                 window.showMaximized()
 
 
-class JarvisOrb(QWidget):
+class ClaireOrb(QWidget):
     """Resolution-independent amber core, with no external image assets."""
 
     def __init__(self, size: int, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
-        self.setAccessibleName('Jarvis')
+        self.setAccessibleName('Claire')
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -136,14 +136,14 @@ class ChatSizeGrip(QSizeGrip):
 
 
 def get_hot_window_messages() -> list:
-    """Thin wrapper around ``jarvis.daemon.get_hot_window_messages``.
+    """Thin wrapper around ``claire.daemon.get_hot_window_messages``.
 
     Lives at module scope so tests can monkeypatch
     ``desktop_app.chat_window.get_hot_window_messages`` without touching the
     daemon module (which the bundled and subprocess paths resolve
     differently).
     """
-    from jarvis import daemon
+    from claire import daemon
     return daemon.get_hot_window_messages()
 
 
@@ -274,7 +274,7 @@ _HEADER_STATUS_STYLE = f"""
 """
 
 # SMS-style bubbles: the user's messages sit on the right in the accent
-# colour, Jarvis's replies on the left in a dark bubble. The corner nearest
+# colour, Claire's replies on the left in a dark bubble. The corner nearest
 # the sender is squared off, like a speech bubble.
 _BUBBLE_STYLES = {
     "user": f"""
@@ -312,18 +312,18 @@ _MESSAGE_TEXT_STYLES = {
 }
 
 _DAEMON_STATUS_MESSAGES = {
-    "starting": "Starting Jarvis...",
-    "stopping": "Stopping Jarvis...",
+    "starting": "Starting Claire...",
+    "stopping": "Stopping Claire...",
     "stopped": "Start Listening from the tray to use chat.",
-    "crashed": "Jarvis stopped unexpectedly. Start Listening to reconnect.",
+    "crashed": "Claire stopped unexpectedly. Start Listening to reconnect.",
 }
 
 _DAEMON_STATUS_PLACEHOLDERS = {
-    "starting": "Jarvis is starting",
-    "stopping": "Jarvis is stopping",
+    "starting": "Claire is starting",
+    "stopping": "Claire is stopping",
     "stopped": "Start Listening from the tray to use chat",
     "crashed": "Start Listening from the tray to reconnect chat",
-    "running": "Message Jarvis…",
+    "running": "Message Claire…",
 }
 
 _HEADER_STATUS_TEXTS = {
@@ -336,7 +336,7 @@ _HEADER_STATUS_TEXTS = {
 
 
 class ChatWindow(QMainWindow):
-    """Text chat window. Sends via ``jarvis.daemon.submit_text_query``.
+    """Text chat window. Sends via ``claire.daemon.submit_text_query``.
 
     In subprocess mode the desktop app sets ``submit_fn`` to a callable that
     writes a ``__CHAT_QUERY__:`` line to the daemon's stdin, ``cancel_fn`` to
@@ -358,7 +358,7 @@ class ChatWindow(QMainWindow):
         control_fn: Optional[Callable[[str, Optional[dict]], None]] = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("Jarvis Chat")
+        self.setWindowTitle("Claire Chat")
         self.setObjectName('chatWindow')
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -367,7 +367,7 @@ class ChatWindow(QMainWindow):
         self.setMinimumSize(380, 560)
         available = self.screen().availableGeometry()
         self.resize(min(480, available.width()), min(800, available.height()))
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET + CHAT_THEME_STYLESHEET)
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET + CHAT_THEME_STYLESHEET)
         self._submit_fn = submit_fn
         # Subprocess mode routes cancellation to the daemon the same way it
         # routes a submission. Without it, Stop sets a flag in this
@@ -436,11 +436,11 @@ class ChatWindow(QMainWindow):
         # Contact header, like the top of an SMS thread.
         header = QHBoxLayout()
         header.setSpacing(10)
-        avatar = JarvisOrb(60)
+        avatar = ClaireOrb(60)
         header.addWidget(avatar)
         name_col = QVBoxLayout()
         name_col.setSpacing(3)
-        name_label = QLabel("Jarvis")
+        name_label = QLabel("Claire")
         name_label.setObjectName('chatName')
         name_col.addWidget(name_label)
         self._header_status = QLabel("")
@@ -459,7 +459,7 @@ class ChatWindow(QMainWindow):
         empty_layout.setContentsMargins(8, 0, 8, 0)
         empty_layout.setSpacing(12)
         empty_layout.addStretch()
-        empty_layout.addWidget(JarvisOrb(120), alignment=Qt.AlignmentFlag.AlignCenter)
+        empty_layout.addWidget(ClaireOrb(120), alignment=Qt.AlignmentFlag.AlignCenter)
         for text, name in (
             ('A little space to think.', 'chatEmptyTitle'),
             ('Ask a question. Follow a thought.\nPick up where your voice left off.', 'chatEmptyDetail'),
@@ -510,7 +510,7 @@ class ChatWindow(QMainWindow):
         self.input_widget = QPlainTextEdit()
         self.input_widget.setPlaceholderText(_DAEMON_STATUS_PLACEHOLDERS["running"])
         self.input_widget.setFixedHeight(58)
-        self.input_widget.setAccessibleName('Message Jarvis')
+        self.input_widget.setAccessibleName('Message Claire')
         self.input_widget.setToolTip('Enter to send. Shift+Enter for a new line.')
         self.input_widget.setStyleSheet(_INPUT_STYLE)
         self.input_widget.keyPressEvent = self._input_key_press  # type: ignore[method-assign]
@@ -583,7 +583,7 @@ class ChatWindow(QMainWindow):
             self._submit_fn(text)
         else:
             # Bundled mode: call the daemon directly with our signal emitters.
-            from jarvis import daemon
+            from claire import daemon
 
             daemon.submit_text_query(
                 text,
@@ -604,7 +604,7 @@ class ChatWindow(QMainWindow):
             # Subprocess mode: the query lives in the daemon process.
             self._cancel_fn()
         else:
-            from jarvis import daemon
+            from claire import daemon
 
             daemon.cancel_active_chat_query()
 
@@ -637,7 +637,7 @@ class ChatWindow(QMainWindow):
         if self._control_fn is not None:
             self._control_fn("rewind", {"user_index": user_index})
         else:
-            from jarvis import daemon
+            from claire import daemon
             if not daemon.rewind_chat_to_user(user_index):
                 debug_log(
                     f"chat rewind rejected for user message {user_index}", "chat"
@@ -653,7 +653,7 @@ class ChatWindow(QMainWindow):
         if self._submit_fn is not None:
             self._submit_fn(text)
         else:
-            from jarvis import daemon
+            from claire import daemon
 
             daemon.submit_text_query(
                 text,
@@ -706,7 +706,7 @@ class ChatWindow(QMainWindow):
 
     def _on_busy(self) -> None:
         self._set_thinking(False)
-        self._append_system("Jarvis is busy with another query already.")
+        self._append_system("Claire is busy with another query already.")
 
     # --- Subprocess IPC entry point --------------------------------------
 
@@ -719,7 +719,7 @@ class ChatWindow(QMainWindow):
         if malformed), False otherwise. Must be called on the Qt main thread
         (the caller marshals via a main-thread-owned signal).
         """
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         if not line.startswith(CHAT_IPC_PREFIX):
             return False
         import json as _json
@@ -918,7 +918,7 @@ class ChatWindow(QMainWindow):
 
     def _refresh_status_label(self) -> None:
         if self._query_in_flight:
-            self._status_label.setText("  Jarvis is thinking…")
+            self._status_label.setText("  Claire is thinking…")
             self._status_label.setVisible(True)
             return
 

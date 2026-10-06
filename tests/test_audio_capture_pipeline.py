@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from jarvis.listening.listener import VoiceListener
-import jarvis.listening.listener as capture
-import jarvis.utils.audio_capture as audio_capture
+from claire.listening.listener import VoiceListener
+import claire.listening.listener as capture
+import claire.utils.audio_capture as audio_capture
 
 pytestmark = pytest.mark.unit
 
@@ -25,8 +25,7 @@ def listener(rate=48000):
     obj._vad_error_logged = False
     obj._vad = None
     obj._should_stop = False
-    obj._dictation_is_active = False
-    obj._dictation_generation = 0
+    obj._capture_generation = 0
     obj._transcription_worker_thread = None
     import threading
     obj._audio_worker_thread = None
@@ -96,13 +95,6 @@ def test_callback_status_and_queue_overflow_are_visible(capsys):
     output = capsys.readouterr().out
     assert 'input overflow' in output
     assert '1' in output and 'dropped' in output
-
-
-def test_dictation_pause_does_not_report_capture_failure(capsys):
-    obj = listener()
-    obj._dictation_active = True
-    obj._check_audio_health(now=30)
-    assert not capsys.readouterr().out
 
 
 def test_stalled_capture_warns_once_then_reports_recovery(capsys):
@@ -292,7 +284,7 @@ def test_utterance_finalisation_queues_transcription_without_blocking():
     obj.echo_detector = SimpleNamespace(_utterance_start_time=1.0, _tts_start_time=0,
                                         _last_tts_finish_time=0, echo_tolerance=0.3)
     obj.tts = None
-    obj._dictation_generation = 0
+    obj._capture_generation = 0
     obj.cfg = SimpleNamespace(voice_debug=False, whisper_min_audio_duration=0.3)
     obj._calculate_audio_energy = lambda frames: 0.1
 
@@ -329,8 +321,8 @@ def test_transcription_worker_preserves_utterance_order():
         return str(audio), "en", ()
 
     obj._transcribe_audio = transcribe
-    obj._transcription_jobs_q.put(SimpleNamespace(audio="first", start_time=1.0, end_time=2.0, energy=0.1, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
-    obj._transcription_jobs_q.put(SimpleNamespace(audio="second", start_time=2.0, end_time=3.0, energy=0.2, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._transcription_jobs_q.put(SimpleNamespace(audio="first", start_time=1.0, end_time=2.0, energy=0.1, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._transcription_jobs_q.put(SimpleNamespace(audio="second", start_time=2.0, end_time=3.0, energy=0.2, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
     obj._transcription_jobs_q.put(None)
 
     worker = threading.Thread(target=obj._run_transcription_worker)
@@ -366,7 +358,7 @@ def test_utterance_finalisation_continues_while_whisper_is_busy():
 
     obj._transcribe_audio = transcribe
     obj._transcription_jobs_q.put(
-        SimpleNamespace(audio="slow", start_time=1.0, end_time=2.0, energy=0.1, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0)
+        SimpleNamespace(audio="slow", start_time=1.0, end_time=2.0, energy=0.1, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0)
     )
     worker = threading.Thread(target=obj._run_transcription_worker)
     worker.start()
@@ -418,7 +410,7 @@ def test_transcription_result_keeps_language_and_utterance_context():
         start_time=10.0,
         end_time=11.0,
         energy=0.2,
-        dictation_generation=0,
+        capture_generation=0,
         captured_during_tts=False,
         captured_tts_start_time=0,
     )
@@ -435,7 +427,7 @@ def test_transcription_result_keeps_language_and_utterance_context():
     )
     obj._process_transcript.assert_called_once_with(
         "hello there", 0.2, 10.0, 11.0,
-        generation=result.dictation_generation,
+        generation=result.capture_generation,
         captured_during_tts=False, captured_tts_start_time=0,
     )
 
@@ -457,11 +449,11 @@ def test_shutdown_discards_full_backlog_without_waiting_for_whisper():
         return "late answer", "en", ()
 
     obj._transcribe_audio = transcribe
-    job = SimpleNamespace(audio="active", start_time=1.0, end_time=2.0, energy=0.1, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0)
+    job = SimpleNamespace(audio="active", start_time=1.0, end_time=2.0, energy=0.1, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0)
     obj._transcription_jobs_q.put(job)
     obj._start_transcription_worker()
     assert started.wait(timeout=1)
-    obj._transcription_jobs_q.put(SimpleNamespace(audio="queued", start_time=2.0, end_time=3.0, energy=0.1, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._transcription_jobs_q.put(SimpleNamespace(audio="queued", start_time=2.0, end_time=3.0, energy=0.1, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
     obj._should_stop = True
     finished = threading.Event()
 
@@ -480,11 +472,11 @@ def test_shutdown_discards_full_backlog_without_waiting_for_whisper():
         shutdown.join(timeout=3)
 
 
-def test_transcription_result_during_dictation_is_not_dispatched():
+def test_stale_transcription_result_is_not_dispatched():
     from unittest.mock import Mock
 
     obj = listener()
-    obj._dictation_active = True
+    obj._capture_generation = 1
     obj._last_detected_language = "fr"
     obj._first_utterance = True
     obj.tts = None
@@ -492,7 +484,7 @@ def test_transcription_result_during_dictation_is_not_dispatched():
     obj._transcript_buffer = Mock()
     obj._process_transcript = Mock()
     obj._is_repetitive_hallucination = lambda text: False
-    result = SimpleNamespace(text="jarvis do this", language="en", low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0)
+    result = SimpleNamespace(text="claire do this", language="en", low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0)
 
     obj._handle_transcription_result(result)
 
@@ -513,7 +505,7 @@ def test_transcription_result_without_detected_language_clears_previous_locale()
     obj._process_transcript = Mock()
     obj._is_repetitive_hallucination = lambda text: False
 
-    obj._handle_transcription_result(SimpleNamespace(text="hello", language=None, low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._handle_transcription_result(SimpleNamespace(text="hello", language=None, low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
 
     assert obj._last_detected_language is None
 
@@ -530,7 +522,7 @@ def test_echo_flag_uses_capture_interval_when_tts_starts_during_whisper():
     obj._process_transcript = Mock()
     obj._is_repetitive_hallucination = lambda text: False
 
-    obj._handle_transcription_result(SimpleNamespace(text="jarvis hello", language="en", low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._handle_transcription_result(SimpleNamespace(text="claire hello", language="en", low_confidence_events=(), start_time=10.0, end_time=11.0, energy=0.2, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
 
     assert obj._transcript_buffer.add.call_args.kwargs["is_during_tts"] is False
 
@@ -586,7 +578,7 @@ def test_run_cleans_up_worker_after_listener_exception():
     assert obj._should_stop
 
 
-def test_dictation_session_invalidates_decode_even_after_listener_resumes():
+def test_capture_generation_change_invalidates_decode_even_after_resume():
     import threading
     from unittest.mock import Mock
 
@@ -600,15 +592,14 @@ def test_dictation_session_invalidates_decode_even_after_listener_resumes():
     def transcribe(_audio):
         started.set()
         release.wait(timeout=2)
-        return "jarvis do this", "en", ()
+        return "claire do this", "en", ()
 
     obj._transcribe_audio = transcribe
     obj._start_transcription_worker()
     worker = obj._transcription_worker_thread
-    obj._transcription_jobs_q.put(SimpleNamespace(audio="before pause", start_time=1.0, end_time=2.0, energy=0.1, dictation_generation=0, captured_during_tts=False, captured_tts_start_time=0))
+    obj._transcription_jobs_q.put(SimpleNamespace(audio="before pause", start_time=1.0, end_time=2.0, energy=0.1, capture_generation=0, captured_during_tts=False, captured_tts_start_time=0))
     assert started.wait(timeout=1)
-    obj._dictation_active = True
-    obj._dictation_active = False
+    obj._capture_generation += 1
     release.set()
     obj._transcription_jobs_q.put(None)
     worker.join(timeout=2)
@@ -627,7 +618,7 @@ def test_delayed_stop_only_interrupts_tts_that_overlapped_capture(
     from unittest.mock import Mock
 
     obj = listener()
-    obj.cfg.wake_word = "jarvis"
+    obj.cfg.wake_word = "claire"
     obj.cfg.wake_aliases = []
     obj.cfg.tune_enabled = False
     obj.tts = SimpleNamespace(enabled=True, is_speaking=lambda: True, interrupt=Mock())
@@ -649,7 +640,7 @@ def test_delayed_stop_only_interrupts_tts_that_overlapped_capture(
                             else (10.0, 11.0))
     obj._process_transcript("stop", 0.2, start_time, end_time,
                             captured_during_tts=captured_during_tts,
-                            captured_tts_start_time=captured_tts_start_time, generation=obj._dictation_generation)
+                            captured_tts_start_time=captured_tts_start_time, generation=obj._capture_generation)
 
     assert obj.tts.interrupt.called is should_interrupt
 
@@ -658,7 +649,7 @@ def test_delayed_utterance_does_not_inherit_later_tts_text_for_intent():
     from unittest.mock import Mock
 
     obj = listener()
-    obj.cfg.wake_word = "jarvis"
+    obj.cfg.wake_word = "claire"
     obj.cfg.wake_aliases = []
     obj.cfg.tune_enabled = False
     obj.tts = SimpleNamespace(enabled=True, is_speaking=lambda: False)
@@ -679,8 +670,8 @@ def test_delayed_utterance_does_not_inherit_later_tts_text_for_intent():
     obj._clear_audio_buffers = Mock()
     obj._wake_timestamp = None
 
-    obj._process_transcript("jarvis weather", 0.2, 10.0, 11.0,
-                            captured_during_tts=False, captured_tts_start_time=0, generation=obj._dictation_generation)
+    obj._process_transcript("claire weather", 0.2, 10.0, 11.0,
+                            captured_during_tts=False, captured_tts_start_time=0, generation=obj._capture_generation)
 
     assert obj._intent_judge.judge.call_args.kwargs["last_tts_text"] == ""
 
@@ -744,7 +735,7 @@ def test_listener_reports_missing_default_before_loading_whisper(monkeypatch, ca
 @pytest.fixture(autouse=True)
 def cached_whisper_files(monkeypatch):
     """Model-loading tests use synthetic local files and never access the Hub."""
-    monkeypatch.setattr("jarvis.listening.model_download.prepare_faster_whisper_model",
+    monkeypatch.setattr("claire.listening.model_download.prepare_faster_whisper_model",
                         lambda name: name)
 
 
@@ -757,7 +748,7 @@ def test_speech_reaches_whisper_at_configured_boundary(
     monkeypatch, frame_ms, tts_speaking, limit_frames, silent_endpoint,
 ):
     from unittest.mock import MagicMock
-    from jarvis.config import load_settings
+    from claire.config import load_settings
 
     from dataclasses import replace
     cfg = replace(
@@ -774,7 +765,7 @@ def test_speech_reaches_whisper_at_configured_boundary(
     monkeypatch.setattr(VoiceListener, '_decode_faster_whisper', lambda *a: ([], None))
     monkeypatch.setattr(VoiceListener, '_start_llm_warmup', lambda _self: [])
     monkeypatch.setattr(VoiceListener, '_start_transcription_worker', lambda _self: None)
-    monkeypatch.setattr('desktop_app.face_widget.get_jarvis_state', lambda: MagicMock())
+    monkeypatch.setattr('desktop_app.face_widget.get_claire_state', lambda: MagicMock())
     obj = VoiceListener(MagicMock(), cfg, SimpleNamespace(is_speaking=lambda: tts_speaking), None)
     frame_samples = cfg.sample_rate * frame_ms // 1000
     speech_frames = limit_frames - 2 if silent_endpoint else limit_frames * 3

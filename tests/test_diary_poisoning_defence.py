@@ -16,7 +16,7 @@ Both were motivated by a field regression where the small model deflected on
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from jarvis.memory.conversation import generate_conversation_summary
+from claire.memory.conversation import generate_conversation_summary
 
 
 def _cfg() -> SimpleNamespace:
@@ -41,7 +41,7 @@ class TestSummariserForbidsDeflectionNarration:
             captured['system_prompt'] = system_prompt
             return "SUMMARY: x\nTOPICS: a, b"
 
-        with patch('jarvis.memory.conversation._direct_llm', side_effect=fake_call):
+        with patch('claire.memory.conversation._direct_llm', side_effect=fake_call):
             generate_conversation_summary(
                 recent_chunks=["User: hi", "Assistant: hello"],
                 previous_summary=None,
@@ -134,16 +134,16 @@ class TestSummariserForbidsDeflectionNarration:
         )
 
     def test_prompt_forbids_welding_unrelated_topics(self):
-        """Regression for the Possessor/Jarvis field incident.
+        """Regression for the Possessor/Claire field incident.
 
         Field DB contained a diary entry reading:
           "The conversation focused on the movie 'Possessor' and the character
-           'Jarvis,' identified as the artificial intelligence from the
+           'Claire,' identified as the artificial intelligence from the
            Marvel Cinematic Universe, created by Tony Stark and later
            embodied by Vision."
 
         Two distinct topics (the 2020 Cronenberg film Possessor, and the MCU
-        AI character named Jarvis) were welded into one clause via "and" plus
+        AI character named Claire) were welded into one clause via "and" plus
         a dangling appositive. Downstream enrichment treated the MCU
         description as pertaining to Possessor, and a later session produced
         a plausible-but-wrong reply grounded in the corrupted summary.
@@ -174,11 +174,11 @@ class TestSummariserForbidsDeflectionNarration:
             "mechanism so small models recognise the failure mode."
         )
 
-        # Concrete good/bad example using the field-observed Possessor/Jarvis
+        # Concrete good/bad example using the field-observed Possessor/Claire
         # case (the same one used elsewhere in the prompt — but here about
         # topic separation, not attribution).
-        assert "jarvis" in lowered and "possessor" in lowered, (
-            "Summariser prompt should include the Possessor/Jarvis topic-welding "
+        assert "claire" in lowered and "possessor" in lowered, (
+            "Summariser prompt should include the Possessor/Claire topic-welding "
             "BAD→GOOD example."
         )
 
@@ -192,7 +192,7 @@ class TestRewriteDeflectionSystemPrompt:
     """
 
     def _prompt(self) -> str:
-        from jarvis.memory.conversation import _REWRITE_DEFLECTION_SYSTEM_PROMPT
+        from claire.memory.conversation import _REWRITE_DEFLECTION_SYSTEM_PROMPT
         return _REWRITE_DEFLECTION_SYSTEM_PROMPT
 
     def test_prompt_names_the_canonical_deflection_shapes(self):
@@ -263,7 +263,7 @@ class TestDiaryEnrichmentInjectionFraming:
         # We intentionally assert on the source-level string rather than end-to-end
         # because the full reply engine invocation pulls in the network stack.
         import inspect
-        from jarvis.reply import engine
+        from claire.reply import engine
 
         source = inspect.getsource(engine)
         assert "reference only" in source.lower(), (
@@ -281,7 +281,7 @@ class TestDiaryEnrichmentInjectionFraming:
         label, this test will fail and force them to preserve the reference-only framing.
         """
         import inspect
-        from jarvis.reply import engine
+        from claire.reply import engine
 
         source = inspect.getsource(engine)
         # The bare label (without the reference-only qualifier) must not appear.

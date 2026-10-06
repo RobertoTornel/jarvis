@@ -119,7 +119,7 @@ def assert_not_fallback_reply(response: Optional[str], context: str = "") -> Non
 # evaluator's terminal-detection quality.
 #
 # The digest prompt (``_LOOP_DIGEST_SYSTEM_PROMPT`` in
-# ``src/jarvis/reply/enrichment.py``) instructs the LLM to open with a
+# ``src/claire/reply/enrichment.py``) instructs the LLM to open with a
 # caveat about not finishing. The phrases below are the canonical English
 # shapes that prompt produces; a drift pin test keeps them aligned with
 # the source prompt.
@@ -192,7 +192,7 @@ def seed_diary_summaries(
             date_utc=date_utc,
             summary=summary,
             topics=None,
-            source_app="jarvis",
+            source_app="claire",
         )
 
 
@@ -247,7 +247,7 @@ def create_mock_tool_run(
     responses = responses or {}
 
     def mock_tool_run(db, cfg, tool_name, tool_args, **kwargs):
-        from jarvis.tools.types import ToolExecutionResult
+        from claire.tools.types import ToolExecutionResult
         capture.record(tool_name, tool_args or {})
         reply = responses.get(tool_name, "OK")
         return ToolExecutionResult(success=True, reply_text=reply)

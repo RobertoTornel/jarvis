@@ -3,8 +3,8 @@ import pytest
 
 from evals.helpers import voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply.planner import resolve_next_tool_call
-from jarvis.tools.builtin.weather import WeatherTool
+from claire.reply.planner import resolve_next_tool_call
+from claire.tools.builtin.weather import WeatherTool
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 

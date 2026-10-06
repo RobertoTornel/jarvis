@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.reply.evaluator import evaluate_turn, EvaluatorResult, _parse_result
+from claire.reply.evaluator import evaluate_turn, EvaluatorResult, _parse_result
 
 
 class TestParseResult:
@@ -106,7 +106,7 @@ class TestEvaluateTurn:
 
     def test_terminal_path(self):
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             return_value='{"terminal": true, "nudge": "", "reason": "done"}',
         ):
             res = evaluate_turn(
@@ -117,7 +117,7 @@ class TestEvaluateTurn:
 
     def test_continue_with_nudge(self):
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             return_value=(
                 '{"terminal": false, "nudge": "Invoke openApp with '
                 'target=YouTube", "reason": "offered instead of acted"}'
@@ -135,7 +135,7 @@ class TestEvaluateTurn:
 
     def test_parse_failure_fails_open_to_terminal(self):
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             return_value="not a valid response",
         ):
             res = evaluate_turn("q", "r", [], 1, self._cfg())
@@ -144,7 +144,7 @@ class TestEvaluateTurn:
 
     def test_timeout_or_exception_fails_open_to_terminal(self):
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=TimeoutError("slow"),
         ):
             res = evaluate_turn("q", "r", [], 1, self._cfg())
@@ -159,7 +159,7 @@ class TestEvaluateTurn:
 
     def test_connection_error_fails_open_to_terminal(self):
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=ConnectionError("ollama down"),
         ):
             res = evaluate_turn("q", "r", [], 1, self._cfg())
@@ -174,7 +174,7 @@ class TestEvaluateTurn:
             return '{"terminal": true, "nudge": "", "reason": ""}'
 
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn(
@@ -196,7 +196,7 @@ class TestEvaluateTurn:
             return '{"terminal": true, "nudge": "", "reason": ""}'
 
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn(
@@ -232,7 +232,7 @@ class TestEvaluateTurn:
             "required": ["search_query"],
         }
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn(
@@ -256,7 +256,7 @@ class TestEvaluateTurn:
             return '{"terminal": true, "nudge": "", "reason": ""}'
 
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn(
@@ -282,7 +282,7 @@ class TestEvaluateTurn:
             return '{"terminal": true, "nudge": "", "reason": ""}'
 
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn(
@@ -327,7 +327,7 @@ class TestEvaluateTurn:
             return '{"terminal": true, "nudge": "", "reason": ""}'
 
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn("q", "r", [], 1, self._cfg())
@@ -347,7 +347,7 @@ class TestEvaluateTurn:
             ollama_chat_model="chat-model",
         )
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn("q", "r", [], 1, cfg)
@@ -365,7 +365,7 @@ class TestEvaluateTurn:
             ollama_chat_model="chat-model",
         )
         with patch(
-            "jarvis.reply.evaluator.call_llm_direct",
+            "claire.reply.evaluator.call_llm_direct",
             side_effect=_capture,
         ):
             evaluate_turn("q", "r", [], 1, cfg)
@@ -385,7 +385,7 @@ class TestEvaluatorGarbledTurnGuidance:
     """
 
     def test_prompt_mentions_garbled_marker_recognition(self):
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         prompt_lower = _EVALUATOR_SYSTEM_PROMPT.lower()
         assert "garbled" in prompt_lower or "malformed" in prompt_lower, (
@@ -412,7 +412,7 @@ class TestEvaluatorGarbledTurnGuidance:
         because the retry is a real tool call, not a direct execution
         of parsed text.
         """
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         prompt_lower = _EVALUATOR_SYSTEM_PROMPT.lower()
         assert "salvage" in prompt_lower or "extract" in prompt_lower, (
@@ -456,7 +456,7 @@ class TestEvaluatorTerminalBias:
     """
 
     def test_prompt_biases_terminal_on_single_part_grounded_reply(self):
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         prompt_lower = _EVALUATOR_SYSTEM_PROMPT.lower()
         assert "single-part" in prompt_lower or "single part" in prompt_lower, (
@@ -482,7 +482,7 @@ class TestEvaluatorTerminalBias:
         `tool_call: {"name": "...", "arguments": {...}}` JSON field. The
         engine uses that structured form to execute the tool directly,
         bypassing small models that ignore free-form nudges."""
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         assert "tool_call" in _EVALUATOR_SYSTEM_PROMPT, (
             "Evaluator prompt must tell the judge to emit a structured "
@@ -497,7 +497,7 @@ class TestEvaluatorTerminalBias:
         because it couldn't see the tool had already run. The prompt must
         explicitly tell the judge to consult TOOLS ALREADY INVOKED and
         return terminal when the action has been performed."""
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         prompt_lower = _EVALUATOR_SYSTEM_PROMPT.lower()
         assert "already invoked" in prompt_lower or "already ran" in prompt_lower, (
@@ -517,7 +517,7 @@ class TestEvaluatorTerminalBias:
         multi-part flows. Prompt must explicitly tell the judge that
         when the query has multiple parts and at least one is
         unaddressed, return continue."""
-        from jarvis.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
+        from claire.reply.evaluator import _EVALUATOR_SYSTEM_PROMPT
 
         prompt_lower = _EVALUATOR_SYSTEM_PROMPT.lower()
         assert "multi-part" in prompt_lower or "multi part" in prompt_lower, (

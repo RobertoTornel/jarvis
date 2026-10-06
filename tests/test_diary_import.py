@@ -52,7 +52,7 @@ def _stub_missing_modules(monkeypatch):
     if isinstance(requests_mod, MagicMock):
         monkeypatch.setattr(requests_mod.exceptions, "Timeout", type("Timeout", (Exception,), {}))
 
-from src.jarvis.memory.db import Database
+from src.claire.memory.db import Database
 
 
 # ── Database method tests ─────────────────────────────────────────────
@@ -65,10 +65,10 @@ def db_with_summaries(tmp_path):
 
     # Insert some summaries in non-chronological order to test ordering
     summaries = [
-        ("2025-03-15", "User discussed work projects and deadlines.", "work,planning", "jarvis"),
-        ("2025-01-10", "User talked about favourite coffee shops.", "food,coffee", "jarvis"),
-        ("2025-06-22", "User mentioned upcoming holiday plans.", "travel,holiday", "jarvis"),
-        ("2025-02-01", "User shared fitness routine details.", "health,fitness", "jarvis"),
+        ("2025-03-15", "User discussed work projects and deadlines.", "work,planning", "claire"),
+        ("2025-01-10", "User talked about favourite coffee shops.", "food,coffee", "claire"),
+        ("2025-06-22", "User mentioned upcoming holiday plans.", "travel,holiday", "claire"),
+        ("2025-02-01", "User shared fitness routine details.", "health,fitness", "claire"),
     ]
 
     for date_utc, summary, topics, source_app in summaries:
@@ -149,12 +149,12 @@ class TestImportDiaryEndpoint:
         self.db.conn.execute(
             """INSERT INTO conversation_summaries (date_utc, ts_utc, summary, topics, source_app)
                VALUES (?, ?, ?, ?, ?)""",
-            ("2025-03-15", "2025-03-15T12:00:00Z", "User likes dark roast coffee.", "food", "jarvis"),
+            ("2025-03-15", "2025-03-15T12:00:00Z", "User likes dark roast coffee.", "food", "claire"),
         )
         self.db.conn.execute(
             """INSERT INTO conversation_summaries (date_utc, ts_utc, summary, topics, source_app)
                VALUES (?, ?, ?, ?, ?)""",
-            ("2025-03-16", "2025-03-16T12:00:00Z", "User works at Acme Corp.", "work", "jarvis"),
+            ("2025-03-16", "2025-03-16T12:00:00Z", "User works at Acme Corp.", "work", "claire"),
         )
         self.db.conn.commit()
 
@@ -171,7 +171,7 @@ class TestImportDiaryEndpoint:
 
     @patch("src.desktop_app.memory_viewer._get_db_path")
     @patch("src.desktop_app.memory_viewer.load_settings")
-    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    @patch("src.claire.memory.graph_ops.call_llm_direct")
     def test_import_streams_progress(self, mock_llm, mock_settings, mock_db_path):
         """Should stream start, progress, and complete messages."""
         mock_db_path.return_value = self.db_path
@@ -230,7 +230,7 @@ class TestImportDiaryEndpoint:
 
     @patch("src.desktop_app.memory_viewer._get_db_path")
     @patch("src.desktop_app.memory_viewer.load_settings")
-    @patch("src.jarvis.memory.graph_ops.call_llm_direct")
+    @patch("src.claire.memory.graph_ops.call_llm_direct")
     def test_import_continues_on_per_summary_error(self, mock_llm, mock_settings, mock_db_path):
         """If one summary fails, the import should continue with the rest."""
         mock_db_path.return_value = self.db_path

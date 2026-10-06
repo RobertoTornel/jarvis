@@ -17,7 +17,7 @@ class TestStateManagerTimerHotWindow:
 
     def _create_state_manager(self):
         """Create a StateManager instance."""
-        from jarvis.listening.state_manager import StateManager
+        from claire.listening.state_manager import StateManager
         return StateManager(
             hot_window_seconds=3.0,
             echo_tolerance=0.3,
@@ -60,7 +60,7 @@ class TestStateManagerTimerHotWindow:
 
     def test_hot_window_activates_after_delay(self):
         """Hot window activates after echo tolerance delay."""
-        from jarvis.listening.state_manager import StateManager, ListeningState
+        from claire.listening.state_manager import StateManager, ListeningState
 
         manager = StateManager(
             hot_window_seconds=3.0,
@@ -84,7 +84,7 @@ class TestStateManagerTimerHotWindow:
 
     def test_hot_window_expires_after_full_duration(self):
         """Hot window should expire only after the full duration passes."""
-        from jarvis.listening.state_manager import StateManager, ListeningState
+        from claire.listening.state_manager import StateManager, ListeningState
 
         # Use short times for testing
         hot_window_seconds = 0.5
@@ -117,7 +117,7 @@ class TestStateManagerTimerHotWindow:
 
     def test_hot_window_total_time_from_tts_end(self):
         """Verify total time from 'TTS end' (schedule call) to hot window expiry."""
-        from jarvis.listening.state_manager import StateManager, ListeningState
+        from claire.listening.state_manager import StateManager, ListeningState
 
         # Use realistic but short times
         hot_window_seconds = 0.4
@@ -186,7 +186,7 @@ class TestEchoDetectionThreshold:
 
     def _create_echo_detector(self):
         """Create an EchoDetector instance."""
-        from jarvis.listening.echo_detection import EchoDetector
+        from claire.listening.echo_detection import EchoDetector
         return EchoDetector(echo_tolerance=0.3, energy_spike_threshold=2.0)
 
     def test_similarity_threshold_normal_mode(self):
@@ -237,7 +237,7 @@ class TestConfigNewOptions:
 
     def test_intent_judge_config_defaults(self):
         """Intent judge config has correct defaults."""
-        from jarvis.config import get_default_config
+        from claire.config import get_default_config
 
         defaults = get_default_config()
 
@@ -247,7 +247,7 @@ class TestConfigNewOptions:
 
     def test_transcript_buffer_config_defaults(self):
         """Transcript buffer config has correct defaults."""
-        from jarvis.config import get_default_config
+        from claire.config import get_default_config
 
         defaults = get_default_config()
 
@@ -256,8 +256,8 @@ class TestConfigNewOptions:
 
     def test_load_settings_includes_new_options(self):
         """load_settings includes new options in Settings."""
-        with patch("jarvis.config._load_json", return_value={}):
-            from jarvis.config import load_settings
+        with patch("claire.config._load_json", return_value={}):
+            from claire.config import load_settings
 
             settings = load_settings()
 

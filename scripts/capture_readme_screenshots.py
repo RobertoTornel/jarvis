@@ -43,11 +43,11 @@ def capture(window, name):
 def main():
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
-    with TemporaryDirectory(prefix='jarvis-screenshots-') as temporary, ExitStack() as stack:
+    with TemporaryDirectory(prefix='claire-screenshots-') as temporary, ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, {
             'XDG_CONFIG_HOME': temporary,
             'XDG_DATA_HOME': temporary,
-            'JARVIS_CONFIG_PATH': str(Path(temporary) / 'config.json'),
+            'CLAIRE_CONFIG_PATH': str(Path(temporary) / 'config.json'),
         }))
         stack.enter_context(patch.object(socket.socket, 'connect', side_effect=AssertionError('Screenshots must be offline')))
         from desktop_app.qt_worker import KeepAliveWorker
@@ -77,7 +77,7 @@ def main():
         logs = desktop_app.LogViewerWindow()
         logs.resize(900, 560)
         for line in (
-            '🚀 Jarvis daemon started',
+            '🚀 Claire daemon started',
             '💾 Initialising dialogue memory…',
             '✓ Dialogue memory initialised',
             '⚠️ 📍 Optional location features unavailable. Add a GeoLite2 database in Setup → Location.',

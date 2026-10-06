@@ -10,7 +10,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def daemon(monkeypatch):
-    from jarvis import daemon
+    from claire import daemon
     monkeypatch.setattr(daemon, '_global_stop_requested', False)
     daemon.set_voice_feedback_callback(None)
     yield daemon
@@ -18,7 +18,7 @@ def daemon(monkeypatch):
 
 
 def rejection():
-    from jarvis.listening import LowConfidenceEvent
+    from claire.listening import LowConfidenceEvent
     return LowConfidenceEvent(0.1, 'Private transcript must not reach the desktop')
 
 
@@ -36,7 +36,7 @@ def test_bundled_feedback_is_queued_and_coalesced(daemon, capsys):
 
 
 def test_subprocess_feedback_contains_no_transcript(daemon, monkeypatch, capsys):
-    monkeypatch.setenv('JARVIS_STDIN_IPC', '1')
+    monkeypatch.setenv('CLAIRE_STDIN_IPC', '1')
     daemon._queue_low_confidence(rejection())
     assert capsys.readouterr().out == ''
     daemon._dispatch_voice_feedback()
@@ -48,7 +48,7 @@ def test_subprocess_feedback_contains_no_transcript(daemon, monkeypatch, capsys)
 
 
 def test_headless_listener_does_not_emit_desktop_protocol(daemon, monkeypatch, capsys):
-    monkeypatch.delenv('JARVIS_STDIN_IPC', raising=False)
+    monkeypatch.delenv('CLAIRE_STDIN_IPC', raising=False)
     daemon._queue_low_confidence(rejection())
     daemon._dispatch_voice_feedback()
     assert capsys.readouterr().out == ''
@@ -68,8 +68,8 @@ def test_shutdown_discards_pending_feedback(daemon, monkeypatch):
 @pytest.fixture
 def face(qapp, monkeypatch, tmp_path):
     from desktop_app import face_widget
-    monkeypatch.setattr(face_widget, '_get_jarvis_state_file', lambda: str(tmp_path / 'state'))
-    monkeypatch.setattr(face_widget, '_jarvis_state_instance', None)
+    monkeypatch.setattr(face_widget, '_get_claire_state_file', lambda: str(tmp_path / 'state'))
+    monkeypatch.setattr(face_widget, '_claire_state_instance', None)
     window = face_widget.FaceWindow()
     window.show()
     QTest.qWait(20)
@@ -80,18 +80,18 @@ def face(qapp, monkeypatch, tmp_path):
 
 
 def test_rejection_cue_dismisses_without_changing_state_or_geometry(face):
-    from desktop_app.face_widget import JarvisState
-    face.face._state_manager.set_state(JarvisState.LISTENING)
+    from desktop_app.face_widget import ClaireState
+    face.face._state_manager.set_state(ClaireState.LISTENING)
     normal = face.face.geometry()
     face.show_low_confidence()
     labels = [label for label in face.findChildren(QLabel) if "catch" in label.text()]
     assert labels and labels[0].isVisible()
     assert face.face.geometry() == normal
-    assert face.face._state_manager.state == JarvisState.LISTENING
+    assert face.face._state_manager.state == ClaireState.LISTENING
     QTest.qWait(2200)
     assert labels[0].text() == ''
     assert face.face.geometry() == normal
-    assert face.face._state_manager.state == JarvisState.LISTENING
+    assert face.face._state_manager.state == ClaireState.LISTENING
 
 
 def test_hidden_face_is_not_opened_by_rejection(face):
@@ -108,10 +108,10 @@ def test_stop_clears_visual_feedback(face):
 
 def test_subprocess_signal_reaches_face_on_gui_thread(face, qapp):
     import threading
-    from desktop_app.app import JarvisSystemTray, LogSignals, _should_emit_as_log
-    from jarvis.daemon import VOICE_IPC_PREFIX
+    from desktop_app.app import ClaireSystemTray, LogSignals, _should_emit_as_log
+    from claire.daemon import VOICE_IPC_PREFIX
     from PyQt6.QtCore import Qt
-    tray = object.__new__(JarvisSystemTray)
+    tray = object.__new__(ClaireSystemTray)
     tray.face_window = face
     tray.log_signals = LogSignals()
     tray.is_listening = True
@@ -182,8 +182,8 @@ def test_feedback_arrives_while_diary_controller_is_busy(daemon, monkeypatch):
 def test_stop_dismisses_feedback_before_waiting_for_daemon(face, daemon):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
-    from desktop_app.app import JarvisSystemTray, LogSignals
-    tray = object.__new__(JarvisSystemTray)
+    from desktop_app.app import ClaireSystemTray, LogSignals
+    tray = object.__new__(ClaireSystemTray)
     tray.face_window = face
     tray.log_signals = LogSignals()
     tray.is_bundled = True

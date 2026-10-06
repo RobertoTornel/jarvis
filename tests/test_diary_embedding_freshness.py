@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.memory import conversation
-from jarvis.memory.db import Database
-from jarvis.utils.fast_vector_store import get_faiss_vector_store
-from jarvis.utils.vector_store import get_python_vector_store
-from jarvis.utils.vector_store import PythonVectorStore
-from jarvis.utils.fast_vector_store import FAISSVectorStore
+from claire.memory import conversation
+from claire.memory.db import Database
+from claire.utils.fast_vector_store import get_faiss_vector_store
+from claire.utils.vector_store import get_python_vector_store
+from claire.utils.vector_store import PythonVectorStore
+from claire.utils.fast_vector_store import FAISSVectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(params=['python', 'faiss', 'vss'])
 def owners(request, tmp_path, monkeypatch):
     factory = get_faiss_vector_store if request.param == 'faiss' else get_python_vector_store
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store',
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store',
                         lambda path, dimension: factory(path, 2) if request.param == 'faiss' else factory(path))
     first = Database(str(tmp_path / 'diary.db'))
     if request.param == 'vss':
@@ -103,7 +103,7 @@ def test_delayed_refresh_keeps_newer_vector_across_owners_and_reopen(owners, mon
 @pytest.mark.parametrize('backend', ['python', 'faiss'])
 def test_content_change_at_vector_write_boundary_rejects_stale_refresh(tmp_path, monkeypatch, backend):
     factory = get_python_vector_store if backend == 'python' else get_faiss_vector_store
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store',
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store',
                         lambda path, dimension: factory(path) if backend == 'python' else factory(path, 2))
     first = Database(str(tmp_path / 'diary.db'))
     second = Database(first.db_path)
@@ -142,7 +142,7 @@ def test_missing_source_cannot_bypass_the_guard(owners):
 
 
 def test_python_in_memory_diary_rejects_superseded_text(monkeypatch):
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store',
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store',
                         lambda path, dimension: get_python_vector_store(path))
     db = Database(':memory:')
     try:

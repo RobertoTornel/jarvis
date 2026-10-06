@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.utils.fast_vector_store import FAISSVectorStore
-from jarvis.utils.vector_store import PythonVectorStore
-from jarvis.memory import conversation
-from jarvis.memory.db import Database
+from claire.utils.fast_vector_store import FAISSVectorStore
+from claire.utils.vector_store import PythonVectorStore
+from claire.memory import conversation
+from claire.memory.db import Database
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +45,7 @@ def test_rejected_write_preserves_memory_and_releases_writer_for_retry(store, su
 
 @pytest.mark.parametrize('operation', ['save', 'rewrite', 'topics'])
 def test_diary_refresh_failure_retains_text_and_previous_vector(store, monkeypatch, operation):
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store', lambda path, dimension: store)
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store', lambda path, dimension: store)
     db = Database(store.db_path)
     try:
         today = datetime.now(timezone.utc).date().isoformat()

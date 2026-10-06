@@ -7,13 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone
 
-from src.jarvis.memory.conversation import (
+from src.claire.memory.conversation import (
     DialogueMemory,
     update_daily_conversation_summary,
     update_diary_from_dialogue_memory,
 )
-from src.jarvis.reply.engine import run_reply_engine
-from src.jarvis.utils.redact import redact
+from src.claire.reply.engine import run_reply_engine
+from src.claire.utils.redact import redact
 
 
 @pytest.mark.unit
@@ -85,8 +85,8 @@ class TestDialogueMemory:
 class TestReplyEngineDialogueMemory:
     """Test reply engine dialogue memory integration."""
     
-    @patch('src.jarvis.reply.engine.chat_with_messages')
-    @patch('src.jarvis.reply.engine.extract_text_from_response')
+    @patch('src.claire.reply.engine.chat_with_messages')
+    @patch('src.claire.reply.engine.extract_text_from_response')
     def test_dialogue_memory_preserves_message_order(self, mock_extract, mock_chat):
         """Test that reply engine stores conversation in correct order."""
         # Mock dependencies
@@ -128,9 +128,9 @@ class TestReplyEngineDialogueMemory:
         assert "User: What's the weather in London?" in chunks
         assert "Assistant: Final response" in chunks
     
-    @patch('src.jarvis.reply.engine.chat_with_messages')
-    @patch('src.jarvis.reply.engine.extract_text_from_response')
-    @patch('src.jarvis.reply.engine.run_tool_with_retries')
+    @patch('src.claire.reply.engine.chat_with_messages')
+    @patch('src.claire.reply.engine.extract_text_from_response')
+    @patch('src.claire.reply.engine.run_tool_with_retries')
     def test_dialogue_memory_filters_tool_calls(self, mock_tool, mock_extract, mock_chat):
         """Test that JSON tool calls are filtered from dialogue memory."""
         # Mock dependencies
@@ -210,7 +210,7 @@ class TestDiaryRedaction:
         assert "user@example.com" not in redacted
         assert "sk-abcd1234567890abcdef" not in redacted
     
-    @patch('src.jarvis.memory.conversation.generate_conversation_summary')
+    @patch('src.claire.memory.conversation.generate_conversation_summary')
     def test_diary_update_redacts_chunks(self, mock_summary):
         """Test that diary updates redact sensitive information from chunks."""
         # Mock summary generation
@@ -254,7 +254,7 @@ class TestDiaryRedaction:
         assert "sensitive@example.com" not in redacted_text
         assert "sk-abcdef123456" not in redacted_text
     
-    @patch('src.jarvis.memory.conversation.generate_conversation_summary')
+    @patch('src.claire.memory.conversation.generate_conversation_summary')
     def test_diary_update_preserves_conversation_flow(self, mock_summary):
         """Test that diary updates preserve conversation order after redaction."""
         # Mock summary generation
@@ -322,7 +322,7 @@ class TestDialogueMemoryIntegration:
         assert "sk-1234567890" in chunk_content
         
         # Simulate diary update redaction
-        from src.jarvis.utils.redact import redact
+        from src.claire.utils.redact import redact
         redacted_chunks = [redact(chunk) for chunk in chunks]
         redacted_content = redacted_chunks[0]
         
@@ -573,7 +573,7 @@ class TestDialogueMemoryEdgeCases:
         chunks_snapshot, _ = dm.get_pending_chunks_with_snapshot()
         assert chunks_simple == chunks_snapshot
 
-    @patch('src.jarvis.memory.conversation.update_daily_conversation_summary')
+    @patch('src.claire.memory.conversation.update_daily_conversation_summary')
     def test_update_diary_preserves_new_messages_during_slow_llm(self, mock_summary):
         """Integration test: messages arriving during slow LLM call are preserved."""
         dm = DialogueMemory(inactivity_timeout=0.1)

@@ -35,7 +35,7 @@ def _assert_no_tools(capture, query, is_small, model_name):
 
 def _is_small_model(model_name: str) -> bool:
     """Check if model is classified as small by the model size detector."""
-    from jarvis.reply.prompts import detect_model_size, ModelSize
+    from claire.reply.prompts import detect_model_size, ModelSize
     return detect_model_size(model_name) == ModelSize.SMALL
 
 
@@ -65,7 +65,7 @@ class TestGreetingNoToolsLive:
         eval_dialogue_memory
     ):
         """Live test: greetings should not trigger tool calls."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         # Use the judge model (which may be small or large)
@@ -78,7 +78,7 @@ class TestGreetingNoToolsLive:
 
         capture = ToolCallCapture()
 
-        with patch('jarvis.reply.engine.run_tool_with_retries',
+        with patch('claire.reply.engine.run_tool_with_retries',
                    side_effect=create_mock_tool_run(capture)):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -110,7 +110,7 @@ class TestGreetingNoToolsLive:
         eval_dialogue_memory
     ):
         """Live test: user instructions about behaviour should not trigger tool calls."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -120,7 +120,7 @@ class TestGreetingNoToolsLive:
 
         capture = ToolCallCapture()
 
-        with patch('jarvis.reply.engine.run_tool_with_retries',
+        with patch('claire.reply.engine.run_tool_with_retries',
                    side_effect=create_mock_tool_run(capture)):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -159,7 +159,7 @@ class TestGreetingNoToolsLive:
         The model should recognise it has no concrete facts about the entity and call
         webSearch rather than denying knowledge or asking for a link.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -168,7 +168,7 @@ class TestGreetingNoToolsLive:
 
         capture = ToolCallCapture()
 
-        with patch('jarvis.reply.engine.run_tool_with_retries',
+        with patch('claire.reply.engine.run_tool_with_retries',
                    side_effect=create_mock_tool_run(capture, {
                        "webSearch": "Search result: relevant details about the requested entity.",
                        "fetchWebPage": "Page content: relevant details about the requested entity.",
@@ -216,7 +216,7 @@ class TestGreetingNoToolsLive:
           2. The reply engine must frame the enrichment as reference-only so the
              model doesn't treat "the assistant offered to search" as a template.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -251,10 +251,10 @@ class TestGreetingNoToolsLive:
         # system prompt. Going through the FTS/vector hybrid would make the test
         # flaky on seeded data that lacks vector embeddings.
         with patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=[poisoned_summary],
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, {
                 "webSearch": "Search result: Possessor is a 2020 film directed by Brandon Cronenberg.",
                 "fetchWebPage": "Page content: relevant details about the requested entity.",
@@ -291,7 +291,7 @@ class TestGreetingNoToolsLive:
         eval_dialogue_memory
     ):
         """Live test: weather query should still trigger tools."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         query = "what's the weather today"
@@ -300,7 +300,7 @@ class TestGreetingNoToolsLive:
 
         capture = ToolCallCapture()
 
-        with patch('jarvis.reply.engine.run_tool_with_retries',
+        with patch('claire.reply.engine.run_tool_with_retries',
                    side_effect=create_mock_tool_run(capture, {
                        "getWeather": "Weather: 22C, partly cloudy",
                    })):

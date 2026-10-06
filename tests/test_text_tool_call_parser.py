@@ -13,7 +13,7 @@ import pytest
 
 
 def _extract(content: str, tool_name: str = "webSearch"):
-    import jarvis.reply.engine as engine_mod
+    import claire.reply.engine as engine_mod
     assert hasattr(engine_mod, "_extract_text_tool_call"), (
         "Expose _extract_text_tool_call at module level for test coverage."
     )
@@ -108,7 +108,7 @@ class TestNoFalsePositiveOnProse:
 
 
 def _is_malformed(content: str) -> bool:
-    import jarvis.reply.engine as engine_mod
+    import claire.reply.engine as engine_mod
     assert hasattr(engine_mod, "_is_malformed_model_output"), (
         "Expose _is_malformed_model_output at module level for test coverage."
     )
@@ -170,7 +170,7 @@ class TestTextToolCallGuidancePrompt:
     """
 
     def _guidance(self, allowed_names=("webSearch", "stop", "toolSearchTool")):
-        import jarvis.reply.engine as engine_mod
+        import claire.reply.engine as engine_mod
         assert hasattr(engine_mod, "_text_tool_call_guidance"), (
             "Expose _text_tool_call_guidance(allowed_names) at module "
             "level so the tool-call prompt block is unit-testable."

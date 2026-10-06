@@ -35,8 +35,8 @@ def _assistant_content(text: str):
 def test_loop_merges_toolsearchtool_results_into_allowlist(
     mock_config, db, dialogue_memory
 ):
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → no forced text tools
 
@@ -119,8 +119,8 @@ def test_initial_allowlist_always_includes_toolsearchtool(
 ):
     """Even when the router returns no additional tools, the engine must
     always append ``toolSearchTool`` so the escape hatch is reachable."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
@@ -177,8 +177,8 @@ def test_schema_regenerated_after_toolsearchtool_merge(
     """F1: after toolSearchTool widens the allow-list, the next native-mode
     LLM call must receive a tools schema that includes the newly surfaced
     tool name."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → native tools
 
@@ -246,8 +246,8 @@ def test_schema_regenerated_after_toolsearchtool_merge(
 
 def test_tool_search_max_calls_cap(mock_config, db, dialogue_memory):
     """F5: toolSearchTool invocations are capped per reply."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
@@ -309,7 +309,7 @@ def test_tool_search_max_calls_cap(mock_config, db, dialogue_memory):
 def test_validate_tool_args_catches_unknown_keys():
     """Unit test for the schema validator — unknown arg key is the exact
     failure mode the field log hit."""
-    from jarvis.reply.engine import _validate_tool_args_against_schema
+    from claire.reply.engine import _validate_tool_args_against_schema
 
     err = _validate_tool_args_against_schema(
         "webSearch",
@@ -322,7 +322,7 @@ def test_validate_tool_args_catches_unknown_keys():
 
 
 def test_validate_tool_args_passes_correct_keys():
-    from jarvis.reply.engine import _validate_tool_args_against_schema
+    from claire.reply.engine import _validate_tool_args_against_schema
 
     err = _validate_tool_args_against_schema(
         "webSearch",
@@ -333,7 +333,7 @@ def test_validate_tool_args_passes_correct_keys():
 
 
 def test_validate_tool_args_catches_missing_required():
-    from jarvis.reply.engine import _validate_tool_args_against_schema
+    from claire.reply.engine import _validate_tool_args_against_schema
 
     err = _validate_tool_args_against_schema(
         "webSearch",
@@ -348,8 +348,8 @@ def test_max_turns_produces_digest(mock_config, db, dialogue_memory):
     """When the loop hits ``agentic_max_turns`` via a pure tool-call loop
     (no content turn), the engine runs ``digest_loop_for_max_turns`` and
     ships the caveat-prefixed digest."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
@@ -407,8 +407,8 @@ def test_max_turns_digest_failure_falls_back_to_generic_error(
     """If the digest returns None (e.g. timeout) and there is no last
     candidate reply (pure tool-call loop), the engine must emit the
     generic error rather than returning None."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
@@ -463,8 +463,8 @@ def test_toolsearchtool_empty_result_does_not_register_sentence_as_tool(
     with a bogus entry. The parser must reject anything that is not an
     actual tool name from the registry.
     """
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 

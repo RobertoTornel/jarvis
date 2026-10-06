@@ -9,7 +9,7 @@ import time
 import numpy as np
 import pytest
 
-from jarvis.listening import listener as listener_module
+from claire.listening import listener as listener_module
 
 
 pytestmark = pytest.mark.unit
@@ -168,7 +168,7 @@ def test_faster_whisper_confidence_fallback(make_listener):
 
 
 @pytest.mark.parametrize("backend", ["faster-whisper", "mlx"])
-@pytest.mark.parametrize("invalidation", ["dictation", "shutdown"])
+@pytest.mark.parametrize("invalidation", ["generation", "shutdown"])
 def test_invalidated_transcription_does_not_emit_events(
     make_listener, monkeypatch, backend, invalidation,
 ):
@@ -200,9 +200,8 @@ def test_invalidated_transcription_does_not_emit_events(
     worker.start()
     try:
         assert started.wait(timeout=1)
-        if invalidation == "dictation":
-            listener._dictation_active = True
-            listener._dictation_active = False
+        if invalidation == "generation":
+            listener._capture_generation += 1
         else:
             listener.stop()
     finally:
@@ -214,15 +213,15 @@ def test_invalidated_transcription_does_not_emit_events(
     assert listener._transcription_results_q.empty()
 
 
-def test_callback_that_starts_dictation_suppresses_remaining_events(make_listener, transcribe):
+def test_callback_that_invalidates_generation_suppresses_remaining_events(make_listener, transcribe):
     events = []
     listener = make_listener()
 
-    def start_dictation(event):
+    def invalidate(event):
         events.append(event)
-        listener._dictation_active = True
+        listener._capture_generation += 1
 
-    listener.on_low_confidence = start_dictation
+    listener.on_low_confidence = invalidate
     threshold = listener.cfg.whisper_min_confidence
 
     assert transcribe(listener, [

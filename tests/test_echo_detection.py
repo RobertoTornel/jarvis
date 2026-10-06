@@ -7,7 +7,7 @@ when heard audio is an echo of TTS output vs genuine user speech.
 
 import time
 import pytest
-from jarvis.listening.echo_detection import EchoDetector
+from claire.listening.echo_detection import EchoDetector
 
 
 class TestTextNormalization:

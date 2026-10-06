@@ -1,7 +1,8 @@
-"""Cross-platform launcher for Claude Code preview_start.
+"""Linux launcher for Claude Code preview_start.
 
-Detects the OS and delegates to the appropriate platform-specific script
-(bat on Windows, sh on macOS/Linux). Can be invoked with any Python 3.x.
+Delegates to the matching ``scripts/<name>.sh`` shell script. This fork is
+Linux-only, so the Windows ``.bat``/PowerShell branches have been removed.
+Can be invoked with any Python 3.x.
 
 Usage:
     python scripts/launch.py <script_name> [args...]
@@ -13,7 +14,6 @@ Examples:
 """
 
 import os
-import platform
 import subprocess
 import sys
 
@@ -29,25 +29,14 @@ def main():
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     scripts_dir = os.path.join(project_root, "scripts")
 
-    if platform.system() == "Windows":
-        script_path = os.path.join(scripts_dir, f"{script_name}.bat")
-        if not os.path.isfile(script_path):
-            print(f"ERROR: {script_path} not found")
-            sys.exit(1)
-        result = subprocess.run(
-            [script_path] + extra_args,
-            cwd=project_root,
-            shell=True,
-        )
-    else:
-        script_path = os.path.join(scripts_dir, f"{script_name}.sh")
-        if not os.path.isfile(script_path):
-            print(f"ERROR: {script_path} not found")
-            sys.exit(1)
-        result = subprocess.run(
-            ["bash", script_path] + extra_args,
-            cwd=project_root,
-        )
+    script_path = os.path.join(scripts_dir, f"{script_name}.sh")
+    if not os.path.isfile(script_path):
+        print(f"ERROR: {script_path} not found")
+        sys.exit(1)
+    result = subprocess.run(
+        ["bash", script_path] + extra_args,
+        cwd=project_root,
+    )
 
     sys.exit(result.returncode)
 

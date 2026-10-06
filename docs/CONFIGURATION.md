@@ -1,49 +1,49 @@
 # Configuration guide
 
-[← Back to Jarvis](../README.md)
+[← Back to Claire](../README.md)
 
-Detailed settings, dictation, integrations and troubleshooting. Start with the desktop Settings window; JSON examples are for custom setups.
+Detailed settings, integrations and troubleshooting. Start with the desktop Settings window; JSON examples are for custom setups. Cloud services and what leaves the machine are covered in [CLOUD_POLICY.md](CLOUD_POLICY.md).
 
 ## Configuration
 
-Most users won't need to change anything. Open **⚙️ Settings** from the tray menu to configure Jarvis through a graphical interface: no JSON editing required. Settings are saved to `~/.config/jarvis/config.json`.
+Most users won't need to change anything. Open **⚙️ Settings** from the tray menu to configure Claire through a graphical interface: no JSON editing required. Settings are saved to `~/.config/claire/config.json`.
 
 <details>
 <summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
 
-By default Jarvis runs everything locally through [Ollama](https://ollama.com): no API keys, nothing leaves your machine. If you already run an OpenAI-compatible server you can point Jarvis at it instead. Your data still only travels to the servers you control.
+Claire's default language route is **OmniRouter**: an OpenAI-compatible endpoint at `http://127.0.0.1:20129/v1`, selected with provider `omniroute`, authenticated with the `OMNIROUTE_API_KEY` environment variable. Conversation text and images go to that endpoint; the details are in [CLOUD_POLICY.md](CLOUD_POLICY.md). The offline alternative is [Ollama](https://ollama.com), which runs entirely on this machine. If you run any other OpenAI-compatible server you can point Claire at that instead.
 
 Pick the provider after speech recognition in the Setup Wizard, or under **⚙️ Settings → 🔌 LLM Provider**. No JSON editing required. On the OpenAI-compatible page the wizard does the legwork for you: it auto-detects running local servers, offers a one-click preset for your app, and when you press **Connect** it loads the server's model list and checks the chosen model for chat, tool calling, and embeddings, so you know it works before you finish setup.
 
 Both provider paths include a model-memory budget. Ollama uses its known model estimates; the OpenAI-compatible page lets you edit estimates because servers usually expose model names but not their memory needs. A server on another machine has a separate budget from Whisper on this machine. Estimates are guidance, not a guarantee: quantisation, context length and concurrent workloads affect actual use.
 
-Tested local servers (all run on your own machine):
+Tested OpenAI-compatible servers:
 
 | App | Default base URL | Notes |
 |-----|------------------|-------|
+| OmniRouter (default) | `http://127.0.0.1:20129/v1` | Claire's configured route; provider `omniroute`, key from `OMNIROUTE_API_KEY`. |
 | LM Studio | `http://localhost:1234/v1` | Chat, tool calling, and embeddings. |
-| Ollama (OpenAI API) | `http://localhost:11434/v1` | The native Ollama path is the default; the OpenAI shape works too. |
+| Ollama (OpenAI API) | `http://localhost:11434/v1` | The native Ollama path is the offline default; the OpenAI shape works too. |
 | Jan | `http://localhost:1337/v1` | Chat and tool calling. |
 | llama.cpp (`llama-server`) | `http://localhost:8080/v1` | Tool calling depends on the model. |
 | LocalAI | `http://localhost:8080/v1` | Feature support depends on the backend model. |
 | vLLM | `http://localhost:8000/v1` | Tool calling depends on the model. |
-| oMLX (Apple Silicon) | varies | No embeddings endpoint, so memory uses keyword search unless you route embeddings to Ollama (below). |
 
 For reference, the underlying config keys are:
 
 ```json
 {
   "llm_provider": "openai_compatible",
-  "llm_base_url": "http://localhost:1234/v1",
+  "llm_base_url": "http://127.0.0.1:20129/v1",
   "llm_api_key": "",
   "llm_chat_model": "your-served-model-name"
 }
 ```
 
-- `llm_base_url`: your server's OpenAI API base URL.
-- `llm_api_key`: only if your server requires one; leave empty otherwise.
-- `llm_chat_model`: whatever model name your server exposes.
-- `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible server. Set it to pin a dedicated small model.
+- `llm_base_url`: the endpoint's OpenAI API base URL. The default route is OmniRouter at `http://127.0.0.1:20129/v1`.
+- `llm_api_key`: leave empty. The key is read at runtime from the `OMNIROUTE_API_KEY` environment variable (or the `fish_key_file` for Fish Audio) — never put a key value in `config.json`.
+- `llm_chat_model`: whatever model name the endpoint exposes.
+- `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible endpoint. Set it to pin a dedicated small model.
 
 **Embeddings** (used for memory search) can run on a different backend. If your chat server has no embeddings endpoint, memory falls back to keyword search. To keep full semantic memory, route embeddings to Ollama (the wizard offers this automatically when it detects a server that cannot embed):
 
@@ -61,9 +61,9 @@ Leave `embedding_provider` empty to use the same provider as chat. With no worki
 <details>
 <summary><strong>Power and Startup</strong></summary>
 
-Jarvis favours fast first responses by default: it warms Whisper, the chat
-model, and the intent judge before announcing that it is listening. On Macs or
-laptops where heat and battery matter more than instant first-token latency,
+Claire favours fast first responses by default: it warms Whisper, the chat
+model, and the intent judge before announcing that it is listening. On laptops
+where heat and battery matter more than instant first-token latency,
 enable **⚙️ Settings → ✨ Features → Low Power Mode**.
 
 ```json
@@ -96,19 +96,19 @@ is ready. The first LLM-backed request after startup or idle may be slower.
 
 Speed is relative to the original large model. [Source](https://github.com/openai/whisper)
 
-`large-v3-turbo` is available when MLX Whisper is usable on Apple Silicon or
-faster-whisper 1.1.0 or newer is installed. If the selected faster-whisper
-cannot load turbo, the wizard hides that option and an existing turbo setting
-loads `medium` instead. Choose a different model in Settings → Whisper.
+`large-v3-turbo` is available when faster-whisper 1.1.0 or newer is installed.
+If the selected faster-whisper cannot load turbo, the wizard hides that option
+and an existing turbo setting loads `medium` instead. Choose a different model in
+Settings → Whisper.
 
 With the faster-whisper backend, `whisper_model` also accepts a Hugging Face
 model ID such as `deepdml/faster-whisper-large-v3-turbo-ct2`, or a local
 converted model directory.
 
-#### GPU Acceleration (Windows)
-If you have an NVIDIA GPU, Jarvis can use CUDA for much faster speech recognition. The Windows installer offers an optional CUDA download during setup. For development:
+#### GPU Acceleration (NVIDIA on Linux)
+If you have an NVIDIA GPU, Claire can use CUDA for much faster speech recognition. Install the CUDA runtime libraries into the virtual environment:
 ```bash
-pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
+.venv/bin/pip install nvidia-cublas-cu12 nvidia-cudnn-cu12
 ```
 CUDA is detected automatically: no configuration needed.
 
@@ -116,7 +116,7 @@ CUDA is detected automatically: no configuration needed.
 Whisper sometimes produces confident but false transcriptions during silence or background noise (e.g. news-show intros, music). Two thresholds filter these out before they reach the intent judge:
 
 - `"whisper_min_confidence": 0.3`: drops segments whose `avg_logprob`-derived confidence falls below this value. Raise if you see low-confidence noise leaking through; lower if real speech is being dropped.
-- `"whisper_no_speech_threshold": 0.5`: drops any segment whose `no_speech_prob` is at or above this value, regardless of `avg_logprob`. Catches the case where Whisper is confident about a hallucinated phrase but its own no-speech signal says the audio was silent. Applies to both the faster-whisper and MLX backends.
+- `"whisper_no_speech_threshold": 0.5`: drops any segment whose `no_speech_prob` is at or above this value, regardless of `avg_logprob`. Catches the case where Whisper is confident about a hallucinated phrase but its own no-speech signal says the audio was silent. Applies to the faster-whisper backend.
 
 Both thresholds are exposed in the Settings window under *Whisper*.
 
@@ -125,11 +125,11 @@ Both thresholds are exposed in the Settings window under *Whisper*.
 <details>
 <summary><strong>Voice Interface (Advanced)</strong></summary>
 
-**LLM Intent Judge** - Jarvis uses a small LLM for intelligent voice intent classification (echo detection, query extraction, stop commands). On the default Ollama setup this is `gemma4:e2b`, installed automatically alongside your chosen chat model during setup. On an OpenAI-compatible provider the judge uses your served chat model instead, so there is nothing extra to install. The intent judge cannot be disabled but gracefully falls back to simpler text matching if the LLM server is unavailable.
+**LLM Intent Judge** - Claire uses a small LLM for intelligent voice intent classification (echo detection, query extraction, stop commands). On the default Ollama setup this is `gemma4:e2b`, installed automatically alongside your chosen chat model during setup. On an OpenAI-compatible provider the judge uses your served chat model instead, so there is nothing extra to install. The intent judge cannot be disabled but gracefully falls back to simpler text matching if the LLM server is unavailable.
 
-**Tool Router** - When `"tool_selection_strategy": "llm"` (the default), Jarvis asks the fast model to pick which tools are relevant for each query, shrinking the tool catalogue the chat model sees. It's already warm and small enough not to stall the turn. Other strategies: `"keyword"` (fast, no LLM), `"embedding"` (nomic-embed-text), `"all"` (no filtering).
+**Tool Router** - When `"tool_selection_strategy": "llm"` (the default), Claire asks the fast model to pick which tools are relevant for each query, shrinking the tool catalogue the chat model sees. It's already warm and small enough not to stall the turn. Other strategies: `"keyword"` (fast, no LLM), `"embedding"` (nomic-embed-text), `"all"` (no filtering).
 
-**Task-list Planner** - Before the agentic loop, Jarvis runs a short planning pass that decomposes multi-step queries into an ordered list of sub-tasks. For small models (`gemma4:e2b` class), each planned step is directly resolved to a concrete tool call without relying on the chat model to re-plan turn-by-turn. This significantly improves multi-step reliability. Config options:
+**Task-list Planner** - Before the agentic loop, Claire runs a short planning pass that decomposes multi-step queries into an ordered list of sub-tasks. For small models (`gemma4:e2b` class), each planned step is directly resolved to a concrete tool call without relying on the chat model to re-plan turn-by-turn. This significantly improves multi-step reliability. Config options:
 
 ```json
 {
@@ -143,12 +143,12 @@ Both thresholds are exposed in the Settings window under *Whisper*.
 <details>
 <summary><strong>Small-Model Digest Passes (Advanced)</strong></summary>
 
-Small chat models (~2B, e.g. `gemma4:e2b`) degrade sharply as their prompt grows. Jarvis runs two cheap distil passes to keep the prompt tight:
+Small chat models (~2B, e.g. `gemma4:e2b`) degrade sharply as their prompt grows. Claire runs two cheap distil passes to keep the prompt tight:
 
 - **Memory digest**: boils diary + graph recall into a short relevance-filtered note before injecting it as background context.
 - **Tool-result digest**: boils a raw tool payload (especially webSearch UNTRUSTED WEB EXTRACT blocks) into a short attributed fact note before it reaches the main reply model.
 
-Both digest passes auto-enable for small models (≤7B) and stay off for large models. For small models, tool-result digest also prevents large fetch_web_page payloads from blowing the context window. Override in `~/.config/jarvis/config.json`:
+Both digest passes auto-enable for small models (≤7B) and stay off for large models. For small models, tool-result digest also prevents large fetch_web_page payloads from blowing the context window. Override in `~/.config/claire/config.json`:
 
 ```json
 {
@@ -162,47 +162,32 @@ Field logs show `🧩 Memory digest: …` and `🧩 Tool digest: …` lines when
 
 </details>
 
-## Dictation Mode
-
-Hold a hotkey to record speech, release to paste the transcription into your editor, browser or other app. Transcription runs locally.
-
-> Dictation is unavailable on macOS 26+ because of a pynput incompatibility. Linux requires X11; Wayland support is limited.
-
-| Platform | Default hotkey |
-|----------|---------------|
-| **Windows** | Ctrl + Win |
-| **macOS** | Ctrl + Option |
-| **Linux** | Ctrl + Alt |
-
-- 🔒 **100% offline**: your speech never leaves your machine (unlike cloud dictation services)
-- 🧠 **Shared Whisper model**: uses the same speech recognition as voice input, no extra memory
-- ⚡ **Local transcription**: no remote transcription service required
-- 📋 **Universal paste**: works in any app that accepts `Ctrl+V` / `Cmd+V`
-- 🔇 **Non-intrusive**: main voice listener pauses automatically during dictation
-- ✋ **Hands-free mode**: double-tap the hotkey to keep recording without holding; press again or hit Escape to stop
-- 🧹 **Filler word removal**: optional LLM-powered cleanup removes "um", "uh", "like", "you know" while preserving meaning
-- 📖 **Custom dictionary**: define `"wrong -> right"` replacements for jargon, names, and technical terms
-- 📜 **History window**: browse, copy, or delete past dictations from the system tray
-- 🎛️ **Easy setup**: configure dictation during the setup wizard or anytime in Settings (hotkey dropdown, filler removal toggle, custom dictionary editor)
-
-Customise the hotkey in Settings or `config.json`:
-```json
-{
-  "dictation_hotkey": "ctrl+alt",
-  "dictation_filler_removal": true,
-  "dictation_custom_dictionary": [
-    "jarvis -> Jarvis",
-    "pytorch -> PyTorch"
-  ]
-}
-```
-
-> **Note:** macOS requires Accessibility permissions for the global hotkey. Linux requires X11 (limited Wayland support).
+## Text-to-Speech
 
 <details>
 <summary><strong>Text-to-Speech</strong></summary>
 
-**Piper TTS (default)** - Neural TTS that auto-downloads on first use (~60MB):
+**Fish Audio (default cloud voice)** - Claire's reply text is sent to Fish Audio to synthesize the configured cloned voice. Only the spoken reply text leaves the machine; see [CLOUD_POLICY.md](CLOUD_POLICY.md).
+
+```json
+{
+  "tts_engine": "fish",
+  "fish_voice_id": "your-cloned-voice-id",
+  "fish_key_file": "~/.config/claire/fish_api_key",
+  "fish_latency": "normal",
+  "fish_model": "your-fish-model-id"
+}
+```
+
+- `tts_engine`: which synthesis engine to use - `"fish"` (cloud), `"piper"` (offline default fallback), or `"chatterbox"` (offline, optional).
+- `tts_voice`: the generic voice selector; leave `null` to use the engine's default.
+- `tts_rate`: speaking rate in words per minute, `200` = normal.
+- `fish_voice_id`: the cloned voice to speak with.
+- `fish_key_file`: path to a `0600` file **outside the repository** holding the Fish Audio key. The key value is never written to `config.json` and is never printed or logged.
+- `fish_latency`: `"low"` for the fastest synthesis at some quality cost, or `"normal"` (default).
+- `fish_model`: the Fish Audio model that serves the voice.
+
+**Piper TTS (offline fallback)** - Neural TTS that auto-downloads on first use (~60MB):
 - Works out of the box - no setup required
 - High-quality British English male voice (en_GB-alan-medium)
 - Fast local synthesis with exact duration tracking
@@ -210,11 +195,12 @@ Customise the hotkey in Settings or `config.json`:
 To use different Piper voices, download from [HuggingFace](https://huggingface.co/rhasspy/piper-voices) and set:
 ```json
 {
-  "tts_piper_model_path": "~/.local/share/jarvis/models/piper/en_GB-alan-medium.onnx"
+  "tts_engine": "piper",
+  "tts_piper_model_path": "~/.local/share/claire/models/piper/en_GB-alan-medium.onnx"
 }
 ```
 
-**Chatterbox** - AI voice with emotion control (requires running from source):
+**Chatterbox (offline fallback)** - AI voice with emotion control (requires running from source):
 ```json
 { "tts_engine": "chatterbox" }
 ```
@@ -232,7 +218,7 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 <details>
 <summary><strong>Location Detection</strong></summary>
 
-Jarvis can provide location-aware responses (weather, local time, etc.) using a local GeoLite2 database: no cloud geolocation services are used.
+Claire can provide location-aware responses (weather, local time, etc.) using a local GeoLite2 database: no cloud geolocation services are used.
 
 **IP detection chain** (in order of preference):
 1. **Manual IP**: configure `location_ip_address` in settings
@@ -240,7 +226,7 @@ Jarvis can provide location-aware responses (weather, local time, etc.) using a 
 3. **Socket heuristic**: determines which interface routes externally (no data sent)
 4. **OpenDNS DNS query**: single `myip.opendns.com` lookup to `208.67.222.222` (only external query)
 
-If your ISP uses carrier-grade NAT (CGNAT), Jarvis automatically resolves your true public IP via the same OpenDNS DNS query. This can be disabled:
+If your ISP uses carrier-grade NAT (CGNAT), Claire automatically resolves your true public IP via the same OpenDNS DNS query. This can be disabled:
 
 ```json
 {
@@ -248,14 +234,14 @@ If your ISP uses carrier-grade NAT (CGNAT), Jarvis automatically resolves your t
 }
 ```
 
-**Setup:** Register for a free [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) account, download the City database (MMDB format), and save it to `~/.local/share/jarvis/geoip/GeoLite2-City.mmdb`. The setup wizard will guide you through this.
+**Setup:** Register for a free [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) account, download the City database (MMDB format), and save it to `~/.local/share/claire/geoip/GeoLite2-City.mmdb`. The setup wizard will guide you through this.
 
 </details>
 
 <details>
 <summary><strong>MCP Tool Integration</strong></summary>
 
-Connect Jarvis to external tools via [MCP servers](https://github.com/topics/mcp-server):
+Connect Claire to external tools via [MCP servers](https://github.com/topics/mcp-server):
 
 ```json
 {
@@ -284,7 +270,7 @@ See [full MCP setup guide](#mcp-integrations) below.
 
 ## MCP Integrations
 
-> **Session persistence:** each MCP server is launched once and its stdio session is kept open across tool calls. Stateful servers (e.g. browser automation, where the server owns a long-running Chrome process) work correctly. If you have a server you'd rather not keep resident, set `"idle_timeout_sec": 300` on its config entry and Jarvis will free it after that long without activity. If a server's tools legitimately run long (e.g. delegating a task to an external CLI agent), set `"timeout_sec": 600` to raise its 120-second default call timeout.
+> **Session persistence:** each MCP server is launched once and its stdio session is kept open across tool calls. Stateful servers (e.g. browser automation, where the server owns a long-running Chrome process) work correctly. If you have a server you'd rather not keep resident, set `"idle_timeout_sec": 300` on its config entry and Claire will free it after that long without activity. If a server's tools legitimately run long (e.g. delegating a task to an external CLI agent), set `"timeout_sec": 600` to raise its 120-second default call timeout.
 
 <details>
 <summary><strong>Home Assistant</strong> - Smart home voice control</summary>
@@ -306,7 +292,7 @@ See [full MCP setup guide](#mcp-integrations) below.
 }
 ```
 
-"Jarvis, turn on the living room lights" / "set bedroom to 72°" / "run good night scene"
+"Claire, turn on the living room lights" / "set bedroom to 72°" / "run good night scene"
 
 </details>
 
@@ -399,24 +385,20 @@ Get API key at [composio.dev](https://composio.dev)
 
 **First startup takes a bit** - Initial model downloads can take several minutes, followed by loading and warmup. Watch the Logs window for transfer progress and readiness. Enable **Low Power Mode** in Settings to skip LLM startup warmup.
 
-**Jarvis doesn't hear me** - Check microphone permissions and the selected input in Settings. Say "Jarvis" anywhere in your sentence.
+**Claire doesn't hear me** - Check microphone permissions and the selected input in Settings. Say "Claire" anywhere in your sentence.
 
 **Linux says Listening but nothing is transcribed** - Open Logs and check for capture warnings. Missing callbacks mean the recording stream is not delivering blocks; silent samples mean blocks arrive but contain no usable signal. Check input mute and the recording source in PipeWire/PulseAudio (`pavucontrol` or `wpctl status`), and choose a microphone rather than an output monitor. Try the system default or the `pipewire` input where available. Enable `voice_debug` in Settings for periodic callback counts, signal peak, speech-frame counts and capture rate. These diagnostics do not save microphone audio. Native 44.1/48 kHz inputs are resampled for speech detection and transcription.
 
-**Not sure what is running** - Open the tray menu and click **🩺 Runtime Status**. It shows whether Jarvis is listening, whether Low Power Mode is active, whether Ollama is needed/running, which models are configured, and how many MCP servers are enabled.
+**Not sure what is running** - Open the tray menu and click **🩺 Runtime Status**. It shows whether Claire is listening, whether Low Power Mode is active, whether Ollama is needed/running, which models are configured, and how many MCP servers are enabled.
 
 **Responses are slow** - Try a smaller model and check available memory. See [hardware and model choices](../README.md#quick-install); requirements depend on model size, quantisation and context length.
 
-**Mac gets warm while Jarvis is active** - Enable **⚙️ Settings → ✨ Features → Low Power Mode**. This keeps voice recognition ready while avoiding background LLM warmup and shortening Ollama's idle residency window.
+**Too warm while Claire is active** - Enable **⚙️ Settings → ✨ Features → Low Power Mode**. This keeps voice recognition ready while avoiding background LLM warmup and shortening Ollama's idle residency window.
 
-**Mac is still warm after quitting** - If Jarvis starts Ollama for you, quitting Jarvis also stops that owned Ollama runtime. If Ollama was already running before Jarvis opened, Jarvis leaves it running so it does not interrupt your other local AI tools.
-
-**Windows: App won't start** - Extract full zip first, check Windows Defender
-
-**macOS: "App can't be opened"** - Right-click → Open, or System Settings → Privacy & Security → Allow
+**Still warm after quitting** - If Claire starts Ollama for you, quitting Claire also stops that owned Ollama runtime. If Ollama was already running before Claire opened, Claire leaves it running so it does not interrupt your other local AI tools.
 
 **Linux: No tray icon** - `sudo apt install libayatana-appindicator3-1`
 
-**Jarvis keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean historical entries, open the Memory Viewer, switch to the Diary tab, and click **Clean up deflection narration** in the sidebar Maintenance section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
+**Claire keeps deflecting on questions it answered before** - small models can record their own past failures into the diary, which then primes future sessions to repeat them. New writes are scrubbed automatically; to clean historical entries, open the Memory Viewer, switch to the Diary tab, and click **Clean up deflection narration** in the sidebar Maintenance section. Only sentences that narrate the assistant's failures are removed; the rest of each entry stays.
 
 </details>

@@ -1,5 +1,5 @@
 """
-Evaluation suite for Jarvis assistant.
+Evaluation suite for Claire assistant.
 
 Evals test end-to-end behavior and quality of responses.
 They are run separately from unit tests and triggered manually.

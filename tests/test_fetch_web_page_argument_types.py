@@ -5,8 +5,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import requests
 
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.fetch_web_page import FetchWebPageTool
+from claire.tools.base import ToolContext
+from claire.tools.builtin.fetch_web_page import FetchWebPageTool
 
 pytestmark = pytest.mark.unit
 

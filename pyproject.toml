@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claire"
+dynamic = ["version"]
+description = "Claire — a standalone, always-on Linux voice assistant (personal fork of isair/jarvis)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Claire fork maintainer" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+# Runtime dependencies live in requirements.txt so the daemon, the desktop app
+# and the packaging scripts all resolve one single source of truth.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.2", "pytest-repeat==0.9.3"]
+
+[project.scripts]
+claire = "claire.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "claire._version.VERSION" }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["claire*", "desktop_app*"]

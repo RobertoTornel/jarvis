@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from src.jarvis.memory.conversation import DialogueMemory, is_tool_message
+from src.claire.memory.conversation import DialogueMemory, is_tool_message
 
 
 @pytest.mark.unit

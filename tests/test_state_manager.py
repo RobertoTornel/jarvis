@@ -10,7 +10,7 @@ import threading
 import pytest
 from unittest.mock import patch, MagicMock
 
-from jarvis.listening.state_manager import StateManager, ListeningState
+from claire.listening.state_manager import StateManager, ListeningState
 
 
 class TestStateTransitions:

@@ -9,7 +9,7 @@ This test suite ensures that:
 """
 
 import pytest
-from jarvis.tools.registry import discover_mcp_tools, generate_tools_description, generate_tools_json_schema, run_tool_with_retries, ToolExecutionResult
+from claire.tools.registry import discover_mcp_tools, generate_tools_description, generate_tools_json_schema, run_tool_with_retries, ToolExecutionResult
 
 
 class DummyCfg:
@@ -47,7 +47,7 @@ def test_discover_mcp_tools_with_fake_server(monkeypatch):
                 ]
             return []
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     mcps_config = {
@@ -88,7 +88,7 @@ def test_discover_mcp_tools_handles_server_errors(monkeypatch):
                 raise Exception("Server failed")
             return []
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     mcps_config = {
@@ -117,7 +117,7 @@ def test_discover_mcp_tools_returns_empty_errors_on_success(monkeypatch):
         def list_tools(self, server_name):
             return [{"name": "tool1", "description": "A tool"}]
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     mcps_config = {"server": {"command": "cmd"}}
@@ -130,7 +130,7 @@ def test_discover_mcp_tools_returns_empty_errors_on_success(monkeypatch):
 @pytest.mark.unit
 def test_generate_tools_description_includes_mcp_tools():
     """Test that MCP tools are included in the tools description."""
-    from jarvis.tools.registry import ToolSpec
+    from claire.tools.registry import ToolSpec
 
     mcp_tools = {
             "server__read": ToolSpec(
@@ -174,7 +174,7 @@ def test_mcp_tool_execution_new_format(monkeypatch):
             assert arguments == {"path": "/test/file.txt"}
             return {"text": "file contents", "isError": False}
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     result = run_tool_with_retries(
@@ -207,7 +207,7 @@ def test_mcp_tool_execution_error_handling(monkeypatch):
         def invoke_tool(self, server_name, tool_name, arguments):
             return {"text": "Permission denied", "isError": True}
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     result = run_tool_with_retries(
@@ -263,7 +263,7 @@ def test_mcp_tool_exception_handling(monkeypatch):
         def invoke_tool(self, server_name, tool_name, arguments):
             raise Exception("Connection failed")
 
-    import jarvis.tools.registry as registry_mod
+    import claire.tools.registry as registry_mod
     monkeypatch.setattr(registry_mod, "MCPClient", FakeClient)
 
     result = run_tool_with_retries(
@@ -284,7 +284,7 @@ def test_mcp_tool_exception_handling(monkeypatch):
 @pytest.mark.unit
 def test_generate_tools_json_schema_returns_openai_format():
     """Test that generate_tools_json_schema returns OpenAI-compatible format for native tool calling."""
-    from jarvis.tools.registry import ToolSpec
+    from claire.tools.registry import ToolSpec
 
     mcp_tools = {
         "server__read": ToolSpec(

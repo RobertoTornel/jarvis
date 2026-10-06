@@ -3,7 +3,7 @@ import pytest
 
 from evals.helpers import voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply.enrichment import _TOOL_DIGEST_MIN_CHARS, digest_tool_result_for_query
+from claire.reply.enrichment import _TOOL_DIGEST_MIN_CHARS, digest_tool_result_for_query
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 

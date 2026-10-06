@@ -6,7 +6,7 @@ import pytest
 
 from evals.conftest import requires_judge_llm
 from evals.helpers import voice_config
-from jarvis.tools.builtin import weather
+from claire.tools.builtin import weather
 
 
 @pytest.mark.eval

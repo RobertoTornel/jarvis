@@ -58,18 +58,18 @@ def _openai_cfg() -> _Cfg:
     "module_path, fn_name, cfg_factory, expected_backend_module",
     [
         # Reply path
-        ("src.jarvis.reply.planner", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.reply.planner", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.evaluator", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.reply.evaluator", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.jarvis.reply.enrichment", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.reply.enrichment", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.claire.reply.planner", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.claire.reply.planner", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.claire.reply.evaluator", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.claire.reply.evaluator", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.claire.reply.enrichment", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.claire.reply.enrichment", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Memory path
-        ("src.jarvis.memory.graph_ops", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.memory.graph_ops", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.claire.memory.graph_ops", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.claire.memory.graph_ops", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Builtin tools
-        ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.jarvis.tools.builtin.nutrition.log_meal", "call_llm_direct", _openai_cfg, "openai_compatible"),
+        ("src.claire.tools.builtin.nutrition.log_meal", "call_llm_direct", _ollama_cfg, "ollama"),
+        ("src.claire.tools.builtin.nutrition.log_meal", "call_llm_direct", _openai_cfg, "openai_compatible"),
     ],
 )
 def test_call_llm_direct_wrapper_dispatches_via_factory(
@@ -85,8 +85,8 @@ def test_call_llm_direct_wrapper_dispatches_via_factory(
     # Patch the concrete backend classes' .direct so we can see which one
     # the wrapper actually called. Patching at the class level catches the
     # backend regardless of how the factory constructs it.
-    from src.jarvis.llm.ollama import OllamaBackend
-    from src.jarvis.llm.openai_compatible import OpenAICompatibleBackend
+    from src.claire.llm.ollama import OllamaBackend
+    from src.claire.llm.openai_compatible import OpenAICompatibleBackend
 
     with patch.object(OllamaBackend, "direct", return_value="ollama-result") as ollama_direct, \
          patch.object(OpenAICompatibleBackend, "direct", return_value="openai-result") as openai_direct:
@@ -121,9 +121,9 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
     """``engine.chat_with_messages`` (the agentic-loop boundary) must dispatch
     through the factory too — the chat shape is the largest LLM call in the
     app and silently falling back to Ollama would defeat the entire migration."""
-    from src.jarvis.reply import engine as engine_mod
-    from src.jarvis.llm.ollama import OllamaBackend
-    from src.jarvis.llm.openai_compatible import OpenAICompatibleBackend
+    from src.claire.reply import engine as engine_mod
+    from src.claire.llm.ollama import OllamaBackend
+    from src.claire.llm.openai_compatible import OpenAICompatibleBackend
 
     cfg = cfg_factory()
 
@@ -149,9 +149,9 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
     ],
 )
 def test_weather_place_extractor_dispatches_via_factory(cfg_factory, expected_backend_module: str):
-    from src.jarvis.tools.builtin import weather as weather_mod
-    from src.jarvis.llm.ollama import OllamaBackend
-    from src.jarvis.llm.openai_compatible import OpenAICompatibleBackend
+    from src.claire.tools.builtin import weather as weather_mod
+    from src.claire.llm.ollama import OllamaBackend
+    from src.claire.llm.openai_compatible import OpenAICompatibleBackend
 
     cfg = cfg_factory()
 

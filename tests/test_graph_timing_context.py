@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.memory import graph_ops
+from claire.memory import graph_ops
 from tests.performance.timing_recorder import TimingRecorder
 
 pytestmark = pytest.mark.unit

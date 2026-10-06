@@ -31,8 +31,8 @@ from helpers import (
     JudgeVerdict,
 )
 
-from jarvis.memory.db import Database
-from jarvis.memory.graph_ops import merge_node_data
+from claire.memory.db import Database
+from claire.memory.graph_ops import merge_node_data
 
 
 # =============================================================================
@@ -141,7 +141,7 @@ class TestDiaryRecencyOrder:
         should appear before the older one in search results."""
         db, case = db_with_entries
 
-        from jarvis.memory.conversation import search_conversation_memory_by_keywords
+        from claire.memory.conversation import search_conversation_memory_by_keywords
 
         results = search_conversation_memory_by_keywords(
             db=db,
@@ -376,7 +376,7 @@ class TestReplyUsesNewerDiaryEntry:
             pytest.skip("Chat model is parametrised here; only runs once per eval session (large judge phase)")
         case = case.values[0] if hasattr(case, 'values') else case
 
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         # Seed diary with older (wrong) then newer (correct) entry.
         eval_db.upsert_conversation_summary(
@@ -398,7 +398,7 @@ class TestReplyUsesNewerDiaryEntry:
         query = _query_for_case(case)
 
         with patch(
-            'jarvis.reply.engine.get_location_context_with_timezone',
+            'claire.reply.engine.get_location_context_with_timezone',
             return_value=("Location: London, United Kingdom", None),
         ):
             reply = run_reply_engine(

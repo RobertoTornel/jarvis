@@ -4,7 +4,7 @@ carryover and recall-gate debug logs cannot leak credentials.
 
 import pytest
 
-from src.jarvis.utils.redact import redact, scrub_secrets
+from src.claire.utils.redact import redact, scrub_secrets
 
 
 @pytest.mark.unit

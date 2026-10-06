@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.memory import conversation
-from jarvis.memory.db import Database
+from claire.memory import conversation
+from claire.memory.db import Database
 
 pytestmark = pytest.mark.unit
 
@@ -65,7 +65,7 @@ def test_optional_index_failure_still_confirms_the_diary(diary, monkeypatch, own
     def graph(**kwargs):
         graph_summaries.append(kwargs['summary'])
         return SimpleNamespace(stored=[], skipped=0)
-    monkeypatch.setattr('jarvis.memory.graph_ops.update_graph_from_dialogue', graph)
+    monkeypatch.setattr('claire.memory.graph_ops.update_graph_from_dialogue', graph)
     if owned_flush:
         ident = conversation.update_diary_from_dialogue_memory(diary, memory, cfg, force=True)
     else:

@@ -51,8 +51,8 @@ def synthetic_turn(engine, cfg, text, answer):
 @pytest.mark.parametrize('entry', ENTRIES)
 @pytest.mark.parametrize('provider', ['ollama', 'openai_compatible'])
 def test_selected_multi_turn_backend_receives_each_turn(monkeypatch, cases, entry, provider):
-    from jarvis.llm import get_llm_backend
-    from jarvis.reply import engine
+    from claire.llm import get_llm_backend
+    from claire.reply import engine
     base = 'http://127.0.0.1:11439'
     model = 'selected-conversation-model'
     monkeypatch.setenv('EVAL_JUDGE_PROVIDER', provider)
@@ -79,7 +79,7 @@ def test_selected_multi_turn_backend_receives_each_turn(monkeypatch, cases, entr
 @pytest.mark.parametrize('entry', ENTRIES)
 @pytest.mark.parametrize('answer', [None, '', '   ', 'Sorry, I had trouble understanding that request.'])
 def test_tool_calls_do_not_hide_missing_or_fallback_answers(monkeypatch, cases, entry, answer):
-    from jarvis.reply import engine
+    from claire.reply import engine
     monkeypatch.setattr(engine, 'run_reply_engine', lambda *, cfg, text, **kwargs:
                         synthetic_turn(engine, cfg, text, answer))
     with pytest.raises((AssertionError, pytest.fail.Exception)):
@@ -88,7 +88,7 @@ def test_tool_calls_do_not_hide_missing_or_fallback_answers(monkeypatch, cases, 
 
 @pytest.mark.parametrize('answer', ['Sure, bring one if you want.', 'Bring an umbrella if it rains.'])
 def test_umbrella_advice_requires_a_previous_weather_fact(monkeypatch, cases, answer):
-    from jarvis.reply import engine
+    from claire.reply import engine
     monkeypatch.setattr(engine, 'run_reply_engine', lambda *, cfg, text, **kwargs:
                         synthetic_turn(engine, cfg, text, answer))
     with pytest.raises(AssertionError):
@@ -98,7 +98,7 @@ def test_umbrella_advice_requires_a_previous_weather_fact(monkeypatch, cases, an
 @pytest.mark.parametrize('entry', ENTRIES)
 @pytest.mark.parametrize('answer', [None, '', '   ', 'Sorry, I had trouble understanding that request.'])
 def test_a_good_first_turn_does_not_hide_a_failed_follow_up(monkeypatch, cases, entry, answer):
-    from jarvis.reply import engine
+    from claire.reply import engine
     answers = iter([cases['MOCK_WEATHER_RESPONSE'], answer, answer])
     monkeypatch.setattr(engine, 'run_reply_engine', lambda *, cfg, text, **kwargs:
                         synthetic_turn(engine, cfg, text, next(answers)))
@@ -107,8 +107,8 @@ def test_a_good_first_turn_does_not_hide_a_failed_follow_up(monkeypatch, cases, 
 
 
 def test_default_model_is_bound_to_the_canonical_field(monkeypatch, cases):
-    from jarvis.llm import get_llm_backend
-    from jarvis.reply import engine
+    from claire.llm import get_llm_backend
+    from claire.reply import engine
     monkeypatch.delenv('EVAL_JUDGE_MODEL', raising=False)
     monkeypatch.setenv('EVAL_JUDGE_PROVIDER', 'ollama')
     monkeypatch.setenv('EVAL_JUDGE_BASE_URL', 'http://127.0.0.1:11439')

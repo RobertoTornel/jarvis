@@ -6,7 +6,7 @@ for supported chat models across the application.
 """
 
 import pytest
-from jarvis.config import (
+from claire.config import (
     SUPPORTED_CHAT_MODELS,
     DEFAULT_CHAT_MODEL,
     get_supported_model_ids,
@@ -130,11 +130,11 @@ class TestLowPowerModeConfig:
     def test_settings_dataclass_round_trips_low_power_mode(self, tmp_path, monkeypatch):
         """A config override should parse into Settings.low_power_mode."""
         import json as _json
-        from jarvis.config import load_settings
+        from claire.config import load_settings
 
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(_json.dumps({"low_power_mode": True}))
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
         settings = load_settings()
         assert settings.low_power_mode is True
@@ -166,11 +166,11 @@ class TestWhisperHallucinationFilterDefaults:
         `load_settings` into the `Settings.whisper_no_speech_threshold` field.
         """
         import json as _json
-        from jarvis.config import load_settings
+        from claire.config import load_settings
 
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(_json.dumps({"whisper_no_speech_threshold": 0.72}))
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
         settings = load_settings()
         assert settings.whisper_no_speech_threshold == pytest.approx(0.72)

@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -21,6 +22,7 @@ def _bash_available() -> bool:
         return False
 
 
+import desktop_app.updater as updater_module
 from desktop_app.updater import (
     check_for_updates,
     parse_version,
@@ -30,10 +32,73 @@ from desktop_app.updater import (
     UpdateChannel,
     UpdateStatus,
     ReleaseInfo,
+    DEFAULT_UPDATE_REPO,
+    UPDATE_DISABLED_MESSAGE,
+    UPDATE_REPO_ENV_VAR,
+    get_update_repo,
+    get_releases_api_url,
     _escape_applescript_path,
     _escape_batch_path,
     _escape_shell_path,
 )
+
+
+@contextmanager
+def _no_update_source():
+    """Force the shipped "no update source configured" state.
+
+    Removes CLAIRE_UPDATE_REPO from the environment and leaves the module
+    default (``UPDATE_REPO``) exactly as imported, so these tests prove the
+    behaviour of a *fresh* Claire rather than of a patched one. Running the
+    suite with CLAIRE_UPDATE_REPO exported in the environment therefore
+    fails these tests on purpose: that environment really has configured an
+    update source.
+    """
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop(UPDATE_REPO_ENV_VAR, None)
+        yield
+
+
+@pytest.fixture
+def configured_update_source():
+    """Configure an update source for tests of the CONFIGURED path.
+
+    Claire ships with no update source (see
+    TestUpdateSourceDisabledByDefault), so tests that assert what happens
+    once a repository IS configured set one to preserve their original
+    intent. Tests of the disabled default clear or override it themselves.
+    """
+    with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "acme/claire"}):
+        yield
+
+
+def _releases_response(releases):
+    """Build the MagicMock that stands in for a requests response."""
+    mock_response = MagicMock()
+    mock_response.json.return_value = releases
+    mock_response.raise_for_status = MagicMock()
+    return mock_response
+
+
+def _stable_release(tag, asset_name, asset_id=100001, url_slug="acme/claire"):
+    """Minimal GitHub release payload for one stable release."""
+    return {
+        "id": 12345,
+        "tag_name": tag,
+        "name": tag,
+        "draft": False,
+        "prerelease": False,
+        "html_url": f"https://github.com/{url_slug}/releases/tag/{tag}",
+        "body": "Release notes",
+        "assets": [
+            {
+                "id": asset_id,
+                "name": asset_name,
+                "browser_download_url": "https://example.com/download",
+                "size": 1000,
+            }
+        ],
+    }
 
 
 def _zipfile_extract_for_tests(zip_path: Path, dest_dir: Path) -> None:
@@ -88,25 +153,154 @@ class TestGetPlatformAssetName:
     def test_macos_arm64(self):
         with patch("sys.platform", "darwin"):
             with patch("platform.machine", return_value="arm64"):
-                assert get_platform_asset_name() == "Jarvis-macOS-arm64.zip"
+                assert get_platform_asset_name() == "Claire-macOS-arm64.zip"
 
     @pytest.mark.unit
     def test_macos_x64(self):
         with patch("sys.platform", "darwin"):
             with patch("platform.machine", return_value="x86_64"):
-                assert get_platform_asset_name() == "Jarvis-macOS-x64.zip"
+                assert get_platform_asset_name() == "Claire-macOS-x64.zip"
 
     @pytest.mark.unit
     def test_windows(self):
         with patch("sys.platform", "win32"):
-            assert get_platform_asset_name() == "Jarvis-Windows-x64.zip"
+            assert get_platform_asset_name() == "Claire-Windows-x64.zip"
 
     @pytest.mark.unit
     def test_linux(self):
         with patch("sys.platform", "linux"):
-            assert get_platform_asset_name() == "Jarvis-Linux-x64.tar.gz"
+            assert get_platform_asset_name() == "Claire-Linux-x64.tar.gz"
 
 
+class TestUpdateSourceDisabledByDefault:
+    """A fork must not silently update itself from the upstream project.
+
+    Upstream's updater polled a hardcoded GitHub repository and, on a fork,
+    would download and install a DIFFERENT product over Claire. Claire
+    therefore ships with no update source at all: the module default is
+    empty and CLAIRE_UPDATE_REPO is unset.
+    """
+
+    @pytest.mark.unit
+    def test_ships_with_no_update_source(self):
+        """The shipped default is empty, so a fresh Claire has nothing to
+        auto-update from."""
+        assert DEFAULT_UPDATE_REPO == ""
+        with _no_update_source():
+            assert get_update_repo() == ""
+
+    @pytest.mark.unit
+    def test_no_hardcoded_upstream_repository_remains(self):
+        """Neither the repo constant nor the upstream slug is baked in."""
+        assert not hasattr(updater_module, "GITHUB_REPO")
+        source = Path(updater_module.__file__).read_text(encoding="utf-8")
+        assert "isair/jarvis" not in source, (
+            "updater.py still names the upstream repository — a fork could "
+            "download a different product over Claire"
+        )
+
+    @pytest.mark.unit
+    def test_disabled_check_makes_no_network_call_and_claims_no_update(self):
+        """No source configured -> no request, and an honest status."""
+        with _no_update_source():
+            with patch("desktop_app.updater.get_version", return_value=("1.0.0", "stable")):
+                with patch("requests.get") as mock_get:
+                    status = check_for_updates()
+
+        mock_get.assert_not_called()
+        assert status.update_available is False
+        assert status.latest_release is None
+        assert status.releases_since_current == []
+        assert status.error == UPDATE_DISABLED_MESSAGE
+        assert "disabled" in status.error.lower()
+        assert "no update source configured" in status.error.lower()
+        # The status must never dress the disabled check up as an update.
+        assert "available" not in status.error.lower()
+
+    @pytest.mark.unit
+    def test_explicitly_empty_env_var_disables_a_configured_default(self):
+        """An empty CLAIRE_UPDATE_REPO must disable checks even when the
+        module attribute (used by embedding/tests) names a repository."""
+        with patch.object(updater_module, "UPDATE_REPO", "acme/claire"):
+            with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: ""}):
+                assert get_update_repo() == ""
+                with patch("requests.get") as mock_get:
+                    status = check_for_updates()
+
+        mock_get.assert_not_called()
+        assert status.update_available is False
+        assert status.error == UPDATE_DISABLED_MESSAGE
+
+    @pytest.mark.unit
+    def test_whitespace_only_env_var_counts_as_disabled(self):
+        with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "   "}):
+            assert get_update_repo() == ""
+            with patch("requests.get") as mock_get:
+                status = check_for_updates()
+        mock_get.assert_not_called()
+        assert status.error == UPDATE_DISABLED_MESSAGE
+
+
+class TestUpdateSourceConfigured:
+    """Once an operator configures their own repository, update checks work."""
+
+    @pytest.mark.unit
+    def test_configured_repo_is_the_releases_endpoint(self):
+        with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "acme/claire"}):
+            assert get_update_repo() == "acme/claire"
+            assert (
+                get_releases_api_url()
+                == "https://api.github.com/repos/acme/claire/releases"
+            )
+
+    @pytest.mark.unit
+    def test_configured_repo_env_value_is_trimmed(self):
+        with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "  acme/claire  "}):
+            assert get_update_repo() == "acme/claire"
+            assert (
+                get_releases_api_url()
+                == "https://api.github.com/repos/acme/claire/releases"
+            )
+
+    @pytest.mark.unit
+    def test_check_queries_the_configured_repo_and_reports_the_update(self):
+        """The configured path still fetches releases and reports a newer
+        version — only the *default* is disabled, not the feature."""
+        releases = [
+            _stable_release("v1.1.0", "Claire-Linux-x64.tar.gz"),
+        ]
+        with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "acme/claire"}):
+            with patch("desktop_app.updater.get_version", return_value=("1.0.0", "stable")):
+                with patch("requests.get", return_value=_releases_response(releases)) as mock_get:
+                    with patch("sys.platform", "linux"):
+                        status = check_for_updates()
+
+        mock_get.assert_called_once()
+        assert mock_get.call_args[0][0] == (
+            "https://api.github.com/repos/acme/claire/releases"
+        )
+        assert status.update_available is True
+        assert status.latest_release is not None
+        assert status.latest_release.version == "1.1.0"
+        assert status.error is None
+
+    @pytest.mark.unit
+    def test_no_update_when_configured_repo_has_nothing_newer(self):
+        releases = [
+            _stable_release("v1.0.0", "Claire-Linux-x64.tar.gz"),
+        ]
+        with patch.dict(os.environ, {UPDATE_REPO_ENV_VAR: "acme/claire"}):
+            with patch("desktop_app.updater.get_version", return_value=("1.0.0", "stable")):
+                with patch("requests.get", return_value=_releases_response(releases)):
+                    with patch("sys.platform", "linux"):
+                        status = check_for_updates()
+
+        assert status.update_available is False
+        assert status.latest_release is None
+        assert status.error is None
+
+
+@pytest.mark.usefixtures("configured_update_source")
 class TestCheckForUpdates:
     """Tests for update checking."""
 
@@ -120,12 +314,12 @@ class TestCheckForUpdates:
                 "name": "v1.0.0",
                 "draft": False,
                 "prerelease": False,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/v1.0.0",
+                "html_url": "https://github.com/acme/claire/releases/tag/v1.0.0",
                 "body": "Release notes",
                 "assets": [
                     {
                         "id": 100001,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -152,12 +346,12 @@ class TestCheckForUpdates:
                 "name": "v1.1.0",
                 "draft": False,
                 "prerelease": False,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/v1.1.0",
+                "html_url": "https://github.com/acme/claire/releases/tag/v1.1.0",
                 "body": "Release notes",
                 "assets": [
                     {
                         "id": 100002,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -185,12 +379,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": "Dev release notes",
                 "assets": [
                     {
                         "id": 100003,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -218,12 +412,12 @@ class TestCheckForUpdates:
                 "name": "v2.0.0",
                 "draft": True,  # Draft release
                 "prerelease": False,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/v2.0.0",
+                "html_url": "https://github.com/acme/claire/releases/tag/v2.0.0",
                 "body": "Release notes",
                 "assets": [
                     {
                         "id": 100004,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -263,12 +457,12 @@ class TestCheckForUpdates:
                 "name": "v1.1.0",
                 "draft": False,
                 "prerelease": False,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/v1.1.0",
+                "html_url": "https://github.com/acme/claire/releases/tag/v1.1.0",
                 "body": "Release notes",
                 "assets": [
                     {
                         "id": 100005,
-                        "name": "Jarvis-Windows-x64.zip",  # Only Windows asset
+                        "name": "Claire-Windows-x64.zip",  # Only Windows asset
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -296,12 +490,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": "Dev release notes",
                 "assets": [
                     {
                         "id": 200001,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -331,12 +525,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": "Dev release notes",
                 "assets": [
                     {
                         "id": 200002,  # New asset ID
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -364,12 +558,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": "Dev release notes",
                 "assets": [
                     {
                         "id": 200001,  # Same asset ID as last install
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -400,12 +594,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": f"Dev release notes\n\n**Commit**: {installed_sha}",
                 "assets": [
                     {
                         "id": 200001,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -435,12 +629,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": f"Dev release notes\n\n**Commit**: {release_sha}",
                 "assets": [
                     {
                         "id": 200002,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -471,12 +665,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": f"Dev release notes\n\n**Commit**: {release_sha}",
                 "assets": [
                     {
                         "id": 200003,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -504,12 +698,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": "Dev release notes",  # No **Commit** stamp
                 "assets": [
                     {
                         "id": 200004,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -540,12 +734,12 @@ class TestCheckForUpdates:
                 "name": "Latest Development Build",
                 "draft": False,
                 "prerelease": True,
-                "html_url": "https://github.com/isair/jarvis/releases/tag/latest",
+                "html_url": "https://github.com/acme/claire/releases/tag/latest",
                 "body": f"Dev release notes\n\n**Commit**: {release_sha}",
                 "assets": [
                     {
                         "id": 200005,
-                        "name": "Jarvis-macOS-arm64.zip",
+                        "name": "Claire-macOS-arm64.zip",
                         "browser_download_url": "https://example.com/download",
                         "size": 1000,
                     }
@@ -563,6 +757,7 @@ class TestCheckForUpdates:
                             assert status.update_available is True
 
 
+@pytest.mark.usefixtures("configured_update_source")
 class TestUpdateStatus:
     """Tests for UpdateStatus dataclass."""
 
@@ -576,7 +771,7 @@ class TestUpdateStatus:
             prerelease=False,
             html_url="https://example.com",
             download_url="https://example.com/download",
-            asset_name="Jarvis-macOS-arm64.zip",
+            asset_name="Claire-macOS-arm64.zip",
             asset_size=1000000,
             release_notes="Test notes",
         )
@@ -614,7 +809,7 @@ class TestUpdateStatus:
                 "prerelease": False,
                 "html_url": "https://example.com/v1.3.0",
                 "body": "* feat: feature three (#3)",
-                "assets": [{"id": 300, "name": "Jarvis-macOS-arm64.zip",
+                "assets": [{"id": 300, "name": "Claire-macOS-arm64.zip",
                             "browser_download_url": "https://example.com/dl3", "size": 1000}],
             },
             {
@@ -625,7 +820,7 @@ class TestUpdateStatus:
                 "prerelease": False,
                 "html_url": "https://example.com/v1.2.0",
                 "body": "* fix: bug two (#2)",
-                "assets": [{"id": 200, "name": "Jarvis-macOS-arm64.zip",
+                "assets": [{"id": 200, "name": "Claire-macOS-arm64.zip",
                             "browser_download_url": "https://example.com/dl2", "size": 1000}],
             },
             {
@@ -636,7 +831,7 @@ class TestUpdateStatus:
                 "prerelease": False,
                 "html_url": "https://example.com/v1.0.0",
                 "body": "* Initial release",
-                "assets": [{"id": 100, "name": "Jarvis-macOS-arm64.zip",
+                "assets": [{"id": 100, "name": "Claire-macOS-arm64.zip",
                             "browser_download_url": "https://example.com/dl1", "size": 1000}],
             },
         ]
@@ -665,7 +860,7 @@ class TestUpdateStatus:
                 "prerelease": False,
                 "html_url": "https://example.com/v1.0.0",
                 "body": "",
-                "assets": [{"id": 100, "name": "Jarvis-macOS-arm64.zip",
+                "assets": [{"id": 100, "name": "Claire-macOS-arm64.zip",
                             "browser_download_url": "https://example.com/dl1", "size": 1000}],
             },
         ]
@@ -774,9 +969,9 @@ class TestReleaseInfo:
             version="1.2.3",
             name="Version 1.2.3",
             prerelease=False,
-            html_url="https://github.com/isair/jarvis/releases/tag/v1.2.3",
-            download_url="https://github.com/isair/jarvis/releases/download/v1.2.3/Jarvis.zip",
-            asset_name="Jarvis-macOS-arm64.zip",
+            html_url="https://github.com/acme/claire/releases/tag/v1.2.3",
+            download_url="https://github.com/acme/claire/releases/download/v1.2.3/Claire.zip",
+            asset_name="Claire-macOS-arm64.zip",
             asset_size=52428800,
             release_notes="## Changes\n- Bug fixes",
         )
@@ -798,13 +993,13 @@ class TestInstallUpdateWindows:
         import zipfile
         from unittest.mock import patch, MagicMock, call
 
-        # Create a mock zip file with Jarvis.exe
+        # Create a mock zip file with Claire.exe
         zip_path = tmp_path / "update.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("Jarvis.exe", b"mock executable content")
+            zf.writestr("Claire.exe", b"mock executable content")
 
         # Mock get_app_path to return a fake path
-        mock_app_path = tmp_path / "Jarvis.exe"
+        mock_app_path = tmp_path / "Claire.exe"
         mock_app_path.write_bytes(b"old executable")
 
         # Import here to avoid issues with platform checks
@@ -866,9 +1061,9 @@ class TestInstallUpdateWindows:
 
         zip_path = tmp_path / "update.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
-            zf.writestr("Jarvis.exe", b"mock executable content")
+            zf.writestr("Claire.exe", b"mock executable content")
 
-        mock_app_path = tmp_path / "Program Files" / "Jarvis" / "Jarvis.exe"
+        mock_app_path = tmp_path / "Program Files" / "Claire" / "Claire.exe"
         mock_app_path.parent.mkdir(parents=True)
         mock_app_path.write_bytes(b"old executable")
 
@@ -922,7 +1117,7 @@ class TestInstallUpdateMacos:
         from unittest.mock import patch, MagicMock
 
         zip_path = tmp_path / "update.zip"
-        app_source = tmp_path / "zip_content" / "Jarvis.app"
+        app_source = tmp_path / "zip_content" / "Claire.app"
         app_source.mkdir(parents=True)
         (app_source / "Contents").mkdir()
         (app_source / "Contents" / "Info.plist").write_bytes(b"mock plist")
@@ -932,7 +1127,7 @@ class TestInstallUpdateMacos:
                 if f.is_file():
                     zf.write(f, arcname=str(f.relative_to(tmp_path / "zip_content")))
 
-        mock_app_path = tmp_path / "Applications" / "Jarvis.app"
+        mock_app_path = tmp_path / "Applications" / "Claire.app"
         mock_app_path.mkdir(parents=True)
         (mock_app_path / "existing").write_bytes(b"old bundle")
 
@@ -996,7 +1191,7 @@ class TestInstallUpdateMacos:
         from desktop_app.paths import get_log_dir
         assert "lsregister" in script_content
         assert "open -n" in script_content
-        binary_path = str(mock_app_path / "Contents" / "MacOS" / "Jarvis")
+        binary_path = str(mock_app_path / "Contents" / "MacOS" / "Claire")
         assert binary_path in script_content, "fallback must exec the bundle's inner binary"
         lsregister_idx = script_content.find("lsregister")
         assert xattr_idx < lsregister_idx < open_idx, "lsregister must run after xattr and before open"
@@ -1009,15 +1204,15 @@ class TestInstallUpdateMacos:
     @pytest.mark.unit
     def test_binary_name_read_from_bundle_info_plist(self, tmp_path):
         """The fallback exec must target the actual CFBundleExecutable, not a
-        hardcoded "Jarvis" — so a future bundle rename doesn't silently break
+        hardcoded "Claire" — so a future bundle rename doesn't silently break
         the fallback relaunch."""
         import plistlib
         import zipfile
         from unittest.mock import patch, MagicMock
 
-        custom_binary_name = "JarvisNext"
+        custom_binary_name = "ClaireNext"
         zip_path = tmp_path / "update.zip"
-        app_source = tmp_path / "zip_content" / "Jarvis.app"
+        app_source = tmp_path / "zip_content" / "Claire.app"
         (app_source / "Contents").mkdir(parents=True)
         plist_bytes = plistlib.dumps({"CFBundleExecutable": custom_binary_name})
         (app_source / "Contents" / "Info.plist").write_bytes(plist_bytes)
@@ -1027,7 +1222,7 @@ class TestInstallUpdateMacos:
                 if f.is_file():
                     zf.write(f, arcname=str(f.relative_to(tmp_path / "zip_content")))
 
-        mock_app_path = tmp_path / "Applications" / "Jarvis.app"
+        mock_app_path = tmp_path / "Applications" / "Claire.app"
         mock_app_path.mkdir(parents=True)
 
         from desktop_app.updater import install_update_macos
@@ -1049,11 +1244,11 @@ class TestInstallUpdateMacos:
         assert expected_binary in script_content, (
             "fallback exec must use CFBundleExecutable from the new bundle"
         )
-        # Shell-quoted; a bare 'Jarvis' occurrence would end with a single
-        # quote, whereas 'JarvisNext' does not.
-        hardcoded_binary = f"{mock_app_path / 'Contents' / 'MacOS' / 'Jarvis'}'"
+        # Shell-quoted; a bare 'Claire' occurrence would end with a single
+        # quote, whereas 'ClaireNext' does not.
+        hardcoded_binary = f"{mock_app_path / 'Contents' / 'MacOS' / 'Claire'}'"
         assert hardcoded_binary not in script_content, (
-            "must not fall back to hardcoded 'Jarvis' when the bundle reports a different name"
+            "must not fall back to hardcoded 'Claire' when the bundle reports a different name"
         )
 
     @pytest.mark.unit
@@ -1078,15 +1273,15 @@ class TestInstallUpdateMacos:
         from unittest.mock import patch, MagicMock
 
         zip_path = tmp_path / "update.zip"
-        app_source = tmp_path / "zip_content" / "Jarvis.app"
+        app_source = tmp_path / "zip_content" / "Claire.app"
         (app_source / "Contents" / "MacOS").mkdir(parents=True)
         (app_source / "Contents" / "Info.plist").write_bytes(
-            plistlib.dumps({"CFBundleExecutable": "Jarvis"})
+            plistlib.dumps({"CFBundleExecutable": "Claire"})
         )
         # The fallback execs Contents/MacOS/<binary_name>; stub it with a
         # shell script that writes a marker file we can check for.
         marker_path = tmp_path / "fallback_fired.marker"
-        stub_binary = app_source / "Contents" / "MacOS" / "Jarvis"
+        stub_binary = app_source / "Contents" / "MacOS" / "Claire"
         stub_binary.write_text(f'#!/bin/bash\necho fired > {marker_path}\n')
         stub_binary.chmod(0o755)
 
@@ -1095,7 +1290,7 @@ class TestInstallUpdateMacos:
                 if f.is_file():
                     zf.write(f, arcname=str(f.relative_to(tmp_path / "zip_content")))
 
-        mock_app_path = tmp_path / "Applications" / "Jarvis.app"
+        mock_app_path = tmp_path / "Applications" / "Claire.app"
         mock_app_path.mkdir(parents=True)
 
         # PATH-shadowed stubs: `open` always fails, `xattr` no-ops. The real
@@ -1132,7 +1327,7 @@ class TestInstallUpdateMacos:
         new_app_match = re.search(r"mv '([^']+\.app)' '" + re.escape(str(mock_app_path)) + "'",
                                   captured["text"])
         assert new_app_match, "could not find extracted new_app path in script"
-        new_binary = Path(new_app_match.group(1)) / "Contents" / "MacOS" / "Jarvis"
+        new_binary = Path(new_app_match.group(1)) / "Contents" / "MacOS" / "Claire"
         new_binary.chmod(0o755)
 
         # Strip the PID-wait loop so the test doesn't hang on the parent PID,
@@ -1190,24 +1385,24 @@ class TestInstallUpdateMacos:
         """PyInstaller's Qt bundle contains symlinks (framework
         Versions/Current, etc.) that Python's zipfile silently flattens into
         regular files — the extracted bundle then fails to launch with
-        "Jarvis.app can't be opened". The updater must extract with
+        "Claire.app can't be opened". The updater must extract with
         `/usr/bin/ditto` when it is available, not zipfile."""
         import plistlib
         import zipfile
         from unittest.mock import patch, MagicMock
 
         zip_path = tmp_path / "update.zip"
-        app_source = tmp_path / "zip_content" / "Jarvis.app"
+        app_source = tmp_path / "zip_content" / "Claire.app"
         (app_source / "Contents").mkdir(parents=True)
         (app_source / "Contents" / "Info.plist").write_bytes(
-            plistlib.dumps({"CFBundleExecutable": "Jarvis"})
+            plistlib.dumps({"CFBundleExecutable": "Claire"})
         )
         with zipfile.ZipFile(zip_path, "w") as zf:
             for f in app_source.rglob("*"):
                 if f.is_file():
                     zf.write(f, arcname=str(f.relative_to(tmp_path / "zip_content")))
 
-        mock_app_path = tmp_path / "Applications" / "Jarvis.app"
+        mock_app_path = tmp_path / "Applications" / "Claire.app"
         mock_app_path.mkdir(parents=True)
 
         # Stand in for /usr/bin/ditto with a real file that the updater's
@@ -1282,7 +1477,7 @@ class TestInstallUpdateMacos:
         import zipfile
 
         zip_path = tmp_path / "update.zip"
-        app_source = tmp_path / "zip_content" / "Jarvis.app" / "Contents"
+        app_source = tmp_path / "zip_content" / "Claire.app" / "Contents"
         app_source.mkdir(parents=True)
         (app_source / "Info.plist").write_bytes(b"mock")
         with zipfile.ZipFile(zip_path, "w") as zf:
@@ -1290,7 +1485,7 @@ class TestInstallUpdateMacos:
                 if f.is_file():
                     zf.write(f, arcname=str(f.relative_to(tmp_path / "zip_content")))
 
-        mock_app_path = tmp_path / "Applications" / "Jarvis.app"
+        mock_app_path = tmp_path / "Applications" / "Claire.app"
         mock_app_path.mkdir(parents=True)
 
         fake_ditto = tmp_path / "fake_ditto"
@@ -1323,19 +1518,19 @@ class TestInstallUpdateLinux:
         import tarfile
         from unittest.mock import patch, MagicMock
 
-        # Create a mock tar.gz file with Jarvis directory
+        # Create a mock tar.gz file with Claire directory
         tar_path = tmp_path / "update.tar.gz"
-        jarvis_dir = tmp_path / "jarvis_content" / "Jarvis"
-        jarvis_dir.mkdir(parents=True)
-        (jarvis_dir / "Jarvis").write_bytes(b"mock executable content")
+        claire_dir = tmp_path / "claire_content" / "Claire"
+        claire_dir.mkdir(parents=True)
+        (claire_dir / "Claire").write_bytes(b"mock executable content")
 
         with tarfile.open(tar_path, "w:gz") as tf:
-            tf.add(jarvis_dir, arcname="Jarvis")
+            tf.add(claire_dir, arcname="Claire")
 
         # Mock get_app_path to return a fake path
-        mock_app_dir = tmp_path / "installed" / "Jarvis"
+        mock_app_dir = tmp_path / "installed" / "Claire"
         mock_app_dir.mkdir(parents=True)
-        (mock_app_dir / "Jarvis").write_bytes(b"old executable")
+        (mock_app_dir / "Claire").write_bytes(b"old executable")
 
         # Import here to avoid issues with platform checks
         from desktop_app.updater import install_update_linux
@@ -1391,9 +1586,9 @@ class TestPathEscaping:
     @pytest.mark.unit
     @pytest.mark.skipif(sys.platform == "win32", reason="Unix path test")
     def test_applescript_normal_path_unchanged(self):
-        path = Path('/Applications/Jarvis.app')
+        path = Path('/Applications/Claire.app')
         escaped = _escape_applescript_path(path)
-        assert escaped == '/Applications/Jarvis.app'
+        assert escaped == '/Applications/Claire.app'
 
     @pytest.mark.unit
     def test_batch_rejects_percent_sign(self):
@@ -1415,9 +1610,9 @@ class TestPathEscaping:
 
     @pytest.mark.unit
     def test_batch_normal_path_unchanged(self):
-        path = Path('C:\\Program Files\\Jarvis\\Jarvis.exe')
+        path = Path('C:\\Program Files\\Claire\\Claire.exe')
         escaped = _escape_batch_path(path)
-        assert escaped == 'C:\\Program Files\\Jarvis\\Jarvis.exe'
+        assert escaped == 'C:\\Program Files\\Claire\\Claire.exe'
 
     @pytest.mark.unit
     def test_shell_escapes_single_quotes(self):
@@ -1442,6 +1637,6 @@ class TestPathEscaping:
     @pytest.mark.unit
     @pytest.mark.skipif(sys.platform == "win32", reason="Unix path test")
     def test_shell_normal_path_wrapped(self):
-        path = Path('/opt/Jarvis/Jarvis')
+        path = Path('/opt/Claire/Claire')
         escaped = _escape_shell_path(path)
-        assert escaped == "'/opt/Jarvis/Jarvis'"
+        assert escaped == "'/opt/Claire/Claire'"

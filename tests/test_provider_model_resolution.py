@@ -65,8 +65,8 @@ class _RecordingStub:
 def _load_settings_from(tmp_path, monkeypatch, cfg: dict):
     cfg_path = tmp_path / "config.json"
     cfg_path.write_text(json.dumps({"_config_version": 2, **cfg}))
-    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
-    from jarvis.config import load_settings
+    monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
+    from claire.config import load_settings
     return load_settings()
 
 
@@ -107,16 +107,16 @@ class TestTiersResolveToServedModel:
         )
 
     def test_fast_tier_resolves_to_served_model(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         assert resolve_model(self._pure_openai_cfg(), Tier.FAST) == "qwen-27b"
 
     def test_chat_tier_resolves_to_served_model(self):
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         assert resolve_model(self._pure_openai_cfg(), Tier.CHAT) == "qwen-27b"
 
     def test_ollama_path_unchanged(self):
         """On the Ollama path the tiers carry the resolved Ollama models."""
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         cfg = SimpleNamespace(
             llm_provider="ollama",
             llm_chat_model="gpt-oss:20b",  # config load: = ollama_chat_model
@@ -140,7 +140,7 @@ class TestPureOpenAIDispatchEndToEnd:
                 "llm_base_url": stub.base_url,
                 "llm_chat_model": "qwen-27b",
             })
-            from jarvis.reply.planner import plan_query
+            from claire.reply.planner import plan_query
             plan_query(settings, "what should I cook tonight with what I bought",
                        "", [("webSearch", "search the web")])
             assert stub.models_requested, "planner never reached the configured server"
@@ -156,7 +156,7 @@ class TestPureOpenAIDispatchEndToEnd:
                 "llm_base_url": stub.base_url,
                 "llm_chat_model": "qwen-27b",
             })
-            from jarvis.memory import graph_ops
+            from claire.memory import graph_ops
             graph_ops.call_llm_direct(
                 cfg=settings, chat_model=settings.llm_chat_model,
                 system_prompt="sys", user_content="usr", timeout_sec=5)
@@ -172,7 +172,7 @@ class TestPureOpenAIDispatchEndToEnd:
             "llm_base_url": "http://localhost:1234/v1",
             "llm_chat_model": "qwen-27b",
         })
-        from jarvis.llm import resolve_model, Tier
+        from claire.llm import resolve_model, Tier
         assert resolve_model(settings, Tier.FAST) == "qwen-27b"
         assert resolve_model(settings, Tier.CHAT) == "qwen-27b"
 
@@ -185,7 +185,7 @@ class TestPureOpenAIDispatchEndToEnd:
             "llm_base_url": "http://localhost:1234/v1",
             "llm_chat_model": "qwen-27b",
         })
-        from jarvis.listening.intent_judge import create_intent_judge
+        from claire.listening.intent_judge import create_intent_judge
         judge = create_intent_judge(settings)
         assert judge is not None
         assert judge.config.model == "qwen-27b"

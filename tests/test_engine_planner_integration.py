@@ -30,8 +30,8 @@ def _assistant_content(text: str):
 def test_plan_injects_action_plan_block_into_system_message(
     mock_config, db, dialogue_memory
 ):
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → native tools, no direct-exec
 
@@ -90,8 +90,8 @@ def test_small_model_direct_execs_planned_tools_without_chat_llm(
     """SMALL model + multi-step plan → engine runs each tool via the
     plan step-resolver, skipping chat_with_messages until the final
     synthesis turn."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → use_text_tools
 
@@ -175,8 +175,8 @@ def test_empty_plan_falls_through_to_existing_behaviour(
     mock_config, db, dialogue_memory
 ):
     """Planner returning [] must not change engine behaviour."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gemma4:e2b"
 
@@ -225,8 +225,8 @@ def test_resolver_failure_on_tool_step_falls_back_to_chat(
 ):
     """When resolve_next_tool_call returns None for a tool step (not synthesis),
     the engine must fall through to the normal chat-model turn for that step."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → use_text_tools
 
@@ -293,8 +293,8 @@ def test_paraphrased_plan_falls_back_to_tool_router(
     no known tool — the engine must fall back to `select_tools` so the
     chat model isn't left with only stop + toolSearchTool (and then
     hallucinate a tool name from priors)."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → native tools
 
@@ -348,8 +348,8 @@ def test_paraphrased_plan_skips_direct_exec_for_small_models(
     (e.g. emitting location='Nowhere' for a plain "get the weather"
     step). Skip direct-exec entirely in that case — let the chat model
     handle the turn with the router-selected allow-list."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → direct-exec path
 
@@ -404,8 +404,8 @@ def test_router_always_runs_and_plan_tools_are_unioned(
     to replace it. Small models often pick the most universal tool
     (webSearch) instead of a dedicated one (getWeather); the router is
     tuned for that classification and must remain authoritative."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
@@ -482,8 +482,8 @@ def test_direct_exec_fires_despite_prior_query_tool_carryover(
     that'. This test verifies direct-exec fires correctly when carryover is
     present.
     """
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → use_text_tools
 
@@ -553,8 +553,8 @@ def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
     mock_config, db, dialogue_memory
 ):
     """Router returns only ['stop'] → planner skipped for short query."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
@@ -604,8 +604,8 @@ def test_planner_runs_when_router_returns_real_tools(
     mock_config, db, dialogue_memory
 ):
     """Router returns real tools → planner still runs even for short query."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
@@ -647,8 +647,8 @@ def test_planner_runs_when_query_is_long_even_without_tools(
     mock_config, db, dialogue_memory
 ):
     """Router returns only ['stop'] but query is >8 words → planner runs."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
@@ -692,8 +692,8 @@ def test_planner_not_skipped_on_router_fallback_to_all_tools(
     """Router falls back to all tools (timeout/no-match) → planner runs.
     The full-catalog fallback carries no signal, so skipping the planner
     would be wrong — only the router's positive 'none' decision qualifies."""
-    from jarvis.reply import engine as engine_mod
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine as engine_mod
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"

@@ -3,7 +3,7 @@ Regression eval: unknown named entity + diary entry already mentioning it.
 
 Captured from a real field session on 2026-04-20 where gemma4:e2b:
   1. First session (before wake-word fix): model replied with a pure greeting
-     because the trailing vocative "Jarvis" triggered GREETING HANDLING.
+     because the trailing vocative "Claire" triggered GREETING HANDLING.
   2. Second session (after wake-word fix): model asked for clarification
      ("Could you please specify what you mean by 'Possession'?") and
      hallucinated the title as "Possession" instead of "Possessor". Never
@@ -90,10 +90,10 @@ def _patch_graph_enrichment():
     def _cm():
         nodes = _fake_graph_nodes()
         with patch(
-            "jarvis.memory.graph.GraphMemoryStore.search_nodes",
+            "claire.memory.graph.GraphMemoryStore.search_nodes",
             return_value=nodes,
         ), patch(
-            "jarvis.memory.graph.GraphMemoryStore.get_ancestors",
+            "claire.memory.graph.GraphMemoryStore.get_ancestors",
             side_effect=_fake_ancestors_for,
         ):
             yield
@@ -108,10 +108,10 @@ def _patch_graph_enrichment():
 POISONED_SUMMARY = (
     '[2026-04-19] The conversation began with the user asking for information about '
     'the movie "Possessor." The user clarified that the correct title is "Possessor." '
-    'The discussion then shifted to the character "Jarvis," identified as the '
+    'The discussion then shifted to the character "Claire," identified as the '
     'artificial intelligence from the Marvel Cinematic Universe, created by Tony Stark '
     'and later embodied by Vision. The conversation focused on the movie and the '
-    'character. (Topics: Possessor, movie, Jarvis, AI character, Marvel Cinematic Universe)'
+    'character. (Topics: Possessor, movie, Claire, AI character, Marvel Cinematic Universe)'
 )
 
 # Second diary entry from the SAME day as the current turn. 2026-04-20 field
@@ -151,7 +151,7 @@ class TestPossessorFieldRepro:
 
     def _run(self, query: str, mock_config, eval_db, eval_dialogue_memory):
         """Run the reply engine with the diary entry injected via memory search."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -160,10 +160,10 @@ class TestPossessorFieldRepro:
         capture = ToolCallCapture()
 
         with patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=[POISONED_SUMMARY],
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, {
                 "webSearch": (
                     "Search result: Possessor is a 2020 Canadian-British science-fiction "
@@ -299,7 +299,7 @@ class TestPossessorFieldRepro:
           (b) deflecting to "here are some links" as if that were an answer.
         """
         from helpers import JUDGE_MODEL
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         # This mirrors exactly what webSearch now produces when fetch_attempted_any
         # is True and fetched_content is None — i.e. 'Possessor movie' with all
@@ -330,10 +330,10 @@ class TestPossessorFieldRepro:
         capture = ToolCallCapture()
 
         with patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=[POISONED_SUMMARY],
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, {
                 "webSearch": no_content_payload,
                 "fetchWebPage": "Page content: details about the film Possessor (2020).",
@@ -432,7 +432,7 @@ class TestPossessorFieldRepro:
         the director nor the cast.
         """
         from helpers import JUDGE_MODEL
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         # VERBATIM capture from _fetch_page_content of the Possessor Wikipedia
         # page on 2026-04-20 (1503 chars, exactly what the model saw in the
@@ -512,10 +512,10 @@ class TestPossessorFieldRepro:
         # set of search results" reply only once the system prompt carried
         # the full realistic context footer.
         with _patch_graph_enrichment(), patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=[SAME_DAY_SUMMARY, POISONED_SUMMARY],
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, {
                 "webSearch": realistic_payload,
                 "fetchWebPage": "Page content: details about the film Possessor (2020).",
@@ -615,7 +615,7 @@ class TestPossessorFieldRepro:
         the reply reflects the distilled facts and does NOT confabulate.
         """
         from helpers import JUDGE_MODEL
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         # Keep this shorter than the links-only tests — the point isn't to
         # re-test the envelope shape; it's to test digest-based grounding.
@@ -651,17 +651,17 @@ class TestPossessorFieldRepro:
         capture = ToolCallCapture()
 
         with patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=[POISONED_SUMMARY],
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, {
                 "webSearch": realistic_payload,
             }),
         ), patch(
             # Mock the distil LLM used by the digest helper. The main reply
             # model is left untouched (it still talks to the real judge).
-            'jarvis.reply.enrichment.call_llm_direct',
+            'claire.reply.enrichment.call_llm_direct',
             return_value=distilled_note,
         ):
             query = "Tell me about the movie possessor"

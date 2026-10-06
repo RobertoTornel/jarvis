@@ -38,7 +38,7 @@ All user-facing command line output should make use of emojis. Especially an ini
 
 ## Utilities
 
-Any important point in our logical flows should have debug logs using the `debug_log` method from `src/jarvis/debug.py`. Avoid excessive logging to keep the logs easily readable and actionable.
+Any important point in our logical flows should have debug logs using the `debug_log` method from `src/claire/debug.py`. Avoid excessive logging to keep the logs easily readable and actionable.
 
 ## Architecture decisions
 
@@ -46,11 +46,11 @@ For any spec files, and architectural decisions mentioned below, any code change
 
 ### Listening flow
 
-Check [here](/src/jarvis/listening/listening.spec.md) for the full listening flow specification.
+Check [here](/src/claire/listening/listening.spec.md) for the full listening flow specification.
 
 ### Reply flow
 
-Check [here](/src/jarvis/reply/reply.spec.md) for the full reply flow specification.
+Check [here](/src/claire/reply/reply.spec.md) for the full reply flow specification.
 
 ### Language-agnostic design
 

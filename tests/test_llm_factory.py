@@ -31,7 +31,7 @@ class _Cfg:
 
 class TestGetLLMBackend:
     def test_returns_ollama_for_default_provider(self):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from claire.llm import OllamaBackend, get_llm_backend
 
         backend = get_llm_backend(_Cfg())
 
@@ -39,7 +39,7 @@ class TestGetLLMBackend:
         assert backend.base_url == "http://127.0.0.1:11434"
 
     def test_returns_openai_compatible_when_provider_set(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_llm_backend
+        from claire.llm import OpenAICompatibleBackend, get_llm_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -53,7 +53,7 @@ class TestGetLLMBackend:
         assert backend.base_url == "http://localhost:1234/v1"
 
     def test_falls_back_to_ollama_for_unknown_provider(self):
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from claire.llm import OllamaBackend, get_llm_backend
 
         cfg = _Cfg(llm_provider="lm-studio")  # unknown alias
 
@@ -62,7 +62,7 @@ class TestGetLLMBackend:
         assert isinstance(backend, OllamaBackend)
 
     def test_uses_ollama_base_url_when_llm_base_url_empty(self):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
 
         cfg = _Cfg(ollama_base_url="http://1.2.3.4:11434")
 
@@ -77,7 +77,7 @@ class TestGetLLMBackend:
         OpenAI-compatible configuration — otherwise toggling the provider
         back to Ollama would silently point OllamaBackend at the old
         LM Studio URL."""
-        from jarvis.llm import OllamaBackend, get_llm_backend
+        from claire.llm import OllamaBackend, get_llm_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -93,7 +93,7 @@ class TestGetLLMBackend:
 
 class TestGetEmbeddingBackend:
     def test_defaults_to_llm_provider(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from claire.llm import OpenAICompatibleBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -109,7 +109,7 @@ class TestGetEmbeddingBackend:
         """The override exists for runtimes that ship chat without
         embeddings (e.g. some oMLX builds). The user pins embeddings to
         Ollama; chat keeps running on the configured provider."""
-        from jarvis.llm import OllamaBackend, get_embedding_backend
+        from claire.llm import OllamaBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -123,7 +123,7 @@ class TestGetEmbeddingBackend:
         assert backend.base_url == "http://127.0.0.1:11434"
 
     def test_explicit_embedding_base_url_wins(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from claire.llm import OpenAICompatibleBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -141,7 +141,7 @@ class TestGetEmbeddingBackend:
         OpenAI-compatible server. With ``embedding_provider`` unset and
         ``embedding_base_url`` empty, the embedding backend must inherit
         ``llm_base_url`` rather than falling back to the Ollama URL."""
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from claire.llm import OpenAICompatibleBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -154,7 +154,7 @@ class TestGetEmbeddingBackend:
         assert backend.base_url == "http://localhost:1234/v1"
 
     def test_inherits_llm_api_key_when_embedding_api_key_unset(self):
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from claire.llm import OpenAICompatibleBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="openai_compatible",
@@ -174,7 +174,7 @@ class TestGetEmbeddingBackend:
         any of llm_base_url, ollama_base_url, embedding_base_url, the
         factory falls back to the Ollama default rather than raising.
         Construction is fail-soft; the request will fail at call time."""
-        from jarvis.llm import OpenAICompatibleBackend, get_embedding_backend
+        from claire.llm import OpenAICompatibleBackend, get_embedding_backend
 
         cfg = _Cfg(
             llm_provider="ollama",
@@ -200,8 +200,8 @@ class TestPerProviderModelResolution:
         cfg_path = tmp_path / "config.json"
         cfg.setdefault("_config_version", 2)  # skip migration noise
         cfg_path.write_text(json.dumps(cfg))
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
-        from jarvis.config import load_settings
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
+        from claire.config import load_settings
         return load_settings()
 
     def test_ollama_chat_model_not_shadowed_by_stale_llm_chat_model(self, tmp_path, monkeypatch):
@@ -268,10 +268,10 @@ class TestConfigMigration:
                 }
             )
         )
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
         # Reload the module so cached config-path defaults reset.
-        from jarvis.config import load_settings
+        from claire.config import load_settings
 
         settings = load_settings()
 
@@ -306,9 +306,9 @@ class TestConfigMigration:
                 }
             )
         )
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
-        from jarvis.config import load_settings
+        from claire.config import load_settings
 
         settings = load_settings()
 
@@ -324,9 +324,9 @@ class TestConfigMigration:
 
         cfg_path = tmp_path / "config.json"
         cfg_path.write_text(json.dumps({"_config_version": 1}))
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
-        from jarvis.config import load_settings
+        from claire.config import load_settings
 
         settings = load_settings()
 

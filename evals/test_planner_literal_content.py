@@ -5,9 +5,9 @@ import pytest
 
 from evals.helpers import voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply.planner import resolve_next_tool_call
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.local_files import LocalFilesTool
+from claire.reply.planner import resolve_next_tool_call
+from claire.tools.base import ToolContext
+from claire.tools.builtin.local_files import LocalFilesTool
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 CONTENTS = ["It's a quiet morning.", "L'été arrive bientôt.", 'He said "hello".']

@@ -30,7 +30,7 @@ def _cfg() -> SimpleNamespace:
 @pytest.fixture(autouse=True)
 def isolate_graph_inference(monkeypatch):
     """Exercise diary persistence and FTS without unrelated graph inference."""
-    monkeypatch.setattr('jarvis.memory.graph_ops.update_graph_from_dialogue',
+    monkeypatch.setattr('claire.memory.graph_ops.update_graph_from_dialogue',
                         lambda **kwargs: SimpleNamespace(stored=[], skipped=0))
 
 
@@ -40,7 +40,7 @@ class TestDiaryToEnrichmentFlow:
 
     def _create_dialogue_memory(self, timeout: float = 5.0):
         """Create a DialogueMemory with a short timeout for testing."""
-        from jarvis.memory.conversation import DialogueMemory
+        from claire.memory.conversation import DialogueMemory
         return DialogueMemory(inactivity_timeout=timeout)
 
     def _force_messages_old(self, dm, age_seconds: float):
@@ -60,7 +60,7 @@ class TestDiaryToEnrichmentFlow:
         messages are cleaned from memory, then a follow-up query successfully
         retrieves the context from the diary via FTS search.
         """
-        from jarvis.memory.conversation import (
+        from claire.memory.conversation import (
             DialogueMemory,
             update_diary_from_dialogue_memory,
             search_conversation_memory_by_keywords,
@@ -86,7 +86,7 @@ class TestDiaryToEnrichmentFlow:
         mock_topics = "python, asyncio, async/await, database, migration, refactoring"
 
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=(mock_summary, mock_topics),
         ):
             summary_id = update_diary_from_dialogue_memory(
@@ -141,7 +141,7 @@ class TestDiaryToEnrichmentFlow:
         The follow-up query exercises the enrichment keyword extraction
         (mocked) and diary search (real FTS) to verify the full pipeline.
         """
-        from jarvis.memory.conversation import (
+        from claire.memory.conversation import (
             DialogueMemory,
             update_diary_from_dialogue_memory,
             search_conversation_memory_by_keywords,
@@ -164,7 +164,7 @@ class TestDiaryToEnrichmentFlow:
         mock_topics = "tokyo, travel, japan, november, shibuya, akihabara, autumn"
 
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=(mock_summary, mock_topics),
         ):
             summary_id = update_diary_from_dialogue_memory(
@@ -209,7 +209,7 @@ class TestDiaryToEnrichmentFlow:
 
     def test_multiple_diary_entries_searchable(self, db):
         """Multiple diary entries from different conversations are all searchable."""
-        from jarvis.memory.conversation import (
+        from claire.memory.conversation import (
             DialogueMemory,
             update_diary_from_dialogue_memory,
             search_conversation_memory_by_keywords,
@@ -222,7 +222,7 @@ class TestDiaryToEnrichmentFlow:
         dm.add_message("assistant", "Try a carbonara — eggs, pecorino, guanciale, and black pepper.")
 
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=(
                 "User asked for a pasta recipe. Suggested carbonara with eggs, pecorino, guanciale, and black pepper.",
                 "cooking, pasta, carbonara, recipe",
@@ -244,7 +244,7 @@ class TestDiaryToEnrichmentFlow:
 
         # Second summary includes first conversation (LLM appends to previous)
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=(
                 "User asked for a pasta recipe. Suggested carbonara with eggs, pecorino, guanciale, and black pepper. "
                 "Later, user asked about beginner strength training. Recommended compound lifts: squats, deadlifts, bench press, and overhead press.",
@@ -291,7 +291,7 @@ class TestDiaryToEnrichmentFlow:
         While the diary update (slow LLM call) is processing, new messages
         arrive. These must survive cleanup and appear in the next diary update.
         """
-        from jarvis.memory.conversation import (
+        from claire.memory.conversation import (
             DialogueMemory,
             update_daily_conversation_summary,
         )
@@ -313,7 +313,7 @@ class TestDiaryToEnrichmentFlow:
 
         # Mock the LLM summarisation result
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=(
                 "Discussed quantum computing basics — qubits vs classical bits.",
                 "quantum, computing, qubits",

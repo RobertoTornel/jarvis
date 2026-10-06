@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.tools.builtin.tool_search import ToolSearchTool
-from jarvis.tools.base import ToolContext
+from claire.tools.builtin.tool_search import ToolSearchTool
+from claire.tools.base import ToolContext
 
 
 def _ctx(cfg):
@@ -31,7 +31,7 @@ class TestToolSearchTool:
     def test_invokes_select_tools_and_formats_list(self, mock_config):
         tool = ToolSearchTool()
         with patch(
-            "jarvis.tools.builtin.tool_search.select_tools",
+            "claire.tools.builtin.tool_search.select_tools",
             return_value=["webSearch", "stop", "toolSearchTool", "getWeather"],
         ) as mock_sel:
             result = tool.run({"query": "look up a fact"}, _ctx(mock_config))
@@ -51,7 +51,7 @@ class TestToolSearchTool:
     def test_empty_result_returns_honest_note(self, mock_config):
         tool = ToolSearchTool()
         with patch(
-            "jarvis.tools.builtin.tool_search.select_tools",
+            "claire.tools.builtin.tool_search.select_tools",
             return_value=["stop", "toolSearchTool"],
         ):
             result = tool.run({"query": "do something"}, _ctx(mock_config))
@@ -61,7 +61,7 @@ class TestToolSearchTool:
     def test_select_tools_exception_returns_error(self, mock_config):
         tool = ToolSearchTool()
         with patch(
-            "jarvis.tools.builtin.tool_search.select_tools",
+            "claire.tools.builtin.tool_search.select_tools",
             side_effect=RuntimeError("router down"),
         ):
             result = tool.run({"query": "x"}, _ctx(mock_config))

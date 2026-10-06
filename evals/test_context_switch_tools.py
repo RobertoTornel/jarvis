@@ -83,7 +83,7 @@ class TestContextSwitchTools:
         self, query, mock_config, eval_db, eval_dialogue_memory,
         diary_entries, tool_responses,
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -96,10 +96,10 @@ class TestContextSwitchTools:
         capture = ToolCallCapture()
 
         with patch(
-            'jarvis.memory.conversation.search_conversation_memory_by_keywords',
+            'claire.memory.conversation.search_conversation_memory_by_keywords',
             return_value=diary_entries,
         ), patch(
-            'jarvis.reply.engine.run_tool_with_retries',
+            'claire.reply.engine.run_tool_with_retries',
             side_effect=create_mock_tool_run(capture, tool_responses),
         ):
             response = run_reply_engine(
