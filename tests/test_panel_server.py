@@ -1144,6 +1144,59 @@ def test_check_write_origin_rejects_https_and_odd_schemes():
             check_write_origin(request)
 
 
+def test_an_opaque_origin_is_accepted_only_with_same_origin_fetch_metadata():
+    """The panel's own form must be able to save, without weakening the guard.
+
+    This is the bug the owner hit: the panel answered its own form with
+    "Origin: null" and the guard refused every genuine write, so no setting could
+    ever be saved - while the panel looked entirely healthy.
+
+    An opaque origin proves nothing by itself (a cross-site attacker gets exactly
+    the same "null"), so it is accepted ONLY alongside Sec-Fetch-Site:
+    same-origin, which the browser derives from the real initiator and a foreign
+    page cannot forge. Both halves are asserted here, because accepting the first
+    without the second would be no CSRF protection at all.
+    """
+    accepted = PanelRequest(
+        method="POST",
+        path=ROUTE_SELECT,
+        headers=dict(FORM_HEADERS, **{
+            "Origin": "null",
+            "Sec-Fetch-Site": "same-origin",
+        }),
+    )
+    assert check_write_origin(accepted) == "same-origin"
+
+    # Same opaque origin, but the fetch metadata says it did NOT come from this
+    # page: refused.
+    for site in ("cross-site", "same-site"):
+        forged = PanelRequest(
+            method="POST",
+            path=ROUTE_SELECT,
+            headers=dict(FORM_HEADERS, **{
+                "Origin": "null",
+                "Sec-Fetch-Site": site,
+            }),
+        )
+        with pytest.raises(PanelOriginError):
+            check_write_origin(forged)
+
+
+def test_the_panel_does_not_set_a_referrer_policy_that_blinds_its_own_guard():
+    """Pin the root cause, not just the symptom.
+
+    Referrer-Policy: no-referrer makes the browser send an opaque "Origin: null"
+    on the panel's own form POST. Combined with an origin guard that is
+    self-sabotage: the hardening is precisely what breaks the writes. The policy
+    must stay same-origin, which keeps the referrer off OTHER sites (the actual
+    intent) while letting our own requests carry a real Origin.
+    """
+    source = inspect.getsource(panel)
+    assert '"Referrer-Policy", "no-referrer"' not in source
+    assert '"Referrer-Policy", "same-origin"' in source
+    assert 'content="same-origin"' in source
+
+
 # --------------------------------------------------------------------------- #
 # Housekeeping: markers, exports, spec
 # --------------------------------------------------------------------------- #

@@ -767,9 +767,32 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
     """
     headers = request.headers
     origin = headers.get("Origin")
-    if not origin:
+    site_header = headers.get("Sec-Fetch-Site")
+    site = str(site_header).strip().lower() if site_header is not None else None
+
+    # An absent or OPAQUE origin ("Origin: null") proves nothing on its own: a
+    # cross-site attacker gets exactly the same value, so accepting it blindly
+    # would be no CSRF protection at all. It is therefore accepted only alongside
+    # Sec-Fetch-Site: same-origin, which a foreign page cannot forge because the
+    # browser sets it from the request's real initiator.
+    #
+    # This path exists because the panel used to answer its own form with
+    # "Origin: null": its Referrer-Policy was no-referrer, and that policy makes
+    # the browser send an opaque Origin. The guard then refused every genuine
+    # write, so the panel could not save its own settings. The policy is now
+    # same-origin, and this fallback covers the other opaque-origin contexts.
+    if not origin or str(origin).strip().lower() == "null":
+        if site == "same-origin":
+            return "same-origin"
+        if not origin:
+            raise PanelOriginError(
+                "POST /select was refused: no Origin header, so the request is not "
+                "provably from the panel page.",
+                fix=PanelOriginError.default_fix,
+            )
         raise PanelOriginError(
-            "POST /select was refused: no Origin header, so the request is not "
+            "POST /select was refused: the Origin is opaque ('null') and no "
+            "Sec-Fetch-Site: same-origin accompanies it, so the request is not "
             "provably from the panel page.",
             fix=PanelOriginError.default_fix,
         )
@@ -1401,7 +1424,7 @@ def _page(title: str, body: str) -> str:
         "<!doctype html>\n"
         '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        '<meta name="referrer" content="no-referrer">\n'
+        '<meta name="referrer" content="same-origin">\n'
         f"<title>{_esc(title)}</title>\n<style>{_CSS}</style>\n</head>\n<body>\n"
         f"{body}\n</body>\n</html>\n"
     )
@@ -2011,7 +2034,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(response.body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # NOT "no-referrer": that policy makes the browser send an opaque
+        # "Origin: null" on this panel's own form POST, which the write guard
+        # then correctly refuses as unprovable - so the panel could never
+        # accept its own form. "same-origin" keeps the referrer away from
+        # other sites (the actual intent) while letting our own requests
+        # carry a real Origin.
+        self.send_header("Referrer-Policy", "same-origin")
         for name, value in response.headers:
             self.send_header(name, value)
         self.end_headers()
