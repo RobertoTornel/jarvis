@@ -39,9 +39,9 @@ and are **not** part of the per-wave gate.
 | 1 | Voice: recognisers, transcript plumbing, Fish TTS, wake word | **complete** (1a and 1b committed) |
 | 2 | Memory: editable router file beside untouched RAG/graph | **complete** |
 | 3 | Scheduling: calendar, alternative slots, reminders, timers | **complete** |
-| 4 | Senses: screenshot/OCR, GUI automation, vision routing, browser | not started |
-| 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | not started |
-| 6 | Platform: panel, keychain, backup/repair, systemd, Docker | not started |
+| 4 | Senses: screen OCR, camera, browser control | **partial** - OCR blocked: no tesseract binary; no camera exists. Capture, browser and the honest degraded paths are done and verified. |
+| 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | **complete** |
+| 6 | Platform: keychain, backup, service, systemd, Docker | **partial** - keychain, backup, service/self-check, systemd unit and Dockerfile done. The web panel is not built. |
 | 7 | Phone: token bridge, camera, location, wire encoders | not started |
 | 8 | Integration, acceptance demo, final report | not started |
 
@@ -433,3 +433,68 @@ paths are asserted by their own tests.
 The lesson is recorded because it generalises: the agent's report was confident,
 specific and wrong. Verification against the running system is what found it, and
 "blocked by a heuristic" is not the same as "safe".
+
+## Wave 5: outreach
+
+The ladder was implemented against a shared interface pinned in the briefs, and
+the transports landed independently as intended. Verified end to end with
+injected fakes rather than trusting the reports:
+
+| Check | Result |
+|---|---|
+| `low` keeps it in the conversation | nothing sent, reported explicitly |
+| `medium` / `high` | one Signal text; `high` retries a failure |
+| `critical` | attempts a call and reports whether it was **really placed** |
+| Discord while Signal works | **not contacted at all** |
+| Signal fails | Discord used as last resort, after the preferred channel |
+| Dry run | the default, and it makes no network call |
+
+Discord is never first. That is asserted rather than assumed, because a
+last-resort channel that gets used first is worse than no channel.
+
+### A latent trap found by integration, not by the unit tests
+
+`can_place_call()` recognised `call`, `can_call`, `supports_call` and a `*_call`
+name — but **not `place_call`**, the method name this project's own shared
+interface documents. Nothing broke, because the real Signal transport happens to
+declare the capability three other ways as well. A transport implementing only
+`place_call` would have been *silently skipped at `critical`* — the one level
+where the call is the entire point.
+
+The unit tests did not catch it because every fake they used happened to define
+one of the recognised spellings. The integration check caught it by asking the
+real class a question the fakes had never been asked.
+
+Fixed additively, with a fail-proof that was actually run: neutralising the fix
+turns the new test RED (`test_place_call_only_transport_is_call_capable` fails),
+restoring it turns it GREEN. Discord remains call-incapable no matter how it
+declares itself, including if it grows a `call()` method.
+
+## Wave 6: platform
+
+| Piece | State |
+|---|---|
+| Key store | 0600, outside the repo, masked as `...3344#48d1e459` |
+| Backup | 4 rotating slots, SHA-256 verified |
+| Service / self-check | per-probe isolation, so one broken probe cannot crash the report |
+| systemd unit, Dockerfile | written; not installed, not built |
+
+Verified live rather than taken on report:
+
+- **One flipped byte in a backup was caught, and the size was unchanged** —
+  `1 changed; … content changed (sha256 eaad… != manifest 33a7…, size 17 vs 17)`.
+  A size-only check would have passed it, which is exactly why the manifest hashes.
+  `restore()` of that snapshot was **refused** by name.
+- A key store file at `0644` was **tightened to `0600` and the tightening was
+  reported**: `key store permissions were too loose and have been tightened`.
+- `describe()` returns `masked='...3344#48d1e459'`; the raw value appears in
+  neither `repr()` nor the description; a missing name raises `KeyNotFoundError`
+  naming the key and the store file, never a value.
+
+One self-inflicted incident, recorded because it is the kind of thing that must
+be disclosed: while verifying the key store I wrote a test key at the file's
+**real** location, because the store honours `$CLAIRE_KEY_STORE` and I had set
+`CLAIRE_CONFIG_DIR`. The store had no owner data in it, the file contained only
+my own test key, and it was removed immediately — but the mistake was writing to
+a real path from a verification script, and it is noted rather than quietly
+cleaned up.
