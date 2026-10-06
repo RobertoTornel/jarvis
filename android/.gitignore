@@ -1,3 +1,8 @@
 # Gradle scratch directories: the wrapper's downloaded distribution state and the
 # daemon's per-project caches.  `build/` is already ignored by the repository root.
 .gradle/
+
+# Machine-local SDK location.  The path is valid only on the machine that built
+# the APK, so it must never be tracked.  Regenerate with:
+#   echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+local.properties
