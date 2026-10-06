@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A deliberately dark, low-glare palette: this app is used in a dark room and
+         through a notification shade, and a white screen at 2 a.m. is an assault.
+         Defined here rather than pulled from Material Components, which would be
+         another AAR for four colours. -->
+    <color name="bg">#FF0E1116</color>
+    <color name="surface">#FF161B22</color>
+    <color name="surface_alt">#FF1F2630</color>
+    <color name="text">#FFE6EDF3</color>
+    <color name="text_dim">#FF8B949E</color>
+    <color name="accent">#FF4CC9B0</color>
+    <color name="accent_dim">#FF2A6E63</color>
+    <color name="warn">#FFE3B341</color>
+    <color name="bad">#FFF85149</color>
+    <color name="you">#FF79C0FF</color>
+    <color name="claire">#FF4CC9B0</color>
+</resources>

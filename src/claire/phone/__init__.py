@@ -13,6 +13,7 @@ The token, the bind host and the naming rules live in the spec:
 from __future__ import annotations
 
 from .bridge import (
+    ALLOWED_AUDIO_CONTENT_TYPES,
     ALLOWED_IMAGE_CONTENT_TYPES,
     DEFAULT_DESCRIBER,
     DEFAULT_HOST,
@@ -20,6 +21,7 @@ from .bridge import (
     ENDPOINTS,
     MAX_BODY_BYTES,
     TOKEN_KEY_NAME,
+    AudioDecodeError,
     AuthenticationError,
     BodyTooLargeError,
     BridgeResponse,
@@ -38,10 +40,13 @@ from .bridge import (
     SinkFailedError,
     SinkUnconfiguredError,
     TokenUnavailableError,
+    TranscriptionFailedError,
+    TranscriptionUnavailableError,
     UnsupportedContentTypeError,
     VisionDescriberError,
     check_token,
     create_server,
+    decode_wav_audio,
     default_host,
     default_photo_dir,
     default_port,
@@ -55,7 +60,9 @@ from .bridge import (
 )
 
 __all__ = [
+    "ALLOWED_AUDIO_CONTENT_TYPES",
     "ALLOWED_IMAGE_CONTENT_TYPES",
+    "AudioDecodeError",
     "AuthenticationError",
     "BodyTooLargeError",
     "BridgeResponse",
@@ -78,12 +85,15 @@ __all__ = [
     "RouteNotFoundError",
     "SinkFailedError",
     "SinkUnconfiguredError",
+    "TranscriptionFailedError",
+    "TranscriptionUnavailableError",
     "TOKEN_KEY_NAME",
     "TokenUnavailableError",
     "UnsupportedContentTypeError",
     "VisionDescriberError",
     "check_token",
     "create_server",
+    "decode_wav_audio",
     "default_host",
     "default_photo_dir",
     "default_port",

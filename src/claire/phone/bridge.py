@@ -7,27 +7,45 @@ senses this laptop cannot supply: a camera and a position.  This module is the
 small HTTP surface that lets the phone hand both to Claire, and hear what she
 has to say back.
 
-The five endpoints
-------------------
+The eight routes, five of them canonical
+----------------------------------------
 
-======================  ==============================================
-``POST /text``          a typed (or phone-transcribed) utterance
-``POST /see``           one photo, plus an optional question
-``POST /loc``           latitude / longitude
-``GET  /reply``         whatever Claire has to say next (drained once)
-``GET  /health``        reachability, masked token handle, capability verdict
-======================  ==============================================
+========================  ============================================
+``POST /text``            a typed utterance
+``POST /transcribe``      one utterance of **audio** (WAV), recognised by the
+                          voice loop's own engine and answered with its text
+``POST /see``             one photo, plus an optional question
+``POST /loc``             latitude / longitude
+``GET  /reply``           whatever Claire has to say next (drained once)
+``GET  /health``          reachability, masked token handle, capability verdict
+``POST /location``        alias of ``/loc`` -- see below
+``GET  /where``           alias of ``/reply`` -- see below
+========================  ============================================
+
+The last two are not a second design.  The phone client shipped as 0.2 calls
+``/transcribe``, ``/see``, ``/location``, ``/where`` and ``/health`` on port 8731
+and authenticates with ``X-Claire-Token``; this bridge serves ``/text``,
+``/transcribe``, ``/see``, ``/loc``, ``/reply`` and ``/health`` and authenticates
+with ``Authorization: Bearer``.  Renaming either side silently breaks a device
+the owner is holding, so the drift is absorbed here -- in one table
+(:data:`ROUTE_ALIASES`) and one extra accepted header
+(:data:`LEGACY_TOKEN_HEADER`) -- while the canonical spellings stay canonical.
+
+The port is 8788, not 8765: Claire's own web panel had already claimed 8765 and
+``dsh web`` holds 8731, so the old default could not bind at all.
 
 Five invariants, each enforced mechanically
 ------------------------------------------
 
 1. **Authentication is mandatory, not optional.**  Every endpoint — including
-   ``/health`` — requires ``Authorization: Bearer <token>``.  The comparison is
+   ``/health`` — requires ``Authorization: Bearer <token>``, or the
+   compatibility spelling ``X-Claire-Token``.  Both are compared with
    :func:`hmac.compare_digest`, never ``==`` (which leaks the match position
    through timing).  A request with a missing or wrong token gets ``401`` and is
-   *not processed*: the handler returns before the utterance sink, the photo
-   store or the reply queue is touched.  The response body for "no token" and
-   "wrong token" is byte-identical, so neither is an oracle.
+   *not processed*: the handler returns before the utterance sink, the
+   recogniser, the photo store or the reply queue is touched.  The response body
+   for "no token" and "wrong token" is byte-identical, so neither is an oracle,
+   and the compatibility header is no weaker than the bearer one.
 2. **The token is generated on first use and only ever reported masked.**  It is
    created with :func:`secrets.token_urlsafe` into the project's 0600 key store
    (:mod:`claire.platform.keys`, name :data:`TOKEN_KEY_NAME`) and reported as
@@ -46,20 +64,33 @@ Five invariants, each enforced mechanically
    A confident sentence about an image nobody looked at is the worst thing this
    module could produce, so it is made unreachable.
 5. **Named failures with the fix.**  An oversized body, an unknown content type,
-   a bad coordinate and a missing sink each produce a named error
-   (``code`` + ``message`` + ``remedy``) and the honest HTTP status — 413, 415,
-   400, 503 — never a silent empty 200.
+   a bad coordinate, undecodable audio and a missing sink each produce a named
+   error (``code`` + ``message`` + ``remedy``) and the honest HTTP status — 413,
+   415, 400, 503 — never a silent empty 200.
+
+One recogniser, not two
+-----------------------
+
+``POST /transcribe`` does not bring its own speech-to-text.  It asks
+:func:`claire.listening.stt.create_stt_engine` for the engine the voice loop is
+configured with (see :attr:`PhoneBridge.transcriber`), so a transcript that
+arrives from the phone was produced by the same authoritative recogniser that
+would have produced it had the owner spoken into the laptop's own microphone.
+Injecting an engine, or a factory, is how the tests cover the route without
+loading a 0.6B model.
 
 Injection, so tests need no socket
 ----------------------------------
 
 :class:`PhoneBridge` takes its collaborators as constructor arguments — the key
 store, the utterance sink, the vision describer, the reply queue, the location
-sink and the photo directory.  :meth:`PhoneBridge.handle` is the whole request
-path as an ordinary function call over ``(method, path, content_type, body)``,
-and :class:`PhoneRequestHandler` is a thin adapter that only reads a body and
-writes a response.  The suite in ``tests/test_phone_bridge.py`` drives
-``handle`` directly: no socket, no server thread, no network.
+sink, the recogniser and the photo directory.  :meth:`PhoneBridge.handle` is the
+whole request path as an ordinary function call over ``(method, path,
+content_type, body)``, and :class:`PhoneRequestHandler` is a thin adapter that
+only reads a body and writes a response.  The suite in
+``tests/test_phone_bridge.py`` drives ``handle`` directly for most checks — and
+over a real socket for the ones where that is the only way to see the truth,
+because the 411-on-every-GET bug lived precisely in the layer ``handle`` skips.
 """
 
 from __future__ import annotations
@@ -157,8 +188,15 @@ LOG = logging.getLogger(__name__)
 #: a phone bridge on a public interface is unencrypted plain HTTP.
 DEFAULT_HOST = "127.0.0.1"
 
-#: The default port.  Deliberately not 8000/8080 (shared by every dev server).
-DEFAULT_PORT = 8765
+#: The default port.  Deliberately not 8000/8080 (shared by every dev server) and
+#: deliberately not 8765 any more: Claire's own web panel
+#: (``python -m claire.panel.server``) had already claimed 8765, so
+#: ``python -m claire.phone serve`` could not bind at all and the two services
+#: silently fought over one port.  8731, which the shipped 0.2 phone client
+#: hard-coded, is held by ``dsh web`` on this machine.  8788 is free on this host
+#: and is the port this project now documents for the phone bridge; set
+#: ``$CLAIRE_PHONE_PORT`` to move it.
+DEFAULT_PORT = 8788
 
 #: Environment overrides, for ops and for tests.  Read at call time so a test
 #: can redirect them with ``monkeypatch.setenv``.
@@ -201,13 +239,73 @@ REDACT_TAIL = 4
 #: not a document.
 MAX_QUESTION_CHARS = 2000
 
-#: Endpoint table: path -> allowed methods.  Order is the spec's order.
+#: Raw audio bodies ``/transcribe`` accepts.  WAV only, on purpose: the phone
+#: records 16-bit PCM and {@code ClaireWire} writes a canonical RIFF header, and a
+#: second container (ogg/opus, m4a) would mean a second decoder and a second way
+#: for the two ends to disagree.  ``audio/x-wav`` and friends are the spellings
+#: Android's own HTTP stacks use for the same bytes.
+ALLOWED_AUDIO_CONTENT_TYPES: FrozenSet[str] = frozenset(
+    {
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "audio/vnd.wave",
+    }
+)
+
+#: A longer body than this of 16 kHz mono PCM is a stuck microphone, not a
+#: sentence.  120 s is the ceiling; the phone's own segmenter closes at 15 s.
+MAX_AUDIO_SECONDS = 120
+
+#: Below this there is nothing to recognise, and running a 0.6B model over 20 ms
+#: of audio is a waste of the laptop's afternoon.
+MIN_AUDIO_SECONDS = 0.05
+
+#: The rate the phone records at and the rate a caller should aim for.  Not
+#: enforced: the engine resamples, so an unusual rate is a fact to report, never
+#: a rejection.
+PREFERRED_AUDIO_SAMPLE_RATE = 16_000
+
+#: The header the shipped 0.2 phone client authenticates with.  ``Authorization:
+#: Bearer`` is the canonical one and the only one this module's spec leads with;
+#: this second spelling exists so the APK already in the owner's hand keeps
+#: working against the current bridge.  It is compared with the same
+#: :func:`hmac.compare_digest`, and a wrong value is answered exactly like a
+#: missing one.
+LEGACY_TOKEN_HEADER = "X-Claire-Token"
+
+#: Send this instead of guessing when no recogniser can be built.  Names the
+#: config key, the check command and the spec, because "transcription is
+#: unavailable" on its own is not actionable from a phone screen.
+DEFAULT_TRANSCRIBE_REMEDY = (
+    "Set 'stt_model_path' in ~/.config/claire/config.json to a *.nemo file or an "
+    "ONNX export directory (see src/claire/listening/stt/stt.spec.md), check it "
+    "with 'python scripts/check_stt_model.py --model-path <path>', then send the "
+    "audio again.  The bridge loads the same authoritative recogniser the voice "
+    "loop uses and will not invent a second one."
+)
+
+#: Endpoint table: path -> allowed methods.  Order is the spec's order, with the
+#: two compatibility spellings from the shipped 0.2 client immediately after the
+#: canonical endpoint they resolve to.
 ENDPOINTS: Dict[str, Tuple[str, ...]] = {
     "/text": ("POST",),
+    "/transcribe": ("POST",),
     "/see": ("POST",),
     "/loc": ("POST",),
+    "/location": ("POST",),
     "/reply": ("GET",),
+    "/where": ("GET",),
     "/health": ("GET",),
+}
+
+#: Routes that are the *same handler* under an older name.  The shipped 0.2
+#: client calls ``/location`` and ``/where``; the bridge serves ``/loc`` and
+#: ``/reply``.  Rather than 404 a working phone, the alias is a one-line
+#: translation, and the alias table is the only place that knows about it.
+ROUTE_ALIASES: Dict[str, str] = {
+    "/location": "/loc",
+    "/where": "/reply",
 }
 
 #: Methods this API never reads a body for.  An ordinary client sends no
@@ -501,6 +599,54 @@ class SinkFailedError(PhoneBridgeError):
             remedy=(
                 "The text did not reach the voice loop. Check the sink "
                 "implementation and Claire's logs, then send it again."
+            ),
+            cause=cause,
+        )
+
+
+class AudioDecodeError(PhoneBridgeError):
+    """The audio body was the right media type but not decodable WAV."""
+
+    code = "invalid_audio"
+    status = HTTP_BAD_REQUEST
+
+    def __init__(self, message: str, *, remedy: str = "", cause: Any = None) -> None:
+        super().__init__(
+            message,
+            remedy=remedy
+            or (
+                "Send 16-bit PCM mono WAV at 16000 Hz: one RIFF/WAVE header and "
+                "one 'data' chunk. The phone's own ClaireWire.wav() writes exactly "
+                "that, and android/tools/WireSelfTest.java checks it byte for byte."
+            ),
+            cause=cause,
+        )
+
+
+class TranscriptionUnavailableError(PhoneBridgeError):
+    """No authoritative recogniser could be built, so the audio cannot be read."""
+
+    code = "transcription_unavailable"
+    status = HTTP_SERVICE_UNAVAILABLE
+
+    def __init__(self, message: str, *, remedy: str = DEFAULT_TRANSCRIBE_REMEDY,
+                 cause: Any = None) -> None:
+        super().__init__(message, remedy=remedy, cause=cause)
+
+
+class TranscriptionFailedError(PhoneBridgeError):
+    """The recogniser was built but failed on this audio."""
+
+    code = "transcription_failed"
+    status = HTTP_BAD_GATEWAY
+
+    def __init__(self, cause: BaseException) -> None:
+        super().__init__(
+            f"the speech recogniser raised {type(cause).__name__}: {cause}",
+            remedy=(
+                "The audio reached the laptop but was not recognised. Send it "
+                "again; if it fails every time, check the recogniser with "
+                "'python scripts/check_stt_model.py' and read Claire's logs."
             ),
             cause=cause,
         )
@@ -988,6 +1134,20 @@ class PhoneBridge:
         with that signature.
     queue:
         The :class:`ReplyQueue` ``GET /reply`` drains.  A fresh one by default.
+    transcriber:
+        The authoritative recogniser ``POST /transcribe`` uses: an object with
+        ``transcribe(samples, sample_rate)`` and ``identity()``, which is exactly
+        :class:`claire.listening.stt.SttEngine`.  ``None`` resolves the project's
+        own engine through :func:`claire.listening.stt.create_stt_engine` from
+        :func:`claire.config.load_settings` — the *same* recogniser the voice
+        loop uses, so there is one transcription stack in this project and not
+        two.  A caller may inject a fake here, which is how the tests cover the
+        route without loading a 0.6B model.
+    transcriber_factory:
+        A zero-argument callable returning such an engine, called at most once,
+        for a caller that wants the default resolution but deferred (the model
+        takes tens of seconds to load, and importing it at construction time
+        would make ``--help`` slow).
     location_sink:
         Optional callable given the :class:`LocationRecord` on ``POST /loc``.
     photo_dir:
@@ -1011,6 +1171,8 @@ class PhoneBridge:
         queue: Optional[ReplyQueue] = None,
         location_sink: Optional[Callable[[LocationRecord], Any]] = None,
         photo_dir: Any = None,
+        transcriber: Any = None,
+        transcriber_factory: Optional[Callable[[], Any]] = None,
         max_body_bytes: int = MAX_BODY_BYTES,
         host: Optional[str] = None,
         port: Optional[int] = None,
@@ -1024,6 +1186,10 @@ class PhoneBridge:
         self._sink = sink
         self._describer = describer
         self._resolved_describer: Any = None
+        self._transcriber = transcriber
+        self._transcriber_factory = transcriber_factory
+        self._resolved_transcriber: Any = None
+        self._transcriber_failed: Optional[str] = None
         self._queue = queue if queue is not None else ReplyQueue()
         self._location_sink = location_sink
         self._photo_dir = photo_dir
@@ -1092,6 +1258,83 @@ class PhoneBridge:
         if self._describer is DEFAULT_DESCRIBER:
             return "project_default"
         return "configured"
+
+    def transcribe_status(self) -> str:
+        """``"configured"``, ``"project_default"`` or ``"not_configured"``.
+
+        Mirrors :meth:`vision_status`, with one extra state: once a resolution
+        attempt has failed, the truthful answer is not "not_configured" any more
+        — something *is* configured and it does not work — so the property
+        reports the failure rather than pretending nothing was asked.
+        """
+        if self._transcriber_failed is not None:
+            return "failed:%s" % self._transcriber_failed
+        if self._transcriber is not None:
+            return "configured"
+        if self._resolved_transcriber is not None:
+            return "configured"
+        return "project_default"
+
+    @property
+    def transcriber(self) -> Any:
+        """The recogniser, resolved once and then remembered.
+
+        Resolution order, and there is no fourth: an injected engine, then an
+        injected factory, then the project's own
+        :func:`~claire.listening.stt.create_stt_engine` over
+        :func:`~claire.config.load_settings`.  A failure is remembered as a named
+        503 rather than retried on every request — reloading a 2.5 GB checkpoint
+        per utterance would be a worse bug than the one being reported.
+        """
+        if self._transcriber is not None:
+            return self._transcriber
+        if self._resolved_transcriber is not None:
+            return self._resolved_transcriber
+        if self._transcriber_failed is not None:
+            raise TranscriptionUnavailableError(
+                "no speech recogniser is available: %s" % self._transcriber_failed
+            )
+        try:
+            if self._transcriber_factory is not None:
+                engine = self._transcriber_factory()
+            else:
+                engine = self._build_project_transcriber()
+        except TranscriptionUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - named, remembered, never silent
+            self._transcriber_failed = "%s: %s" % (type(exc).__name__, exc)
+            LOG.warning(
+                "phone bridge could not build a recogniser for /transcribe (%s)",
+                type(exc).__name__,
+            )
+            raise TranscriptionUnavailableError(
+                "no speech recogniser could be built (%s: %s)"
+                % (type(exc).__name__, exc),
+                cause=exc,
+            ) from exc
+        if engine is None:
+            self._transcriber_failed = "the factory returned None"
+            raise TranscriptionUnavailableError(
+                "the transcriber factory returned None, so there is nothing to "
+                "recognise with"
+            )
+        self._resolved_transcriber = engine
+        LOG.info("phone bridge resolved a recogniser for /transcribe (%s)", self._engine_name(engine))
+        return engine
+
+    @staticmethod
+    def _engine_name(engine: Any) -> str:
+        """The engine's own name, or its class name.  Never anything secret."""
+        name = getattr(engine, "name", None)
+        return str(name) if name else type(engine).__name__
+
+    @staticmethod
+    def _build_project_transcriber() -> Any:
+        """The voice loop's recogniser, built from the project's configuration."""
+        from ..config import load_settings
+        from ..listening.stt import create_stt_engine
+
+        return create_stt_engine(load_settings())
 
     # -- the token -------------------------------------------------------- #
 
@@ -1186,11 +1429,26 @@ class PhoneBridge:
     def authorize(self, headers: Any) -> None:
         """Raise :class:`AuthenticationError` unless the request is signed.
 
+        Two spellings are accepted, and both are compared with
+        :func:`hmac.compare_digest`:
+
+        * ``Authorization: Bearer <token>`` — canonical, per RFC 6750, and the
+          only one the spec leads with;
+        * ``X-Claire-Token: <token>`` — what the shipped 0.2 phone client sends
+          (see :data:`LEGACY_TOKEN_HEADER`).  It exists so the APK already in the
+          owner's hand keeps working, and it is not a weaker path: a wrong value
+          is answered with the same byte-identical 401 as a missing one, and a
+          request carrying *both* headers is accepted only if one of them
+          matches.
+
         Returns ``None`` and says nothing on success, so a caller cannot
         accidentally branch on a truthy token.
         """
         supplied = parse_bearer_token(_header(headers, "Authorization"))
         if supplied is None:
+            legacy = _header(headers, LEGACY_TOKEN_HEADER)
+            supplied = str(legacy).strip() if legacy is not None else None
+        if not supplied:
             LOG.warning(
                 "phone bridge refused a request: no bearer token was offered"
             )
@@ -1260,12 +1518,15 @@ class PhoneBridge:
         headers: Any,
         query: Any,
     ) -> BridgeResponse:
+        route = ROUTE_ALIASES.get(route, route)
         if route == "/health":
             return self._health()
         if route == "/reply":
             return self._reply()
         if route == "/text":
             return self._text(content_type, body)
+        if route == "/transcribe":
+            return self._transcribe(content_type, body)
         if route == "/loc":
             return self._loc(content_type, body)
         return self._see(content_type, body, headers, query)
@@ -1299,6 +1560,7 @@ class PhoneBridge:
                 "token_fingerprint": self.token_fingerprint(),
                 "queue_depth": len(self._queue),
                 "vision": self.vision_status(),
+                "transcribe": self.transcribe_status(),
                 "photo_dir": str(self.photo_dir),
                 "max_body_bytes": self.max_body_bytes,
                 "location": location.as_dict() if location else None,
@@ -1345,6 +1607,72 @@ class PhoneBridge:
                 "received_at": utterance["received_at"],
             },
         )
+
+    def _transcribe(self, content_type: str, body: bytes) -> BridgeResponse:
+        """Audio in, authoritative text out, and the utterance on to Claire.
+
+        This is the one endpoint that is not a translation of something the
+        phone can already do: an always-listening client has *audio*, and until
+        now the bridge only accepted text.  The recogniser is the voice loop's
+        own (see :attr:`transcriber`), never a second one, so a transcript this
+        route produces is the same text the microphone on the laptop would have
+        produced.
+
+        Differs from ``/text`` in exactly one honest way: the transcript is the
+        answer, so a caller without a wired sink still gets the words back, with
+        ``accepted: false`` and a note saying they were not delivered.  A phone
+        whose laptop is not running Claire should still be able to show what it
+        heard.
+        """
+        samples, sample_rate, seconds = decode_wav_audio(body, content_type)
+        engine = self.transcriber
+        try:
+            result = engine.transcribe(samples, sample_rate)
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            raise TranscriptionFailedError(exc) from exc
+        text = str(getattr(result, "text", "") or "").strip()
+        engine_name = self._engine_name(engine)
+        received_at = self._clock()
+
+        delivered = False
+        note = ""
+        if not text:
+            note = (
+                "the recogniser heard nothing intelligible in this audio, so "
+                "nothing was delivered to Claire"
+            )
+        elif self._sink is None or not callable(self._sink):
+            note = str(SinkUnconfiguredError())
+        else:
+            utterance = {
+                "kind": "transcript",
+                "text": text,
+                "source": "phone",
+                "engine": engine_name,
+                "seconds": seconds,
+                "sample_rate": sample_rate,
+                "received_at": received_at,
+            }
+            try:
+                self._sink(utterance)
+            except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+                raise SinkFailedError(exc) from exc
+            delivered = True
+
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "text": text,
+            "chars": len(text),
+            "accepted": delivered,
+            "delivered": delivered,
+            "engine": engine_name,
+            "seconds": seconds,
+            "sample_rate": sample_rate,
+            "received_at": received_at,
+        }
+        if note:
+            payload["note"] = note
+        return BridgeResponse(status=HTTP_OK, payload=payload)
 
     def _loc(self, content_type: str, body: bytes) -> BridgeResponse:
         data = self._json_object(content_type, body)
@@ -1649,6 +1977,122 @@ def _ensure_private_dir(path: Path) -> None:
 # The vision seam, interpreted honestly
 # --------------------------------------------------------------------------- #
 
+def decode_wav_audio(
+    body: bytes, content_type: str
+) -> Tuple[Any, int, float]:
+    """Decode one WAV body into mono float32 samples for the recogniser.
+
+    Returns ``(samples, sample_rate, seconds)``.  The ``wave`` module from the
+    standard library does the framing — it is the same parser the rest of this
+    project would use, and it refuses a truncated header rather than guessing —
+    and numpy does the sample conversion, because
+    :func:`claire.listening.stt.create_stt_engine` takes a float32 array in
+    ``[-1, 1]``.
+
+    Every rejection is a *named* error: a wrong media type is a 415 listing what
+    is accepted, and a body that claims to be WAV but is not is a 400 that says
+    which part was wrong.
+    """
+    declared = str(content_type or "").split(";", 1)[0].strip().lower()
+    if not body:
+        raise AudioDecodeError(
+            "the audio body was empty",
+            remedy="POST the bytes of a WAV file, not an empty body.",
+        )
+    if declared not in ALLOWED_AUDIO_CONTENT_TYPES and not _is_riff_wave(body):
+        # A client that says application/octet-stream but really sends a RIFF
+        # file is not worth an argument; a client that sends an MP3 is.
+        raise UnsupportedContentTypeError(
+            declared, sorted(ALLOWED_AUDIO_CONTENT_TYPES)
+        )
+    if not _is_riff_wave(body):
+        raise AudioDecodeError(
+            f"the body is {len(body)} bytes but does not start with a RIFF/WAVE "
+            "header",
+            remedy=(
+                "Only uncompressed WAV is accepted. If this came from the phone, "
+                "ClaireWire.wav() produces the right container; if it came from "
+                "elsewhere, re-encode it: ffmpeg -i in.m4a -ac 1 -ar 16000 "
+                "-c:a pcm_s16le out.wav"
+            ),
+        )
+
+    import io
+    import wave
+
+    try:
+        with wave.open(io.BytesIO(body), "rb") as handle:
+            channels = handle.getnchannels()
+            width = handle.getsampwidth()
+            sample_rate = handle.getframerate()
+            frames = handle.getnframes()
+            compression = handle.getcomptype()
+            raw = handle.readframes(frames)
+    except (wave.Error, EOFError, ValueError) as exc:
+        raise AudioDecodeError(
+            f"the WAV container could not be read ({type(exc).__name__}: {exc})",
+            cause=exc,
+        ) from exc
+
+    if compression != "NONE":
+        raise AudioDecodeError(
+            f"the WAV file is {compression!r}-compressed, which this route does "
+            "not decode",
+            remedy="Re-encode as uncompressed 16-bit PCM WAV (see the ffmpeg line "
+            "in the remedy for a non-RIFF body).",
+        )
+    if channels < 1 or channels > 8:
+        raise AudioDecodeError(f"the WAV file claims {channels} channels")
+    if width not in (1, 2, 4):
+        raise AudioDecodeError(
+            f"the WAV file uses {width * 8}-bit samples; 8, 16 and 32-bit PCM are "
+            "supported"
+        )
+    if sample_rate < 1000 or sample_rate > 384_000:
+        raise AudioDecodeError(
+            f"the WAV file claims a sample rate of {sample_rate} Hz"
+        )
+    if not raw:
+        raise AudioDecodeError("the WAV file has a header but no audio frames")
+
+    seconds = len(raw) / float(width * channels * sample_rate)
+    if seconds < MIN_AUDIO_SECONDS:
+        raise AudioDecodeError(
+            "the WAV file holds %.3f s of audio, which is too short to recognise "
+            "(the minimum is %.2f s)" % (seconds, MIN_AUDIO_SECONDS)
+        )
+    if seconds > MAX_AUDIO_SECONDS:
+        raise AudioDecodeError(
+            "the WAV file holds %.1f s of audio; the maximum for one utterance is "
+            "%d s" % (seconds, MAX_AUDIO_SECONDS),
+            remedy=(
+                "Send shorter utterances. The phone's own segmenter closes a "
+                "segment after 15 s of continuous speech; a longer file usually "
+                "means the client is buffering instead of segmenting."
+            ),
+        )
+
+    import numpy as np
+
+    if width == 1:
+        samples = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif width == 2:
+        samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    else:
+        samples = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+    if channels > 1:
+        frames_count = samples.size // channels
+        samples = samples[: frames_count * channels].reshape(frames_count, channels)
+        samples = samples.mean(axis=1)
+    samples = np.ascontiguousarray(samples, dtype=np.float32)
+    return samples, int(sample_rate), seconds
+
+
+def _is_riff_wave(body: bytes) -> bool:
+    """True when the first 12 bytes are a RIFF/WAVE header."""
+    return len(body) >= 12 and body[0:4] == b"RIFF" and body[8:12] == b"WAVE"
+
+
 def invoke_describer(describer: Any, image_path: Any, question: str) -> Any:
     """Call an injected describer: an object with ``describe`` or a callable.
 
@@ -1946,8 +2390,13 @@ def serve(
 ) -> None:
     """Create the server and serve until interrupted.
 
-    Not called by the test suite: every test drives :meth:`PhoneBridge.handle`
-    directly, with no socket and no thread.
+    This is the blocking, real-process entry point (``python -m
+    claire.phone.bridge``).  The test suite does not call it: it calls
+    :func:`create_server` with ``port=0`` and serves that in a thread, so the
+    tests exercise the real HTTP stack on a real socket without ever holding a
+    fixed port.  Two past bugs -- a bodyless ``GET`` answered with ``411``, and a
+    header map that only broke when a real request carried real headers -- were
+    both invisible to in-process dispatch and both caught this way.
     """
     server = create_server(
         bridge, host=host, port=port, allow_public_bind=allow_public_bind

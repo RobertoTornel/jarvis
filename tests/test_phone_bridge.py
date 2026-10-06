@@ -901,7 +901,20 @@ def test_health_answers_and_reports_the_masked_token_only(tmp_path):
     assert response.payload["token"] != b.token()
     assert b.token().encode() not in response.body()
     assert response.payload["max_body_bytes"] == MAX_BODY_BYTES
-    assert set(response.payload["endpoints"]) == {"/text", "/see", "/loc", "/reply", "/health"}
+    # The five canonical endpoints, the audio route the phone needs, and the two
+    # spellings the shipped 0.2 client calls.  Pinned as an exact set on purpose:
+    # a route added to ENDPOINTS is an authenticated attack surface, and this is
+    # where that has to be acknowledged.
+    assert set(response.payload["endpoints"]) == {
+        "/text",
+        "/transcribe",
+        "/see",
+        "/loc",
+        "/location",
+        "/reply",
+        "/where",
+        "/health",
+    }
     assert response.payload["location"] is None
 
 
@@ -1444,3 +1457,474 @@ def test_every_remedy_names_a_python_m_command_that_really_parses(tmp_path):
         )
         # SystemExit here means the advice points at a command that does not exist.
         parser_factory().parse_args(tail.split())
+
+
+# --------------------------------------------------------------------------- #
+# /transcribe: audio in, the voice loop's own recogniser, text out
+# --------------------------------------------------------------------------- #
+#
+# This is the one endpoint that is not a translation of something the phone can
+# already do.  An always-listening client has *audio*, and the bridge used to
+# accept only text -- so an app with no buttons had nothing to call.  The route
+# reuses claire.listening.stt.create_stt_engine (asserted below by source
+# inspection as well as by behaviour) rather than inventing a second
+# transcription stack, and the tests here drive it through a real socket as well
+# as through handle(), because in-process coverage is exactly how the 411 and
+# HeaderMap bugs survived 96 passing tests.
+
+class FakeRecogniser:
+    """A stand-in for SttEngine: records what it was given, answers in words."""
+
+    name = "fake_parakeet"
+
+    def __init__(self, text: str = "what is the weather in lisbon") -> None:
+        self.text = text
+        self.calls = []
+
+    def transcribe(self, samples, sample_rate):
+        # The real contract is claire.listening.stt.SttResult; importing it here
+        # keeps a 30-second NeMo import out of test collection.
+        from claire.listening.stt import SttResult
+
+        self.calls.append((samples, sample_rate))
+        return SttResult(text=self.text, engine=self.name)
+
+
+def wav_bytes(seconds: float = 0.5, rate: int = 16000, channels: int = 1,
+              width: int = 2, amplitude: int = 8000) -> bytes:
+    """A canonical RIFF/WAVE file, built the way the phone's ClaireWire builds it."""
+    import io
+    import math
+    import wave
+
+    frames = int(seconds * rate)
+    payload = bytearray()
+    for index in range(frames):
+        value = int(amplitude * math.sin(2 * math.pi * 220.0 * index / rate))
+        for _ in range(channels):
+            if width == 1:
+                payload.append((value >> 8) + 128)
+            elif width == 2:
+                payload += int(value).to_bytes(2, "little", signed=True)
+            else:
+                payload += (value << 16).to_bytes(4, "little", signed=True)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(width)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(payload))
+    return buffer.getvalue()
+
+
+def post_over_socket(port: int, path: str, body: bytes, content_type: str, *,
+                     token=None, headers=None):
+    """A POST the way an ordinary HTTP client sends it."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+    try:
+        sent = dict(headers or {})
+        if token is not None:
+            sent["Authorization"] = "Bearer %s" % token
+        if content_type is not None:
+            sent["Content-Type"] = content_type
+        conn.request("POST", path, body=body, headers=sent)
+        response = conn.getresponse()
+        return response.status, json.loads(response.read().decode("utf-8"))
+    finally:
+        conn.close()
+
+
+def test_transcribe_round_trips_audio_over_a_real_socket(tmp_path):
+    """The whole path: a socket, a WAV body, the recogniser, the sink."""
+    recogniser = FakeRecogniser()
+    sink = RecordingSink()
+    b = make_bridge(tmp_path, sink=sink, transcriber=recogniser)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port, "/transcribe", wav_bytes(seconds=0.5), "audio/wav", token=b.token()
+        )
+
+    assert status == 200, payload
+    assert payload["ok"] is True
+    assert payload["text"] == "what is the weather in lisbon"
+    assert payload["delivered"] is True and payload["accepted"] is True
+    assert payload["engine"] == "fake_parakeet"
+    assert payload["sample_rate"] == 16000
+    assert abs(payload["seconds"] - 0.5) < 1e-6
+
+    # The recogniser was handed real samples, not the bytes.
+    assert len(recogniser.calls) == 1
+    samples, rate = recogniser.calls[0]
+    assert rate == 16000
+    assert samples.shape == (8000,)
+    assert abs(float(max(samples)) - 8000 / 32768.0) < 1e-3
+
+    # ...and the words reached Claire's voice loop, tagged as a transcript.
+    assert len(sink.utterances) == 1
+    utterance = sink.utterances[0]
+    assert utterance["kind"] == "transcript"
+    assert utterance["text"] == "what is the weather in lisbon"
+    assert utterance["source"] == "phone"
+    assert utterance["engine"] == "fake_parakeet"
+
+
+def test_transcribe_downmixes_stereo_to_mono(tmp_path):
+    recogniser = FakeRecogniser()
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=recogniser)
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="audio/x-wav",
+        body=wav_bytes(seconds=0.25, channels=2),
+        headers=auth(b),
+    )
+
+    assert response.status == 200
+    samples, rate = recogniser.calls[0]
+    assert rate == 16000
+    # 0.25 s at 16 kHz, downmixed from two channels to one.
+    assert samples.shape == (4000,)
+
+
+def test_transcribe_accepts_a_riff_body_declared_as_octet_stream(tmp_path):
+    recogniser = FakeRecogniser()
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=recogniser)
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="application/octet-stream",
+        body=wav_bytes(seconds=0.2),
+        headers=auth(b),
+    )
+
+    assert response.status == 200
+    assert response.payload["text"] == recogniser.text
+
+
+def test_transcribe_refuses_an_mp3_with_a_named_415(tmp_path):
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=FakeRecogniser())
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="audio/mpeg",
+        body=b"\xff\xfb\x90\x00" * 64,
+        headers=auth(b),
+    )
+
+    assert response.status == 415
+    assert error_code(response) == "unsupported_content_type"
+    assert "audio/wav" in response.payload["error"]["remedy"]
+
+
+def test_transcribe_refuses_a_truncated_wav_with_a_named_400(tmp_path):
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=FakeRecogniser())
+    broken = wav_bytes(seconds=0.5)[:40]
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=broken, headers=auth(b)
+    )
+
+    assert response.status == 400
+    assert error_code(response) == "invalid_audio"
+    # The real reason, not a generic "bad request": this header promises a fmt
+    # and a data chunk and stops before either.
+    assert "WAV container could not be read" in response.payload["error"]["message"]
+
+
+def test_transcribe_refuses_a_body_that_is_not_a_container_at_all(tmp_path):
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=FakeRecogniser())
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="audio/wav",
+        body=b"this is a text file, honestly" * 8,
+        headers=auth(b),
+    )
+
+    assert response.status == 400
+    assert error_code(response) == "invalid_audio"
+    assert "does not start with a RIFF/WAVE header" in response.payload["error"]["message"]
+
+
+def test_transcribe_refuses_an_empty_body(tmp_path):
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=FakeRecogniser())
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=b"", headers=auth(b)
+    )
+
+    assert response.status == 400
+    assert error_code(response) == "invalid_audio"
+
+
+def test_transcribe_refuses_a_clip_too_short_to_recognise(tmp_path):
+    recogniser = FakeRecogniser()
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=recogniser)
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="audio/wav",
+        body=wav_bytes(seconds=0.01),
+        headers=auth(b),
+    )
+
+    assert response.status == 400
+    assert error_code(response) == "invalid_audio"
+    assert "too short" in response.payload["error"]["message"]
+    assert recogniser.calls == [], "a 10 ms clip was sent to a 0.6B model"
+
+
+def test_transcribe_refuses_an_absurdly_long_clip(tmp_path):
+    recogniser = FakeRecogniser()
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=recogniser)
+
+    response = b.handle(
+        "POST",
+        "/transcribe",
+        content_type="audio/wav",
+        body=wav_bytes(seconds=121.0),
+        headers=auth(b),
+    )
+
+    assert response.status == 400
+    assert "maximum for one utterance" in response.payload["error"]["message"]
+    assert recogniser.calls == []
+
+
+def test_transcribe_names_an_unavailable_recogniser_and_remembers_it(tmp_path):
+    calls = []
+
+    def factory():
+        calls.append(1)
+        raise RuntimeError("no model configured")
+
+    b = make_bridge(
+        tmp_path, sink=RecordingSink(), transcriber_factory=factory
+    )
+
+    first = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5),
+        headers=auth(b),
+    )
+    second = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5),
+        headers=auth(b),
+    )
+
+    assert first.status == 503
+    assert error_code(first) == "transcription_unavailable"
+    assert "no model configured" in first.payload["error"]["message"]
+    assert second.status == 503
+    assert len(calls) == 1, "the failed recogniser was rebuilt on every request"
+    assert b.transcribe_status().startswith("failed:")
+
+
+def test_transcribe_still_returns_the_words_when_no_sink_is_wired(tmp_path):
+    """The transcript is the answer; delivery is reported, not pretended."""
+    b = make_bridge(tmp_path, sink=None, transcriber=FakeRecogniser("hello Claire"))
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5),
+        headers=auth(b),
+    )
+
+    assert response.status == 200
+    assert response.payload["text"] == "hello Claire"
+    assert response.payload["accepted"] is False
+    assert response.payload["delivered"] is False
+    assert "no utterance sink" in response.payload["note"]
+
+
+def test_transcribe_does_not_deliver_an_empty_transcript(tmp_path):
+    sink = RecordingSink()
+    b = make_bridge(tmp_path, sink=sink, transcriber=FakeRecogniser("   "))
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5),
+        headers=auth(b),
+    )
+
+    assert response.status == 200
+    assert response.payload["text"] == ""
+    assert response.payload["delivered"] is False
+    assert "nothing intelligible" in response.payload["note"]
+    assert sink.utterances == [], "silence was delivered to Claire as an utterance"
+
+
+def test_transcribe_needs_a_token_and_touches_nothing_without_one(tmp_path):
+    recogniser = FakeRecogniser()
+    sink = RecordingSink()
+    b = make_bridge(tmp_path, sink=sink, transcriber=recogniser)
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5), headers={}
+    )
+
+    assert response.status == 401
+    assert error_code(response) == "unauthorized"
+    assert recogniser.calls == []
+    assert sink.utterances == []
+
+
+def test_transcribe_reports_a_recogniser_that_raises_as_a_named_502(tmp_path):
+    class Exploding(FakeRecogniser):
+        def transcribe(self, samples, sample_rate):
+            raise RuntimeError("cuda melted")
+
+    b = make_bridge(tmp_path, sink=RecordingSink(), transcriber=Exploding())
+
+    response = b.handle(
+        "POST", "/transcribe", content_type="audio/wav", body=wav_bytes(0.5),
+        headers=auth(b),
+    )
+
+    assert response.status == 502
+    assert error_code(response) == "transcription_failed"
+    assert "cuda melted" in response.payload["error"]["message"]
+
+
+def test_transcribe_uses_the_projects_own_stt_engine_and_not_a_second_stack(tmp_path):
+    """A second transcription stack is the kind of duplication this forbids."""
+    source = inspect.getsource(bridge.PhoneBridge._build_project_transcriber)
+
+    assert "create_stt_engine" in source
+    assert "listening.stt" in source
+    # The bridge may not import a recogniser directly anywhere.
+    module_source = inspect.getsource(bridge)
+    assert "import whisper" not in module_source
+    assert "parakeet" not in module_source.lower(), (
+        "the bridge names a specific recogniser instead of asking "
+        "create_stt_engine for the configured one"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The endpoints the shipped 0.2 phone client calls
+# --------------------------------------------------------------------------- #
+#
+# The APK in the owner's hand posts to /location and reads /where, and it
+# authenticates with X-Claire-Token.  The bridge serves /loc and /reply with
+# Authorization: Bearer.  Both sides are legitimate; the drift is not.  These
+# tests pin the translation, over a real socket, so a working phone is not
+# answered with a 404 or a 401 by a bridge that merely renamed things.
+
+def test_location_is_loc_over_a_real_socket(tmp_path):
+    seen = []
+    b = make_bridge(tmp_path, sink=RecordingSink(), location_sink=seen.append)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port,
+            "/location",
+            json.dumps({"latitude": 38.7223, "longitude": -9.1393,
+                        "accuracy": 12.5}).encode("utf-8"),
+            "application/json",
+            token=b.token(),
+        )
+
+    assert status == 200, payload
+    assert payload["ok"] is True
+    assert payload["recorded"]["latitude"] == pytest.approx(38.7223)
+    assert seen and seen[0].latitude == pytest.approx(38.7223)
+
+
+def test_where_drains_the_reply_queue_exactly_once_over_a_real_socket(tmp_path):
+    queue = ReplyQueue()
+    queue.put_text("the kettle is boiling")
+    b = make_bridge(tmp_path, queue=queue)
+
+    with live_bridge(b) as port:
+        first_status, first_body = get_over_socket(port, "/where", token=b.token())
+        second_status, second_body = get_over_socket(port, "/where", token=b.token())
+
+    first = json.loads(first_body)
+    second = json.loads(second_body)
+    assert first_status == 200
+    assert first["count"] == 1 and first["items"][0]["text"] == "the kettle is boiling"
+    assert second_status == 200
+    assert second["count"] == 0, "/where replayed a sentence the phone already showed"
+
+
+def test_the_legacy_token_header_authenticates_over_a_real_socket(tmp_path):
+    b = make_bridge(tmp_path, sink=RecordingSink())
+
+    with live_bridge(b) as port:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", "/health", headers={"X-Claire-Token": b.token()})
+            response = conn.getresponse()
+            status = response.status
+            payload = json.loads(response.read().decode("utf-8"))
+        finally:
+            conn.close()
+
+    assert status == 200, payload
+    assert payload["status"] == "ok"
+
+
+def test_a_wrong_legacy_token_is_401_and_not_an_oracle(tmp_path):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", "/health", headers={"X-Claire-Token": "wrong" * 8})
+            response = conn.getresponse()
+            wrong_status = response.status
+            wrong_body = response.read()
+        finally:
+            conn.close()
+
+    with live_bridge(b) as port:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            conn.request("GET", "/health")
+            response = conn.getresponse()
+            missing_status = response.status
+            missing_body = response.read()
+        finally:
+            conn.close()
+
+    assert wrong_status == missing_status == 401
+    assert wrong_body == missing_body, "the legacy header is an auth oracle"
+
+
+def test_health_reports_the_transcribe_capability(tmp_path):
+    configured = make_bridge(tmp_path, transcriber=FakeRecogniser())
+    default = make_bridge(tmp_path / "other")
+
+    response = configured.handle("GET", "/health", headers=auth(configured))
+
+    assert response.status == 200
+    assert response.payload["transcribe"] == "configured"
+    assert default.transcribe_status() == "project_default"
+    assert "/transcribe" in response.payload["endpoints"]
+    assert response.payload["endpoints"]["/transcribe"] == ["POST"]
+
+
+def test_the_phone_bridge_does_not_share_the_web_panels_port():
+    """Two services on one port is a bind failure nobody can see coming."""
+    from claire.panel import server as panel_server
+
+    assert bridge.DEFAULT_PORT != panel_server.DEFAULT_PORT, (
+        "the phone bridge and the web panel both default to port %d"
+        % bridge.DEFAULT_PORT
+    )
+    # 8731 is held by `dsh web` on this machine and was hard-coded by the
+    # shipped 0.2 phone client; it must not be the bridge's default either.
+    assert bridge.DEFAULT_PORT != 8731
+
+
+def test_the_transcribe_remedy_names_a_script_that_exists():
+    """Advice that says "run this" must name a file that is there."""
+    remedy = bridge.DEFAULT_TRANSCRIBE_REMEDY
+    match = re.search(r"scripts/([A-Za-z0-9_./-]+\.py)", remedy)
+    assert match, remedy
+    script = Path(__file__).resolve().parent.parent / "scripts" / match.group(1)
+    assert script.is_file(), "the remedy names a missing script: %s" % script

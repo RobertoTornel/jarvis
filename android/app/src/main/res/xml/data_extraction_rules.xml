@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- allowBackup="false" on the application already stops this, but Android 12+ reads
+     these rules and an explicit, empty set is one fewer thing a reviewer has to take
+     on trust: neither the conversation file nor the SharedPreferences holding the
+     token may leave the phone in a backup. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- The microphone is the whole point: the service holds it open so nothing has to
+         be pressed. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- The ongoing status notification, and the alert that says the token was
+         refused.  Runtime-requested on Android 13+. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- FOREGROUND_SERVICE plus the microphone type: on Android 14+ the type must be
+         declared here *and* requested at startForeground() time. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Photos on demand. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Position on demand.  Coarse is requested too, because Android 12+ lets the
+         owner grant only approximate location and an approximate answer is a real
+         answer. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Knowing whether the laptop is reachable, so a dropped tailnet is reported
+         instead of looking like a stalled transcription. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The post-restart notification.  It does not start the service: see
+         BootReceiver for why that would throw on Android 14. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <uses-feature
+        android:name="android.hardware.camera.any"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.location"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="true" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_claire"
+        android:theme="@style/AppTheme"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="34">
+
+        <!-- MainActivity is the launcher and the only export besides the
+             notification entry points; the camera activity is exported=false because
+             it is started from a PendingIntent inside this app's own process, not
+             from outside. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/title_settings" />
+
+        <service
+            android:name=".VoiceService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
+
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

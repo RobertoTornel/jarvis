@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Three sensitivities rather than a slider: the detector's parameters have to
+         move together (the noise multiplier and the absolute floor, and on the noisy
+         setting also the hangover), and a slider that only moved one of them would
+         offer a range of settings that are mostly wrong. -->
+    <string-array name="sensitivity_levels">
+        <item>@string/sensitivity_quiet</item>
+        <item>@string/sensitivity_normal</item>
+        <item>@string/sensitivity_noisy</item>
+    </string-array>
+</resources>

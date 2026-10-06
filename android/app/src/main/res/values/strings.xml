@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Claire</string>
+    <string name="channel_listening">Listening</string>
+    <string name="channel_listening_detail">The ongoing status line shown while the microphone is open. Silent and low priority on purpose.</string>
+    <string name="channel_alerts">Alerts</string>
+    <string name="channel_alerts_detail">Things you need to notice: a refused token, location services switched off, the microphone taken by a call.</string>
+
+    <string name="action_photo">Photo</string>
+    <string name="action_location">Location</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_resume">Resume</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_listen">Listen</string>
+    <string name="action_send">Send</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_shutter">Capture</string>
+    <string name="action_retake">Retake</string>
+    <string name="action_send_to_claire">Send to Claire</string>
+    <string name="action_save_settings">Save</string>
+    <string name="action_grant">Grant</string>
+    <string name="action_open_settings">App settings</string>
+    <string name="action_battery">Battery settings</string>
+    <string name="action_clear">Clear conversation</string>
+    <string name="action_check">Check link</string>
+
+    <string name="hint_say_something">Say something to Claire…</string>
+    <string name="hint_host">Laptop address</string>
+    <string name="hint_port">Port</string>
+    <string name="hint_token">Bridge token</string>
+    <string name="hint_question">Question for photos</string>
+
+    <string name="title_settings">Settings</string>
+    <string name="label_host">Laptop</string>
+    <string name="label_token">Token</string>
+    <string name="label_question">Photo question</string>
+    <string name="label_auto_photo">Send photos automatically</string>
+    <string name="label_speak">Speak Claire\'s replies aloud</string>
+    <string name="label_boot">Offer to listen after a restart</string>
+    <string name="label_battery">Hold audio back below 15% battery</string>
+    <string name="label_sensitivity">Microphone sensitivity</string>
+    <string name="sensitivity_quiet">Quiet room</string>
+    <string name="sensitivity_normal">Normal</string>
+    <string name="sensitivity_noisy">Noisy room</string>
+    <string name="help_token">The token is the value of PHONE_BRIDGE_TOKEN in ~/.config/claire/keys.json on the laptop. Print it there with:\npython -m claire.phone keys show PHONE_BRIDGE_TOKEN --reveal</string>
+    <string name="help_battery">Android\'s do-not-kill list and MIUI\'s Autostart are what keep a listening service alive with the screen off.</string>
+
+    <string name="camera_title">Photo for Claire</string>
+    <string name="camera_failed">The camera did not start: %1$s</string>
+    <string name="camera_no_permission">Camera permission is not granted.</string>
+    <string name="camera_sending">Sending the photo…</string>
+    <string name="camera_sent">Sent.</string>
+
+    <string name="location_services_off">Location services are switched off. Tap to open the setting that turns them on.</string>
+    <string name="location_denied">Location permission has not been granted.</string>
+    <string name="permission_banner">Claire needs the microphone to listen, the camera for photos and location for where you are.</string>
+    <string name="status_unknown">Not checked yet</string>
+    <string name="status_offline">Unreachable</string>
+</resources>

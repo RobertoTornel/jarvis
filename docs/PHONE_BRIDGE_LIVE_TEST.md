@@ -33,7 +33,7 @@ a browser page (the GET endpoints are browser-reachable; the POSTs need fetch).
 
 | | |
 | --- | --- |
-| default bind | `127.0.0.1:8765`; `$CLAIRE_PHONE_HOST` / `$CLAIRE_PHONE_PORT` override |
+| default bind | `127.0.0.1:8788`; `$CLAIRE_PHONE_HOST` / `$CLAIRE_PHONE_PORT` override |
 | non-loopback bind | refused with `PublicBindRefusedError` **before** a socket exists, unless `allow_public_bind=True` |
 | auth | `Authorization: Bearer <token>` on **every** endpoint, `/health` included |
 | comparison | `hmac.compare_digest`; missing and wrong tokens give byte-identical 401s |
@@ -84,7 +84,7 @@ body = read_request_body(self.headers.get("Content-Length"), self.rfile, ...)
 `411 length_required` before the route was even looked at**:
 
 ```
-$ adb shell 'curl -s http://100.104.1.69:8765/health'
+$ adb shell 'curl -s http://100.104.1.69:8788/health'
 {"error": {"code": "length_required", ... "status": 411, ...}}   HTTP=411
 ```
 
@@ -110,7 +110,7 @@ than `0.0.0.0` keeps it off every other network):
 
 ```
 .venv/bin/python -m claire.phone serve \
-    --host 100.104.1.69 --port 8765 --allow-public-bind --echo
+    --host 100.104.1.69 --port 8788 --allow-public-bind --echo
 ```
 
 Token reported masked as `...OZP8#c60c2ee5`. It was handed to the phone inside a
