@@ -379,3 +379,57 @@ lesson recorded for future waves: after adding tests, prove the gate *ran* them
 35. **The unit gate must be proven to have run a new test, not assumed.** See the
     correction above. Green is only meaningful once the deselected count shows the
     new tests were collected.
+
+## Wave 4: senses, and a credential leak found by verification
+
+What works on this machine, measured rather than assumed:
+
+| Capability | State |
+|---|---|
+| Screen capture | **works** — Pillow `ImageGrab`, 265–284 KB PNG at 1920×1080 |
+| Screen OCR | **blocked** — the `tesseract` BINARY is absent; `pytesseract` is only a wrapper |
+| Browser control | **works** — real chromium 1243, rendering and clicks verified live |
+| Camera | **absent** — no `/dev/video*`; reported as a missing capability |
+
+OCR fails with a named error carrying the exact fix, because pytesseract's own
+message does not:
+`OCR engine missing: the 'tesseract' binary is not installed on linuxmint… Fix:
+sudo apt-get install -y tesseract-ocr`.
+
+A defect inherited from upstream was found on the way: `tools/builtin/screenshot.py`
+is **macOS-only** (`screencapture`) and returns `""` on Linux — a silent empty
+result, the failure mode this project keeps finding.
+
+### The credential leak, and why heuristics were the wrong foundation
+
+Independent verification of the browser module reproduced a **real credential
+leak** that the authoring agent had reported as tested and safe:
+
+```
+s.fill('#pw', 'Sup3rSecretValue!42')
+  value_redacted -> 'Sup3rSecretValue!42'      # plaintext, in the result AND the log
+  looks_like_secret(...) -> False
+```
+
+Two causes: `_SECRET_FIELD_PATTERN` matched `pwd` and `pass…` but **not `pw`**, one
+of the most common password-input ids there is; and the value heuristic missed a
+strong password because it required a pure alphanumeric run.
+
+The fix is not a longer word list, because a word list is a guess. The order of
+authority is now:
+
+1. **DOM truth** — ask the browser the element's `type`. If it is `password`, the
+   value is a secret regardless of the selector and regardless of what it looks
+   like. Guessing is not involved.
+2. **Fail closed** — if the type cannot be determined, redact. The code must be
+   able to *prove* a value is safe before showing it, never the reverse.
+3. A `pw` pattern with a proper boundary (`#pw` yes; `pwned` and `power` no).
+4. The value heuristic, demoted explicitly to a backstop.
+
+Re-verified live after the fix: `value_redacted='[REDACTED]'`, `secret=True`, and
+the secret appears in neither `repr(result)` nor the captured log. Fail-closed
+paths are asserted by their own tests.
+
+The lesson is recorded because it generalises: the agent's report was confident,
+specific and wrong. Verification against the running system is what found it, and
+"blocked by a heuristic" is not the same as "safe".

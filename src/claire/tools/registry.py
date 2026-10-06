@@ -22,6 +22,7 @@ from .builtin.time_tool import TimeTool
 from .builtin.stop import StopTool
 from .builtin.tool_search import ToolSearchTool
 from .builtin.schedule import ScheduleTool
+from .builtin.senses import BrowseWebTool, LookThroughCameraTool, ReadScreenTool
 from .types import ToolExecutionResult
 from ..config import Settings
 from .external.mcp_client import MCPClient
@@ -43,6 +44,9 @@ BUILTIN_TOOLS = {
     "stop": StopTool(),
     "toolSearchTool": ToolSearchTool(),
     "schedule": ScheduleTool(),
+    "readScreen": ReadScreenTool(),
+    "lookThroughCamera": LookThroughCameraTool(),
+    "browseWeb": BrowseWebTool(),
 }
 
 # Global MCP tools cache
