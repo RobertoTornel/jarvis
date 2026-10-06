@@ -36,8 +36,12 @@ from __future__ import annotations
 
 import base64
 import inspect
+import contextlib
+import http.client
+import importlib
 import json
 import logging
+import re
 import socket
 import stat
 import threading
@@ -1273,3 +1277,170 @@ def test_the_package_re_exports_the_public_surface():
     assert package.DEFAULT_HOST == DEFAULT_HOST
     assert package.TOKEN_KEY_NAME == TOKEN_KEY_NAME
     assert ALLOWED_IMAGE_CONTENT_TYPES["image/jpeg"] == ".jpg"
+
+
+# --------------------------------------------------------------------------- #
+# The live server: the layer no other test in this file touches
+# --------------------------------------------------------------------------- #
+#
+# Everything above drives ``PhoneBridge.handle()`` as an ordinary function call
+# -- the module's own design, and a good one, but it means the socket-facing
+# layer (``PhoneRequestHandler._serve``) had *no* coverage at all.  A real HTTP
+# client sends no ``Content-Length`` with a bodyless ``GET``; ``_serve`` read the
+# body unconditionally, so every ``GET /health`` and ``GET /reply`` over the wire
+# was answered ``411 length_required`` before the route was even looked at -- and
+# 96 in-process tests still passed.  These tests own that layer.
+
+@contextlib.contextmanager
+def live_bridge(bridge_obj):
+    """A real HTTP server on an ephemeral loopback port, in a real thread."""
+    server = bridge.create_server(bridge_obj, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def get_over_socket(port: int, path: str, *, token=None):
+    """A GET the way an ordinary client sends it: no Content-Length header."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        headers = {}
+        if token is not None:
+            headers["Authorization"] = "Bearer %s" % token
+        conn.request("GET", path, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def test_a_bodyless_get_health_is_answered_and_not_a_411(tmp_path):
+    """GET /health with no Content-Length must reach authentication."""
+    b = make_bridge(tmp_path)
+    with live_bridge(b) as port:
+        status, body = get_over_socket(port, "/health")
+
+    assert status == 401, body
+    assert json.loads(body)["error"]["code"] == "unauthorized"
+
+
+def test_a_bodyless_get_health_with_the_token_answers_200(tmp_path):
+    b = make_bridge(tmp_path)
+    with live_bridge(b) as port:
+        status, body = get_over_socket(port, "/health", token=b.token())
+
+    assert status == 200, body
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    # The token is reported masked over the wire too, never raw.
+    assert b.token() not in body.decode()
+
+
+def test_a_bodyless_get_reply_drains_once_over_a_real_socket(tmp_path):
+    b = make_bridge(tmp_path, queue=ReplyQueue(["first thing"]))
+    with live_bridge(b) as port:
+        status, body = get_over_socket(port, "/reply", token=b.token())
+        second_status, second_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 200, body
+    assert json.loads(body)["count"] == 1
+    assert second_status == 200
+    assert json.loads(second_body)["items"] == []
+
+
+def test_a_post_with_no_content_length_is_still_a_named_411(tmp_path):
+    """The fix is deliberately narrow: an unframed body is still a 411."""
+    b = make_bridge(tmp_path, sink=RecordingSink())
+    request = (
+        b"POST /text HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Authorization: Bearer " + b.token().encode() + b"\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    with live_bridge(b) as port:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+            raw.sendall(request)
+            raw.settimeout(5)
+            chunks = []
+            while True:
+                chunk = raw.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+    response = b"".join(chunks)
+    head, _, body = response.partition(b"\r\n\r\n")
+    assert b" 411 " in head.split(b"\r\n")[0], head
+    assert json.loads(body)["error"]["code"] == "length_required"
+
+
+# --------------------------------------------------------------------------- #
+# A remedy is a promise that the command it names runs
+# --------------------------------------------------------------------------- #
+
+#: ``python -m module.name`` plus the trailing words, stopping at punctuation.
+PYTHON_M_COMMAND = re.compile(r"python -m ([A-Za-z0-9_.]+)((?:\s+[A-Za-z0-9_.-]+)*)")
+
+
+def test_every_remedy_names_a_python_m_command_that_really_parses(tmp_path):
+    """Advice that says "run this" must name a command that runs.
+
+    Three remedies told the owner to run ``python -m claire.cli keys ...`` on the
+    laptop, but ``claire.cli`` accepts only ``--smoke-test`` and ``--version``:
+    following the advice printed ``unrecognized arguments: keys``.  The command
+    has to come from a module that implements it, and this test parses each one
+    with the parser the named module actually exposes.
+    """
+    remedies = []
+
+    # 1. No credentials were offered.
+    b = make_bridge(tmp_path)
+    with pytest.raises(AuthenticationError) as auth_error:
+        b.authorize({})
+    remedies.append(auth_error.value.remedy)
+
+    # 2. The key store cannot be read at all (a directory where a file belongs).
+    broken = tmp_path / "broken-store"
+    broken.mkdir()
+    unreadable = PhoneBridge(
+        store=broken, env={}, host=DEFAULT_HOST, port=DEFAULT_PORT
+    )
+    with pytest.raises(bridge.TokenUnavailableError) as store_error:
+        unreadable.token()
+    remedies.append(store_error.value.remedy)
+
+    # 3. The stored token is too weak to authenticate anyone.
+    weak_store = KeyStore(tmp_path / "weak.json")
+    weak_store.store(TOKEN_KEY_NAME, "tooshort")
+    weak_bridge = PhoneBridge(
+        store=weak_store, env={}, host=DEFAULT_HOST, port=DEFAULT_PORT
+    )
+    with pytest.raises(bridge.TokenUnavailableError) as weak_error:
+        weak_bridge.token()
+    remedies.append(weak_error.value.remedy)
+
+    commands = [
+        command for remedy in remedies for command in PYTHON_M_COMMAND.findall(remedy)
+    ]
+    # Every remedy above names at least one command; four in total.
+    assert len(commands) >= 4, commands
+
+    for module_name, tail in commands:
+        # ``python -m pkg`` runs pkg/__main__.py, so a package's parser lives
+        # there rather than in its __init__.
+        module = importlib.import_module(module_name)
+        parser_factory = getattr(module, "build_parser", None)
+        if parser_factory is None and hasattr(module, "__path__"):
+            module = importlib.import_module(module_name + ".__main__")
+            parser_factory = getattr(module, "build_parser", None)
+        assert parser_factory is not None, (
+            "remedy names python -m %s, which exposes no build_parser: %r"
+            % (module_name, commands)
+        )
+        # SystemExit here means the advice points at a command that does not exist.
+        parser_factory().parse_args(tail.split())

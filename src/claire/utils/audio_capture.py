@@ -35,6 +35,38 @@ def resolve_input_device(sounddevice, voice_device, devices=None):
     raise ValueError('Selected microphone not found. Choose an available input in Settings.')
 
 
+def resolve_output_device(sounddevice, voice_output_device, devices=None):
+    """Resolve the playback device for speech, mirroring the input resolver.
+
+    Accepts an explicit index, a substring of the device name, or a system
+    default marker. The default case deliberately returns the *named* ALSA
+    ``default`` PCM rather than letting PortAudio pick:
+
+    PortAudio numbers ALSA's hardware devices and takes the first one it likes
+    as "default". On a machine whose speakers are a USB device held by
+    PipeWire, that landed on the HDMI output of the graphics card - the monitor
+    - so Claire spoke into a display with no speakers while the sink the user
+    was actually listening to never appeared in the device list at all. ALSA's
+    ``default`` follows the system's real routing (PipeWire/PulseAudio), which
+    is the device the user chose in their own settings.
+    """
+    selected = str(voice_output_device if voice_output_device is not None else '').strip()
+    if not selected or selected.lower() in ('default', 'system'):
+        return {'device': 'default'}
+    try:
+        return {'device': int(selected)}
+    except ValueError:
+        pass
+
+    if devices is None:
+        devices = sounddevice.query_devices()
+    for index, device in enumerate(devices):
+        name = str(device.get('name') or '')
+        if (device.get('max_output_channels') or 0) > 0 and selected.lower() in name.lower():
+            return {'device': index}
+    raise ValueError('Selected speaker not found. Choose an available output in Settings.')
+
+
 def _is_input_format_error(exc):
     """Distinguish unsupported capture formats from access and device failures."""
     code = exc.args[1] if len(exc.args) > 1 else None

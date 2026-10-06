@@ -143,6 +143,7 @@ class Settings:
 
     # Voice Input & Audio
     voice_device: str | None
+    voice_output_device: str | None
     sample_rate: int
     voice_min_energy: float
 
@@ -581,6 +582,7 @@ def get_default_config() -> Dict[str, Any]:
 
         # Voice Input & Audio
         "voice_device": None,
+        "voice_output_device": None,
         "sample_rate": 16000,
         "voice_min_energy": 0.02,
 
@@ -895,6 +897,13 @@ def load_settings() -> Settings:
 
     voice_device_val = merged.get("voice_device")
     voice_device = None if voice_device_val in (None, "", "default", "system") else str(voice_device_val)
+    # Which speaker speech comes out of. "default"/unset means the system
+    # default output; an int or a device-name substring selects explicitly.
+    voice_output_device_val = merged.get("voice_output_device")
+    voice_output_device = (
+        None if voice_output_device_val in (None, "", "default", "system")
+        else str(voice_output_device_val)
+    )
     voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
     voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
     voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
@@ -1090,6 +1099,7 @@ def load_settings() -> Settings:
 
         # Voice Input & Audio
         voice_device=voice_device,
+        voice_output_device=voice_output_device,
         sample_rate=sample_rate,
         voice_min_energy=voice_min_energy,
 

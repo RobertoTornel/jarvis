@@ -165,8 +165,24 @@ def test_success_sends_text_voice_and_latency_in_the_body(tmp_path):
         "text": "hello there",
         fish_client.VOICE_FIELD: VOICE,
         "latency": "normal",
+        "format": "wav",
     }
     assert call["json"][fish_client.VOICE_FIELD] == VOICE
+
+
+def test_the_body_asks_for_wav_and_that_is_load_bearing(tmp_path):
+    """The requested container is not a preference - it is what makes speech audible.
+
+    The playback layer understands RIFF/WAVE and headerless PCM, and treats
+    anything else as PCM. Fish Audio's default response is MP3, and before this
+    was requested explicitly Claire's MP3 bytes were written straight into an
+    int16 stream: she produced noise, not speech. Nothing failed, because every
+    layer reported success - so pin the request itself, not just the fact that a
+    body was sent.
+    """
+    client, session = make_client(tmp_path, [FakeResponse(200, chunks=(b"RIFF",))])
+    drain(client, latency="normal", model="s2-pro")
+    assert session.calls[0]["json"]["format"] == "wav"
 
 
 def test_client_builds_a_real_requests_session_by_default(monkeypatch, tmp_path):

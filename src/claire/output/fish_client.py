@@ -543,10 +543,19 @@ class FishClient:
             "model": model,
             "Content-Type": "application/json",
         }
-        body = {  # text, voice id, latency: nothing else is sent
+        body = {  # text, voice id, latency, container
             "text": text,
             VOICE_FIELD: voice_id,
             "latency": latency,
+            # Ask for WAV, and this is not a preference: the playback layer
+            # understands RIFF/WAVE and headerless PCM, and treats anything else
+            # as PCM. Fish Audio's default response is MP3, so without this the
+            # MP3 bytes were written straight into an int16 stream and Claire
+            # came out as noise - loud, confident, unintelligible noise. WAV
+            # costs bandwidth and buys correctness; "pcm" is smaller and would
+            # also work, but WAV carries its own sample rate and channel count
+            # so the player never has to assume them.
+            "format": "wav",
         }
         try:
             response = self._session.post(

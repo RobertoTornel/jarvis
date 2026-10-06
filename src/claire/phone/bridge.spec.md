@@ -84,8 +84,10 @@ make the phone say "yes?" forever.
   `token_unavailable` error and the exact command to replace it: a weak token
   silently authenticating the phone is worse than a named failure.
 * Reading it back: on the laptop itself,
-  `python -m claire.cli keys get PHONE_BRIDGE_TOKEN`, or the masked handle from
-  `GET /health` once authenticated.
+  `python -m claire.phone keys show PHONE_BRIDGE_TOKEN --reveal` (the one
+  deliberate reveal in the package, so the phone can be given the value once), or
+  the masked handle from `GET /health` once authenticated. `python -m
+  claire.phone keys list` lists every key masked.
 
 ### 3.3 Loopback by default; public only by explicit opt-in, and loudly
 

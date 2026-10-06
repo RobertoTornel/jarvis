@@ -77,7 +77,17 @@ import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    FrozenSet,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.parse import parse_qs, urlsplit
 
 from ..platform.keys import (
@@ -200,6 +210,13 @@ ENDPOINTS: Dict[str, Tuple[str, ...]] = {
     "/health": ("GET",),
 }
 
+#: Methods this API never reads a body for.  An ordinary client sends no
+#: ``Content-Length`` with them, so demanding one turned every ``GET /health``
+#: and ``GET /reply`` into a 411 before routing even happened.  Body-carrying
+#: methods (POST, PUT, PATCH) still require a length: a promised body that is
+#: not framed stays a named 411.
+BODYLESS_METHODS: FrozenSet[str] = frozenset({"GET", "HEAD", "DELETE", "OPTIONS"})
+
 #: Send this instead of guessing when the vision route is not configured.
 DEFAULT_VISION_REMEDY = (
     "Configure the project vision route: export OMNIROUTE_API_KEY=<key> and "
@@ -299,9 +316,11 @@ class AuthenticationError(PhoneBridgeError):
             remedy=(
                 "Send the header 'Authorization: Bearer <token>'. The token "
                 f"lives in the key store under {TOKEN_KEY_NAME}: read its "
-                "masked handle with GET /health from the laptop, or print it "
-                "with 'python -m claire.cli keys get "
-                f"{TOKEN_KEY_NAME}' on the laptop itself."
+                "masked handle with GET /health from the laptop, or print the "
+                "raw value on the laptop itself with 'python -m claire.phone "
+                f"keys show {TOKEN_KEY_NAME} --reveal'. That flag is the only "
+                "way this project will show a secret, and it exists because the "
+                "phone has to be given the value once."
             ),
         )
 
@@ -1100,11 +1119,10 @@ class PhoneBridge:
                     f"{self.store.path} ({type(exc).__name__}: {exc})",
                     remedy=(
                         "Check the key store is readable and not corrupt: "
-                        f"python -m claire.cli keys list, or move {self.store.path} "
+                        f"python -m claire.phone keys list, or move {self.store.path} "
                         f"aside and let Claire create a fresh one; or set a fresh "
-                        f"token with: python -m claire.cli keys set "
-                        f"{TOKEN_KEY_NAME} $(python -c \"import secrets; "
-                        'print(secrets.token_urlsafe(32))")'
+                        f"token with: python -m claire.phone keys set "
+                        f"{TOKEN_KEY_NAME}"
                     ),
                     cause=exc,
                 ) from exc
@@ -1115,8 +1133,7 @@ class PhoneBridge:
                     "authenticate the phone",
                     remedy=(
                         "Replace it with a fresh 32-byte token: python -m "
-                        f"claire.cli keys set {TOKEN_KEY_NAME} $(python -c "
-                        '"import secrets; print(secrets.token_urlsafe(32))")'
+                        f"claire.phone keys set {TOKEN_KEY_NAME}"
                     ),
                 )
             self._token = value
@@ -1829,12 +1846,19 @@ class PhoneRequestHandler(BaseHTTPRequestHandler):
             )
             return
         split = urlsplit(self.path)
+        content_length = self.headers.get("Content-Length")
         try:
-            body = read_request_body(
-                self.headers.get("Content-Length"),
-                self.rfile,
-                bridge.max_body_bytes,
-            )
+            if method in BODYLESS_METHODS and not str(content_length or "").strip():
+                # No body was framed and none is expected: treat it as empty
+                # rather than as a client error.  A GET that does carry a
+                # Content-Length is still read and validated below.
+                body = b""
+            else:
+                body = read_request_body(
+                    content_length,
+                    self.rfile,
+                    bridge.max_body_bytes,
+                )
         except PhoneBridgeError as exc:
             self._write(bridge._error_response(exc))
             return

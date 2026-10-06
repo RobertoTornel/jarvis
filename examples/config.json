@@ -43,6 +43,7 @@
   "tts_piper_noise_w": 1.0,
   "tts_piper_sentence_silence": 0.2,
   "voice_device": null,
+  "voice_output_device": null,
   "sample_rate": 16000,
   "voice_min_energy": 0.02,
   "voice_block_seconds": 4.0,

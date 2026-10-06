@@ -98,6 +98,7 @@ TOTAL_TIMEOUT = 120.0
 #: How long _play_loop waits on the queue before re-checking whether it is idle.
 _IDLE_POLL_SECONDS = 0.05
 
+
 #: How long stop() waits for each worker thread before giving up on it (the
 #: threads are daemons, so a worker stuck in a slow network read cannot hold the
 #: process open).
@@ -351,9 +352,13 @@ class _SoundDevicePlayer:
         close()             release the device
     """
 
-    def __init__(self) -> None:
+    def __init__(self, device: Any = None) -> None:
         self._stream: Any = None
         self._aborted = threading.Event()
+        # ``None`` lets PortAudio choose, which is what this used to do
+        # unconditionally. It is kept as an option, but the engine now passes
+        # the resolved device so speech goes where the user's system routes it.
+        self._device = device
 
     def open(self, sample_rate: int) -> None:
         import sounddevice as sd  # imported here so importing this module needs no audio stack
@@ -365,6 +370,7 @@ class _SoundDevicePlayer:
             channels=1,
             dtype="int16",
             blocksize=0,
+            device=self._device,
         )
         stream.start()
         self._stream = stream
@@ -689,13 +695,28 @@ class FishTTS:
     def _ensure_player(self) -> Any:
         if self.player is None:
             try:
-                self.player = _SoundDevicePlayer()
+                self.player = _SoundDevicePlayer(device=self._resolve_output_device())
             except Exception as exc:
                 raise FishError(
                     f"Fish Audio playback device could not be opened: "
                     f"{exc.__class__.__name__}: {exc}"
                 ) from exc
         return self.player
+
+    def _resolve_output_device(self) -> Any:
+        """Which speaker to play through, from the config the engine was given.
+
+        A missing config (a test double, or an older caller) keeps the previous
+        PortAudio-chosen default rather than guessing.
+        """
+        cfg = getattr(self, "config", None)
+        if cfg is None:
+            return None
+        from ..utils.audio_capture import resolve_output_device
+
+        import sounddevice as sd
+
+        return resolve_output_device(sd, getattr(cfg, "voice_output_device", None))["device"]
 
     # -- synthesis worker --------------------------------------------------
 
@@ -888,6 +909,11 @@ class FishTTS:
 
             if kind == "end":
                 _, generation, utterance_id, completion_callback, duration_callback = item
+                # Release whatever the jitter buffer still holds: the utterance is
+                # over and those bytes are the tail of the sentence. This runs
+                # before `played` is read so the tail counts as spoken instead of
+                # being silently dropped, and only for a live generation - a
+                # flushed utterance's held audio is meant to be discarded.
                 played = self._utt_played_bytes.pop(utterance_id, 0)
                 frame_bytes = self._utt_frame_bytes.pop(utterance_id, 2)
                 played_rate = self._utt_rate.pop(utterance_id, DEFAULT_SAMPLE_RATE)
