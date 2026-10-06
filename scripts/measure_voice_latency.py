@@ -13,7 +13,12 @@ measurement key         what is timed
                         frame handed over -> endpointer deciding silence
                         (``endpoint_silence_ms`` of trailing silence with a
                         non-empty partial transcript).
-``first_audio_latency`` Fish Audio TTS request dispatch -> first audio chunk.
+``first_audio_latency`` Fish Audio TTS request dispatch -> first audio chunk,
+                        timed on the production path itself: the app's own
+                        raw-HTTP client, ``claire.output.fish_client
+                        .FishClient.synthesise``, iterated to its first chunk.
+                        There is no vendor SDK in this project, and a paid
+                        network call happens only with ``--live-fish``.
 ``barge_in_latency``    barge-in phrase's first voiced frame -> TTS playback
                         actually stopped (``is_speaking()`` false).
 ``wake_false_positive_rate``
@@ -28,13 +33,19 @@ Rules this harness obeys
   that is missing and how to fix it, and exits non-zero. A missing credential,
   model or binary is never turned into ``0.0``.
 * **Never print or log a secret.** The Fish Audio key is only ever handed to
-  the SDK/engine; it is never read into the report. Every string that reaches
+  the engine/client; it is never read into the report. Every string that reaches
   the output is passed through ``claire.utils.redact.scrub_secrets``. The
   masked form the report carries is at most "file exists / size > 0".
+* **Never spend the owner's money by accident.** A live Fish Audio call costs
+  API credits, so it is made *only* when the operator passes ``--live-fish``.
+  Without that flag the measurement is ``not measured`` with the reason
+  ``live Fish call not authorised; pass --live-fish``, no socket is opened, and
+  the process still exits 3.
 * Offline by default for everything that needs no credential: wake latency and
   the false-positive rate need no audio at all; endpoint latency needs only a
   wav plus the local streaming model. Network measurements (Fish) run only when
-  their credential and backend are present, unless ``--offline`` is given.
+  their credential is present, ``--live-fish`` was given, and ``--offline`` was
+  not.
 
 Exit status: ``0`` every requested measurement taken, ``3`` at least one not
 taken (the build is incomplete, not "passing"), ``1`` fatal harness error
@@ -55,6 +66,9 @@ Usage
 
     # compute-only endpoint variant (no sleeping; excludes the audio window)
     .venv/bin/python scripts/measure_voice_latency.py --wav speech.wav --unpaced
+
+    # the one measurement that costs money: an explicit, real Fish Audio call
+    .venv/bin/python scripts/measure_voice_latency.py --only first_audio_latency --live-fish
 """
 
 from __future__ import annotations
@@ -366,6 +380,15 @@ class Ctx:
     fish_runs: int = 3
     fish_probe: Callable[[str, int, str], Sequence[float]] | None = None
     fish_probe_error: str = ""
+    #: Explicit operator opt-in for the real (paid) Fish Audio network call.
+    #: False means the first-audio measurement is reported "not measured" and
+    #: nothing is sent: the default must never spend the owner's credits.
+    live_fish: bool = False
+    #: Source label recorded in the report for whichever probe ran.
+    fish_probe_module: str = ""
+    #: Test seam: builds the object whose ``synthesise`` is timed, so the
+    #: default probe can be exercised with a fake client and no network.
+    fish_client_factory: Callable[[Path], Any] | None = None
     offline: bool = False
 
     tts_engine: Any = None
@@ -903,8 +926,13 @@ def measure_endpoint_latency(ctx: Ctx) -> Measurement:
 # --------------------------------------------------------------------------
 FIRST_AUDIO_METHOD = (
     "wall-clock seconds from the Fish Audio TTS request dispatch to the first audio chunk received, "
-    "median of N runs, streamed through the fish_audio_sdk the app depends on (requirements.txt). "
-    "The app-level FishTTS wrapper is not in this timing unless --fish-probe-module supplies it."
+    "median of N runs, timed on the code the app actually runs: "
+    "claire.output.fish_client.FishClient.synthesise(...) iterated to its FIRST yielded chunk "
+    "(raw HTTP POST via requests -- this project deliberately uses no Fish vendor SDK). "
+    "What is NOT in this number: FishTTS sentence splitting, the audio queue/backpressure and the "
+    "sound device. FishTTS builds this same FishClient(FishKeyPool(key_file)), so the client call "
+    "timed here is the whole network round-trip the app waits for; only the wrapper's overhead "
+    "around it is excluded. A live call is made only with the --live-fish opt-in."
 )
 BARGE_IN_METHOD = (
     "wall-clock seconds from the barge-in phrase's first voiced frame handed to the streaming "
@@ -979,80 +1007,165 @@ def load_probe_from_module(spec: str) -> Callable[[str, int, str], Sequence[floa
     return func
 
 
+def _live_fish_blocker(ctx: Ctx) -> MeasurementUnavailable | None:
+    """Refuse the paid network call unless the operator asked for it.
+
+    The key file being present is *not* authorisation to spend the owner's API
+    credits: the harness can be run by a build, a cron job or another agent, and
+    none of those may turn a missing flag into an unrequested invoice. Without
+    ``--live-fish`` the measurement is reported ``not measured`` -- never
+    ``0.0`` -- and no request is dispatched.
+    """
+    if ctx.live_fish:
+        return None
+    return MeasurementUnavailable(
+        "live Fish call not authorised; pass --live-fish",
+        fix=(
+            "pass --live-fish to authorise the real Fish Audio request this measurement needs; "
+            "each run spends the owner's API credits, so it is never sent implicitly"
+        ),
+    )
+
+
 def build_fish_probe(ctx: Ctx, key_file: Path) -> Callable[[str, int, str], Sequence[float]]:
-    """The default probe: stream from Fish Audio through ``fish_audio_sdk``."""
+    """The default probe: time *this project's own* Fish client to its first chunk.
+
+    Claire does not use a Fish vendor SDK. ``claire.output.fish_client`` speaks
+    the raw HTTP API with ``requests`` precisely so the per-key status and the
+    first response byte stay visible, so the honest thing to measure is that
+    module: ``FishClient.synthesise(...)`` is called and iterated to its first
+    yielded chunk, which is the request-dispatch-to-first-audio round trip the
+    running app waits for. ``FishTTS`` wraps the same
+    ``FishClient(FishKeyPool(key_file))`` -- it adds sentence splitting, a queue
+    and the player, none of which are network latency.
+
+    The whole probe runs under the ``--live-fish`` gate
+    (:func:`_live_fish_blocker`), checked by the caller before this is built.
+    """
     try:
-        import fish_audio_sdk as sdk
+        from claire.output import fish_client as fc
     except Exception as exc:
-        raise BackendMissingError("fish_audio_sdk", "'fish-audio-sdk>=1.3.0'", exc) from exc
+        raise MeasurementUnavailable(
+            f"this project's Fish client claire.output.fish_client is not importable "
+            f"({type(exc).__name__}: {exc})",
+            fix=(
+                "run the harness from the repository (it puts ./src on sys.path) or install the "
+                "package: .venv/bin/pip install -e . --  there is no vendor SDK to install"
+            ),
+        ) from exc
 
-    api_key = key_file.read_text(encoding="utf-8").strip()
-    if not api_key:
-        raise CredentialMissingError(
-            key_file,
-            fix=f"write the Fish Audio API key into {key_file} (mode 0600); it is never printed",
-        )
-
-    session_factory = getattr(sdk, "Session", None)
-    request_cls = getattr(sdk, "TTSRequest", None)
-    if session_factory is None or request_cls is None:
-        raise BackendMissingError(
-            "fish_audio_sdk",
-            "'fish-audio-sdk>=1.3.0' (missing Session/TTSRequest)",
-        )
+    for name in ("FishClient", "FishKeyPool"):
+        if not hasattr(fc, name):
+            raise MeasurementUnavailable(
+                f"claire.output.fish_client has no {name}: the app's Fish client API changed",
+                fix=f"update scripts/measure_voice_latency.py to the current {name} API",
+            )
 
     voice_id = getattr(ctx.cfg, "fish_voice_id", None)
-    latency_mode = getattr(ctx.cfg, "fish_latency", None)
-    model = getattr(ctx.cfg, "fish_model", None)
+    if not voice_id:
+        raise MeasurementUnavailable(
+            "no fish_voice_id configured: FishTTS would refuse to speak rather than use the wrong voice",
+            fix="set fish_voice_id in config.json (the cloned voice id) and re-run",
+        )
+    latency_mode = getattr(ctx.cfg, "fish_latency", None) or "low"
+    model = getattr(ctx.cfg, "fish_model", None) or "s1"
+
+    def _client() -> Any:
+        if ctx.fish_client_factory is not None:
+            return ctx.fish_client_factory(key_file)
+        try:
+            return fc.FishClient(fc.FishKeyPool(key_file))
+        except getattr(fc, "FishKeyFilePermissionsError", ()) as exc:
+            raise MeasurementUnavailable(
+                f"the Fish Audio key file {key_file} is not private: {exc}",
+                fix=f"chmod 600 {key_file} (the key file must not be group/world readable)",
+            ) from exc
+        except (getattr(fc, "FishKeyFileMissingError", ()), getattr(fc, "FishKeyFileEmptyError", ())) as exc:
+            raise CredentialMissingError(
+                key_file,
+                fix=f"write the Fish Audio API key into {key_file} (mode 0600); it is never printed",
+            ) from exc
 
     def probe(text: str, runs: int, _key_file: str) -> Sequence[float]:
-        session = session_factory(api_key)
+        client = _client()
         out: list[float] = []
         for _ in range(max(1, int(runs))):
-            kwargs: dict[str, Any] = {"text": text}
-            if voice_id:
-                kwargs["reference_id"] = voice_id
-            if latency_mode:
-                kwargs["latency"] = latency_mode
-            if model:
-                kwargs["model"] = model
-            request = request_cls(**kwargs)
+            # t0 is taken before synthesise() is called; because synthesise is a
+            # generator, the request is dispatched by the first next(), so the
+            # window is dispatch -> first byte of audio, with no teardown in it.
             t0 = time.perf_counter()
-            stream = session.tts(request)
-            for chunk in stream:
-                data = chunk if isinstance(chunk, (bytes, bytearray)) else chunk.read(1)
-                if data:
-                    out.append(time.perf_counter() - t0)
-                    break
-            else:
+            stream = client.synthesise(
+                text,
+                voice_id,
+                latency=latency_mode,
+                model=model,
+            )
+            try:
+                first = next(stream, None)
+                t_first = time.perf_counter()
+            except MeasurementUnavailable:
+                raise
+            except Exception as exc:
+                # Every failure is named and actionable; none becomes a number.
                 raise MeasurementUnavailable(
-                    "Fish Audio returned no audio chunk",
-                    fix="check the Fish Audio key, fish_voice_id and account quota",
+                    f"the Fish Audio request did not produce audio "
+                    f"({type(exc).__name__}: {exc})",
+                    fix=(
+                        "check the Fish Audio key, fish_voice_id, account quota and the network; an "
+                        "error is never timed as if audio had arrived"
+                    ),
+                ) from exc
+            finally:
+                # Abort the rest of the download immediately: the probe needs the
+                # first chunk only, and the operator pays for the bytes.
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:  # pragma: no cover - close cannot change the result
+                        pass
+            if first is None:
+                raise MeasurementUnavailable(
+                    "the Fish Audio stream yielded no audio chunk for the probe text",
+                    fix=(
+                        "check the Fish Audio key, fish_voice_id and account quota; an empty stream is "
+                        "a failure and is never timed as 0 seconds"
+                    ),
                 )
-            if hasattr(stream, "close"):
-                try:
-                    stream.close()
-                except Exception:
-                    pass
+            out.append(t_first - t0)
         return out
 
     return probe
 
 
 def measure_first_audio_latency(ctx: Ctx) -> Measurement:
+    # Order matters, and each refusal names its own cause: a missing/empty key
+    # file names the path (fixable by the operator), and only then is the paid
+    # network call gated on the explicit --live-fish opt-in.
     blocker = _fish_credential_blocker(ctx)
     if blocker is not None:
         raise blocker
+    unauthorised = _live_fish_blocker(ctx)
+    if unauthorised is not None:
+        raise unauthorised
 
     key_file = Path(ctx.fish_key_file).expanduser()
     probe = ctx.fish_probe
+    probe_source = "claire.output.fish_client.FishClient.synthesise"
     if probe is None:
         if ctx.fish_probe_error:
             raise MeasurementUnavailable(
                 ctx.fish_probe_error,
-                fix="install the declared dependency: pip install 'fish-audio-sdk>=1.3.0'",
+                fix=(
+                    "pass a valid --fish-probe-module mypackage.mymodule:probe, or drop it to use the "
+                    "app's own claire.output.fish_client.FishClient (no vendor SDK is needed)"
+                ),
             )
         probe = build_fish_probe(ctx, key_file)
+    elif ctx.fish_probe_module:
+        probe_source = f"--fish-probe-module {ctx.fish_probe_module}"
+    else:
+        probe_source = "injected probe (ctx.fish_probe)"
 
     runs = max(1, int(ctx.fish_runs))
     samples = [float(v) for v in probe(ctx.fish_text, runs, str(key_file))]
@@ -1069,7 +1182,8 @@ def measure_first_audio_latency(ctx: Ctx) -> Measurement:
         statistics.median(samples),
         unit="seconds",
         detail=(
-            f"median of {len(samples)} run(s) for {ctx.fish_text!r}; credential {mask_path(key_file)}"
+            f"median of {len(samples)} run(s) for {ctx.fish_text!r} via {probe_source}; "
+            f"credential {mask_path(key_file)}; live Fish call authorised by --live-fish"
         ),
         raw={
             "samples_sec": samples,
@@ -1078,6 +1192,8 @@ def measure_first_audio_latency(ctx: Ctx) -> Measurement:
             "max_sec": max(samples),
             "text": ctx.fish_text,
             "credential_file": mask_path(key_file),
+            "probe": probe_source,
+            "live_fish_authorised": True,
             "voice_id": getattr(ctx.cfg, "fish_voice_id", None),
             "latency_mode": getattr(ctx.cfg, "fish_latency", None),
         },
@@ -1609,9 +1725,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     f.add_argument("--fish-text", default=None, help="text to synthesise for the first-audio measurement")
     f.add_argument("--fish-runs", type=int, default=None, help="runs to median over (default 3)")
     f.add_argument(
+        "--live-fish",
+        action="store_true",
+        help=(
+            "authorise the real Fish Audio network call for first_audio_latency; each run spends the "
+            "owner's API credits. Without this flag the measurement is reported 'not measured' "
+            "(reason: live Fish call not authorised; pass --live-fish) and no request is sent"
+        ),
+    )
+    f.add_argument(
         "--fish-probe-module",
         default=None,
-        help="'module:function' used instead of fish_audio_sdk; called as fn(text, runs, key_file) -> list of seconds",
+        help=(
+            "'module:function' used instead of the app's own FishClient; called as "
+            "fn(text, runs, key_file) -> list of seconds. Also requires --live-fish, because the "
+            "harness will not run operator code on the paid path implicitly"
+        ),
     )
     f.add_argument("--barge-in-wav", default=None, help="wav of a person saying 'stop' over the TTS playback")
     f.add_argument("--barge-in-runs", type=int, default=None, help="runs to median over (default 1)")
@@ -1683,6 +1812,8 @@ def build_ctx(args: argparse.Namespace, cfg: Any, defaults: dict[str, Any]) -> C
         fish_text=args.fish_text or Ctx.fish_text,
         fish_runs=args.fish_runs if args.fish_runs is not None else 3,
         fish_probe_error="",
+        live_fish=bool(args.live_fish),
+        fish_probe_module=args.fish_probe_module or "",
         offline=bool(args.offline),
         barge_in_wav=Path(args.barge_in_wav).expanduser() if args.barge_in_wav else None,
         barge_in_runs=args.barge_in_runs if args.barge_in_runs is not None else 1,

@@ -133,8 +133,8 @@ remaining test runs.
 | Recogniser abort threshold | ~39 frames ≈ 780 ms before `is_ready()` | measured against the real library |
 | Endpoint latency | **0.679 s** (stable, 3 runs) | `scripts/measure_voice_latency.py --only endpoint_latency`; 800 ms configured endpoint window, real model, real wav |
 | Wake latency | *not measured yet* | needs the live microphone; the harness's text-only number (~8 µs) is the matcher's own cost, **not** acoustic wake latency, and is deliberately not presented as such |
-| First-audio latency (Fish) | *not measured yet* | needs the Fish key file and a live call |
-| Barge-in latency | *not measured yet* | needs FishTTS wired into the TTS factory and an output device |
+| First-audio latency (Fish) | *not measurable — account has no API credit* | `scripts/measure_voice_latency.py --only first_audio_latency --live-fish`; a live call returned HTTP 402 "Insufficient API credit" |
+| Barge-in latency | *not measurable — same cause* | needs Fish playback, which needs API credit |
 | Wake false-positive rate | **0 / 26 ordinary words** wake her | guard suite over `clear, chair, declare, clue, clip, care, layer, player, clay, glare, flare, cheer, share, rare, core, score, card, car, air, lair, pair, hair, bear, pear` plus six ordinary sentences |
 | Wake false-positive rate (harness) | 0.35 — **misleading, see note** | the harness's generated list is synthetic *Claire* variants (`claier`, `clire`, `lcaire`), which are intended true positives, so this number is not a false-positive rate |
 
@@ -151,14 +151,27 @@ recorded here rather than quietly reported as a false-positive rate.
 ## Unproven
 
 - No microphone audio has been captured on this machine. Every recogniser
-  measurement above is from wav files, not from the live input device.
-- No live Fish Audio synthesis call has been made from Claire. The client and the
-  playback pipeline are tested against fakes only; the key file has been located
-  and its mode tightened, but no request has been sent.
+  measurement above is from wav files, not from the live input device. The owner
+  chose to leave acoustic wake latency unmeasured for now.
+- **Fish Audio synthesis is blocked by the account's API credit, not by the
+  code.** A live request was authorised and attempted; the API answered
+  **HTTP 402 "Insufficient API credit. API credit is managed independently from
+  platform credit."** The key authenticated successfully — a rejected credential
+  would be 401 — so the key is good and the API credit balance is empty. This is
+  a *different* balance from the platform credit shown in the Fish web UI, which
+  is what made the failure look surprising. Until credit is added, first-audio
+  latency and barge-in latency cannot be measured, and Claire cannot speak with
+  Fish: both must report this rather than pretend.
+  - The failure path behaved correctly when it happened: the client classified
+    402 as a dead key, rotated the pool, reported the exact reason, redacted the
+    key to last-4 plus a fingerprint, kept the voice unchanged, and invented no
+    number. Exit status was non-zero.
 - No Parakeet weights are present on this machine, so the authoritative engine has
   never decoded real audio. Its loaders and named failures are tested with fakes.
-  Until a model is placed at `stt_model_path`, the listener must degrade to the
-  whisper path and report the turn as degraded.
+  Until a model is placed at `stt_model_path`, the listener degrades to the
+  whisper path and reports the turn as degraded — verified directly:
+  `create_stt_engine(cfg)` raises `SttModelMissingError` naming the path and the
+  fix rather than returning an empty transcript.
 - No Discord/Signal message has been sent from Claire.
 - Barge-in has never been heard, because no audio has ever been played.
 
@@ -268,3 +281,16 @@ Recorded so they are not silently re-litigated later.
     says so.** No Parakeet weights exist on this machine, so the alternative would
     be either a crash at startup or a turn silently labelled as Parakeet. The turn
     is marked degraded with a reason naming the missing setting, logged once.
+21. **The owner's Fish voice id lives in the runtime config, not in the repo.**
+    The cloned voice is a personal asset; hardcoding it as a repository default
+    would put it in every checkout. It is set in `~/.config/claire/config.json`
+    (0600, outside the repo) and the repository default stays `None`, which must
+    fail with a named error rather than silently pick some other voice.
+22. **A live Fish call is gated behind an explicit `--live-fish` flag.** A real
+    request spends the owner's API credit, so the latency harness will not make
+    one by accident: without the flag it reports the measurement as not taken and
+    exits non-zero. This is the same reasoning as the hard stop on spending money,
+    turned into a mechanism rather than a promise.
+23. **The thinking-tune spinner's home is stderr, and that is now a rule.**
+    See item 17; recorded separately because it is the general case. Any future
+    decorative or progress output goes to stderr, so stdout stays parseable.

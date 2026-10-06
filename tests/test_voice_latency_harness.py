@@ -4,11 +4,18 @@ These test the *harness's own logic*, not Claire's pipeline: every external
 dependency (clock, sleep, recogniser, TTS engine, Fish probe, audio) is a fake,
 so nothing here touches the network, a microphone, an audio device or a model.
 
-The three properties the task requires are covered explicitly:
+The properties the task requires are covered explicitly:
 
 * a missing credential produces ``not measured`` (never a fabricated number),
 * the false-positive list is reported exactly for a fake matcher,
-* the ``--json`` output parses.
+* the ``--json`` output parses,
+* the first-audio probe times **this project's own** Fish client
+  (``claire.output.fish_client.FishClient.synthesise``) and never a vendor SDK,
+* without ``--live-fish`` no Fish request is dispatched, no number is reported,
+  and the reason the operator reads is "live Fish call not authorised".
+
+No test in this file may hit the network: the tests that exercise the Fish path
+install socket/HTTP tripwires that fail the test if anything dials out.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ import json
 import sys
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -191,6 +199,74 @@ def fake_ctx(**overrides) -> "h.Ctx":
 
 
 # --------------------------------------------------------------------------
+# Tripwires: a test that dials out (or reaches for a vendor SDK) must fail
+# --------------------------------------------------------------------------
+def _private_key(tmp_path: Path) -> Path:
+    """A 0600 key file holding a fake key -- readable, never usable online."""
+    key = tmp_path / "fish.key"
+    key.write_text("sk-" + "0" * 32 + "\n", encoding="utf-8")
+    key.chmod(0o600)
+    return key
+
+
+def _forbid_network(monkeypatch) -> None:
+    """Any socket, connection or HTTP request in this test is a hard failure.
+
+    The ``socket.socket`` *class* is left intact (replacing it breaks unrelated
+    imports); what is replaced are the calls that actually dial out.
+    """
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("the harness attempted a network call")
+
+    import socket as socket_module
+
+    monkeypatch.setattr(socket_module.socket, "connect", _boom)
+    monkeypatch.setattr(socket_module.socket, "connect_ex", _boom)
+    monkeypatch.setattr(socket_module, "create_connection", _boom)
+    monkeypatch.setattr(socket_module, "getaddrinfo", _boom)
+
+    import requests
+
+    monkeypatch.setattr(requests.Session, "request", _boom)
+
+
+class _ForbidSDKImport:
+    def find_spec(self, name, path=None, target=None):
+        if name == "fish_audio_sdk" or name.startswith("fish_audio_sdk."):
+            raise AssertionError("the default first-audio probe must not import fish_audio_sdk")
+        return None
+
+
+def _forbid_fish_audio_sdk(monkeypatch) -> None:
+    """Make importing the Fish vendor SDK fail loudly, wherever it is installed."""
+    monkeypatch.delitem(sys.modules, "fish_audio_sdk", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_ForbidSDKImport(), *sys.meta_path])
+
+
+class FakeFishClient:
+    """Stands in for ``claire.output.fish_client.FishClient``: no network at all."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.chunks_pulled = 0
+        self.drained = False
+
+    def synthesise(self, text, voice_id, latency="low", model="s1", **_kwargs):
+        self.calls.append(
+            {"text": text, "voice_id": voice_id, "latency": latency, "model": model}
+        )
+
+        def stream():
+            for chunk in (b"first-audio-chunk", b"second-chunk"):
+                self.chunks_pulled += 1
+                yield chunk
+            self.drained = True
+
+        return stream()
+
+
+# --------------------------------------------------------------------------
 # N10: a missing credential is "not measured", never a fabricated number
 # --------------------------------------------------------------------------
 def test_missing_fish_credential_is_not_measured_and_exits_nonzero(tmp_path, capsys):
@@ -214,23 +290,28 @@ def test_missing_fish_credential_is_not_measured_and_exits_nonzero(tmp_path, cap
     assert measurement["method"], "the method that would have been used is still reported"
     assert str(absent) in measurement["detail"]
     assert "0600" in measurement["fix"]
+    # the honest cause is the missing key, not the opt-in flag
+    assert "live Fish call not authorised" not in measurement["detail"]
     assert doc["all_measured"] is False
     assert doc["not_measured"] == ["first_audio_latency"]
     assert doc["exit_code"] == 3
 
 
-def test_credential_present_without_backend_is_not_measured(tmp_path):
-    key = tmp_path / "fish.key"
-    key.write_text("placeholder-not-a-real-key\n", encoding="utf-8")
+def test_probe_module_error_never_advises_installing_a_vendor_sdk(tmp_path):
+    """The old fix ('pip install fish-audio-sdk') is gone: this project has no SDK."""
+    key = _private_key(tmp_path)
     ctx = fake_ctx(
         fish_key_file=key,
+        live_fish=True,
         fish_probe=None,
-        fish_probe_error="Python module 'fish_audio_sdk' is not importable",
+        fish_probe_error="cannot import probe module 'nope' (ModuleNotFoundError)",
     )
     with pytest.raises(h.MeasurementUnavailable) as excinfo:
         h.measure_first_audio_latency(ctx)
-    assert "fish_audio_sdk" in excinfo.value.reason
-    assert "pip install" in excinfo.value.fix
+    assert "nope" in excinfo.value.reason
+    assert "fish-audio-sdk" not in excinfo.value.fix
+    assert "fish_audio_sdk" not in excinfo.value.fix
+    assert "--fish-probe-module" in excinfo.value.fix
 
 
 def test_empty_credential_file_is_not_measured(tmp_path):
@@ -240,6 +321,196 @@ def test_empty_credential_file_is_not_measured(tmp_path):
     with pytest.raises(h.CredentialMissingError) as excinfo:
         h.measure_first_audio_latency(ctx)
     assert str(key) in excinfo.value.reason
+
+
+# --------------------------------------------------------------------------
+# The paid path: only --live-fish may dispatch a request (never a number without)
+# --------------------------------------------------------------------------
+def test_default_probe_targets_our_own_fish_client_not_a_vendor_sdk(tmp_path, monkeypatch):
+    """The default probe must go through claire.output.fish_client.FishClient."""
+    _forbid_fish_audio_sdk(monkeypatch)
+
+    from claire.output import fish_client as fc
+
+    assert "claire.output.fish_client" in h.FIRST_AUDIO_METHOD
+    assert "FishClient.synthesise" in h.FIRST_AUDIO_METHOD
+    assert "fish_audio_sdk" not in h.FIRST_AUDIO_METHOD
+
+    calls: list[dict] = []
+
+    class RecordingClient:
+        def __init__(self, pool):
+            calls.append({"pool_path": str(pool.path)})
+
+        def synthesise(self, text, voice_id, latency="low", model="s1", **_kwargs):
+            calls[-1].update(
+                {"text": text, "voice_id": voice_id, "latency": latency, "model": model}
+            )
+            yield b"first-audio-chunk"
+            raise AssertionError("the probe must stop at the first chunk")
+
+    monkeypatch.setattr(fc, "FishClient", RecordingClient)
+
+    key = _private_key(tmp_path)
+    ctx = fake_ctx(
+        cfg=SimpleNamespace(fish_voice_id="voice-1", fish_latency="low", fish_model="s1"),
+        fish_key_file=key,
+        live_fish=True,
+        fish_runs=2,
+    )
+    probe = h.build_fish_probe(ctx, key)
+    samples = list(probe("measure this", 2, str(key)))
+
+    assert len(samples) == 2
+    assert len(calls) == 1, "one client is built for the whole probe"
+    assert calls[0]["pool_path"] == str(key)
+    assert calls[0]["voice_id"] == "voice-1"
+    assert calls[0]["text"] == "measure this"
+
+
+def test_live_fish_probe_measures_the_first_chunk_and_abandons_the_rest(tmp_path):
+    """With a fake client the measured path works end to end, and pays for one chunk."""
+    key = _private_key(tmp_path)
+    client = FakeFishClient()
+    ctx = fake_ctx(
+        cfg=SimpleNamespace(fish_voice_id="voice-1", fish_latency="low", fish_model="s1"),
+        fish_key_file=key,
+        live_fish=True,
+        fish_runs=3,
+        fish_client_factory=lambda _path: client,
+    )
+    measurement = h.measure_first_audio_latency(ctx)
+
+    assert measurement.measured
+    assert measurement.value is not None and 0.0 <= measurement.value < 5.0
+    assert len(client.calls) == 3
+    assert client.chunks_pulled == 3, "exactly one chunk per run"
+    assert client.drained is False, "the rest of the audio must not be downloaded"
+    assert measurement.raw["probe"] == "claire.output.fish_client.FishClient.synthesise"
+    assert measurement.raw["live_fish_authorised"] is True
+
+
+def test_live_fish_stream_failure_is_not_measured_and_never_zero(tmp_path):
+    """A real client failure (timeout, empty stream) is honest, never a number."""
+    from claire.output.fish_client import FishFirstChunkTimeoutError
+
+    key = _private_key(tmp_path)
+
+    class TimingOutClient:
+        def synthesise(self, *_args, **_kwargs):
+            raise FishFirstChunkTimeoutError("no first chunk within 8.0s")
+            yield b""  # pragma: no cover - makes this a generator, raised on first next()
+
+    class EmptyStreamClient:
+        def synthesise(self, *_args, **_kwargs):
+            return iter(())
+
+    for client, expected in (
+        (TimingOutClient(), "FishFirstChunkTimeoutError"),
+        (EmptyStreamClient(), "yielded no audio chunk"),
+    ):
+        ctx = fake_ctx(
+            cfg=SimpleNamespace(fish_voice_id="voice-1", fish_latency="low", fish_model="s1"),
+            fish_key_file=key,
+            live_fish=True,
+            fish_runs=1,
+            fish_client_factory=lambda _path, _client=client: _client,
+        )
+        measurement = h.dispatch_measurement("first_audio_latency", ctx)
+
+        assert measurement.status == "not_measured"
+        assert measurement.value is None
+        assert expected in measurement.detail
+        assert measurement.fix
+
+
+def test_without_live_fish_no_network_call_and_no_number(tmp_path, capsys, monkeypatch):
+    """The default run must refuse the paid call, name the flag, and invent nothing."""
+    key = _private_key(tmp_path)
+    _forbid_network(monkeypatch)
+    _forbid_fish_audio_sdk(monkeypatch)
+
+    rc = h.main(
+        [
+            "--json",
+            "--no-config",
+            "--only",
+            "first_audio_latency",
+            "--fish-key-file",
+            str(key),
+        ]
+    )
+    doc = json.loads(capsys.readouterr().out)
+    measurement = doc["measurements"][0]
+
+    assert rc == h.EXIT_NOT_MEASURED == 3
+    assert measurement["status"] == "not_measured"
+    assert measurement["value"] is None, "an unauthorised call must not become a number"
+    assert measurement["detail"] == "live Fish call not authorised; pass --live-fish"
+    assert "--live-fish" in measurement["fix"]
+    assert doc["all_measured"] is False
+    assert doc["not_measured"] == ["first_audio_latency"]
+
+
+def test_probe_module_still_requires_the_live_opt_in(tmp_path, capsys, monkeypatch):
+    """The escape hatch is still usable, but it is not a way to bypass the gate."""
+    key = _private_key(tmp_path)
+    (tmp_path / "fake_probe_optin.py").write_text(
+        "def probe(text, runs, key_file):\n    return [0.02] * runs\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _forbid_network(monkeypatch)
+
+    args = [
+        "--json",
+        "--no-config",
+        "--only",
+        "first_audio_latency",
+        "--fish-key-file",
+        str(key),
+        "--fish-probe-module",
+        "fake_probe_optin:probe",
+    ]
+    rc = h.main(args)
+    measurement = json.loads(capsys.readouterr().out)["measurements"][0]
+
+    assert rc == 3
+    assert measurement["value"] is None
+    assert "live Fish call not authorised; pass --live-fish" in measurement["detail"]
+
+    # ... and the same invocation with the flag measures the fake probe.
+    rc = h.main(args + ["--live-fish"])
+    measurement = json.loads(capsys.readouterr().out)["measurements"][0]
+    assert rc == 0
+    assert measurement["status"] == "measured"
+    assert measurement["value"] == pytest.approx(0.02, abs=1e-9)
+    assert measurement["raw"]["probe"] == "--fish-probe-module fake_probe_optin:probe"
+
+
+def test_missing_key_file_names_the_path_even_with_live_fish(tmp_path, capsys, monkeypatch):
+    """A missing key file is reported by path, not hidden behind the opt-in flag."""
+    absent = tmp_path / "no-such-fish-key.txt"
+    _forbid_network(monkeypatch)
+
+    rc = h.main(
+        [
+            "--json",
+            "--no-config",
+            "--live-fish",
+            "--only",
+            "first_audio_latency",
+            "--fish-key-file",
+            str(absent),
+        ]
+    )
+    measurement = json.loads(capsys.readouterr().out)["measurements"][0]
+
+    assert rc == 3
+    assert measurement["value"] is None
+    assert str(absent) in measurement["detail"]
+    assert "0600" in measurement["fix"]
+    assert "live Fish call not authorised" not in measurement["detail"]
 
 
 def test_offline_blocks_fish_measurements_without_touching_the_network(capsys):
@@ -545,6 +816,9 @@ def test_json_output_parses_and_never_prints_the_secret(tmp_path, capsys, monkey
         [
             "--json",
             "--no-config",
+            # The fake probe replaces the real client, so no request is made; the
+            # opt-in flag is still required before any Fish probe runs at all.
+            "--live-fish",
             "--only",
             "first_audio_latency",
             "--fish-key-file",
@@ -566,6 +840,7 @@ def test_json_output_parses_and_never_prints_the_secret(tmp_path, capsys, monkey
     assert secret not in captured.err
     assert "present" in measurement["raw"]["credential_file"]
     assert "value never read" in measurement["raw"]["credential_file"]
+    assert measurement["raw"]["probe"] == "--fish-probe-module fake_probe:probe"
 
 
 def test_offline_json_report_parses_with_real_matcher(capsys):
