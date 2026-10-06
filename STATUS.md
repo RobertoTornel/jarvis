@@ -569,3 +569,41 @@ dutifully reported backups as BLOCKED because of damage I had caused. No owner
 data was involved — the payloads were my own temporary test files — and both
 snapshots were removed. Like the earlier key-store incident, a verification script
 wrote to a real path, and that is recorded rather than quietly tidied away.
+
+## N3 was not actually satisfied until the very end
+
+N3 requires Claire to be a standalone Python program runnable as
+`python -m claire`. Every check I had run used `PYTHONPATH=src`, which searched
+the package without installing it — so the entry point I kept confirming was
+never the thing N3 describes.
+
+Run plainly, it failed:
+
+    $ python -m claire --help
+    No module named claire
+
+The cause was another installability fault, and it explains why nobody had
+noticed: `scripts/build_installer.sh` stamped `_version.py` as `dev-<sha>`, which
+is fine as a label and fine for PyInstaller, but `pyproject.toml` also reads that
+value as its `dynamic = ["version"]`, and pip rejects it:
+
+    packaging.version.InvalidVersion: Invalid version: 'dev-7235752'
+
+So `pip install -e .` could not build at all. The stamp is now a PEP 440 local
+version (`0.1.0.dev0+g<sha>`), the package installs, and both entry points work
+for real:
+
+    $ python -m claire --version   ->  0.1.0.dev0+g7235752
+    $ claire --version             ->  0.1.0.dev0+g7235752
+
+`tests/test_version_stamp.py` pins it, and it checks the *script's* format rather
+than only the generated artifact, because the artifact is gitignored — a fresh
+clone has no `_version.py`, so a test that only read the file would pass on a
+clean checkout while the next build broke. Fail-proof run: restoring
+`DEV_VERSION="dev-${GIT_SHA}"` turns two tests RED; the corrected stamp turns
+them GREEN.
+
+The general lesson, recorded because it recurred: **a command run with a helper
+environment variable is not evidence about how the program behaves by default.**
+`PYTHONPATH=src` made a broken install look like a working one for the whole
+build.
