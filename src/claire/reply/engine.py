@@ -1464,7 +1464,13 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     action_plan = strip_memory_directives(action_plan)
 
     _assistant_name = str(getattr(cfg, "wake_word", "claire") or "claire").strip().capitalize()
-    _persona_prompt = build_system_prompt(_assistant_name)
+    # load_default_router=True re-reads the vault's CLAIRE.md from disk on every
+    # turn and renders it into the system prompt (Wave 2). That is deliberate:
+    # memory is a live re-read, not a conversation log, so it is never stale,
+    # correcting the file corrects her behaviour with no restart, and it costs no
+    # conversation-history tokens. If the vault is missing it is created from a
+    # template and the creation is reported rather than passing silently.
+    _persona_prompt = build_system_prompt(_assistant_name, load_default_router=True)
 
     def _build_initial_system_message() -> str:
         guidance = [_persona_prompt.strip()]

@@ -36,8 +36,8 @@ and are **not** part of the per-wave gate.
 | Wave | Scope | State |
 |---|---|---|
 | 0 | Scaffold, rename to `claire`, delete dictation + Windows/macOS, cloud policy | **complete** |
-| 1 | Voice: recognisers, transcript plumbing, Fish TTS, wake word | **in progress** (1a committed; 1b integration) |
-| 2 | Memory: editable router file beside untouched RAG/graph | not started |
+| 1 | Voice: recognisers, transcript plumbing, Fish TTS, wake word | **complete** (1a and 1b committed) |
+| 2 | Memory: editable router file beside untouched RAG/graph | **complete** |
 | 3 | Scheduling: calendar, alternative slots, reminders, timers | not started |
 | 4 | Senses: screenshot/OCR, GUI automation, vision routing, browser | not started |
 | 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | not started |
@@ -294,3 +294,33 @@ Recorded so they are not silently re-litigated later.
 23. **The thinking-tune spinner's home is stderr, and that is now a rule.**
     See item 17; recorded separately because it is the general case. Any future
     decorative or progress output goes to stderr, so stdout stays parseable.
+24. **Memory is a live re-read of one router file, not a conversation log.**
+    `CLAIRE.md` in the vault is re-read from disk on *every* turn and rendered
+    into the system prompt. Consequences, verified end to end rather than
+    assumed: editing the file changes her behaviour with no restart, and memory
+    costs a constant number of tokens per turn instead of growing the history.
+    The alternative — appending the file as a chat message each turn — is what
+    makes context rot unbounded.
+25. **The router file is capped at 6000 bytes and warns loudly when exceeded.**
+    Measured against a 16 259-byte file: the render truncates at a line boundary
+    and emits `Real size: 16210 bytes. Budget: 6000 bytes. Dropped: 10260
+    bytes.`, and the system prompt adds a `[memory-over-budget]` marker telling
+    her to move detail into notes. Silent truncation would be the failure mode;
+    visible rot is self-correcting.
+26. **The router is a router, not a database.** A fact bigger than one line
+    belongs in a note file with only a pointer left in the main file, and
+    `unreferenced_notes()` reports notes the router never mentions so the pointer
+    set can be kept honest.
+27. **Frontmatter is parsed without adding PyYAML.** The needed subset is flat
+    `key: value` lines; a dependency for that would be disproportionate. A
+    missing or malformed block falls back to defaults rather than failing.
+28. **The router decodes strictly, unlike the note reader.** The note reader uses
+    `errors="replace"`, which is right for a note but wrong for always-loaded
+    memory: a lossy decode would silently drop part of her memory. An undecodable
+    router raises a named error instead.
+29. **The router is loaded at the one call site that assembles the persona
+    prompt.** The seam shipped able to accept a router but with no caller passing
+    one, which would have meant memory never reaching the model at all — a
+    reminder that a tested seam is not the same as a wired feature. Verified by
+    rendering the real prompt: 5 627 bytes without memory, 6 705 with the vault
+    router present.
