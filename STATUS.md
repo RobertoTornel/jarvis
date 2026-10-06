@@ -640,30 +640,52 @@ passed and why the acceptance scoreboard listed TTS as merely unmeasured rather
 than broken. Fixed with one argument, and pinned by five tests whose fail-proof
 run shows four going RED when the argument is removed.
 
-### 3. The daemon does not use the new speech recognisers at all (UNFIXED)
+### 3. RETRACTED: the claim that the recognisers were unwired was WRONG
 
-This contradicts an earlier claim in this file and needs to be stated plainly.
+I wrote here that the daemon "does not use the new speech recognisers at all",
+based on a `grep create_stt_engine listener.py` that returned nothing. The grep
+was the mistake: the import is inside a helper, not at module level, so the
+search could not have found it. Reading the file instead of grepping it shows
+the opposite.
 
-Wave 1 built the two-recogniser design: a streaming sherpa model for provisional
-text and wake detection, and Parakeet as the authoritative recogniser. Those
-modules exist, are unit-tested, and `create_stt_engine()` returns a working
-`ParakeetNemoEngine` that transcribes real speech correctly. **The daemon never
-calls it.** `listener.py` imports `faster_whisper`/`mlx_whisper` directly and
-runs the upstream Whisper pipeline, and `daemon.py` still prints
-`🎤 Using whisper model: medium`.
+Wave 1 **is** wired, and properly:
 
-So the running system ignores `stt_engine`, ignores `stt_model_path`, and
-ignores the 2.4 GB Parakeet model that was downloaded for it. What actually ran
-was Whisper `medium`, which then failed to load because the unit's
-`ProtectHome=read-only` stops HuggingFace writing its cache:
+- `listener.py:1680` `_get_authoritative_stt_engine()` builds
+  `create_stt_engine(self.cfg)` lazily and catches every named error into a
+  recorded reason.
+- `listener.py:1822` `_decode_utterance()` calls that engine for the
+  authoritative transcript and returns `(text, language, low_confidence_events,
+  source, degraded_reason)`.
+- `listener.py:1830-1845` falls back to Whisper only when the authoritative
+  engine is genuinely unavailable, and marks the turn **degraded** rather than
+  passing the fallback text off as authoritative.
+- `listener.py:486,1739-1803` wires the streaming engine for provisional text
+  and finalisation.
 
-    ❌ Failed to load Whisper model: Whisper model download download: OSError
-    Read-only file system: '/home/mana/.cache/huggingface'
+That is the D3/D4 design, implemented. The 2.4 GB Parakeet model is used.
 
-The unit is honest about this and Claire stays up, but she currently cannot
-hear. This is the same class of mistake as the un-wired `build_system_prompt`
-router in Wave 2: **a tested seam is not a wired feature, and only running the
-real program shows the difference.**
+**What is actually wrong is much smaller, and I only found it because I made the
+larger false claim and went looking.**
+
+`daemon.py:944` prints `🎤 Using whisper model: medium`, and the daemon eagerly
+warms up a Whisper model in the background at startup. That warmup then fails:
+
+    ❌ Failed to load Whisper model: OSError
+       Read-only file system: '/home/mana/.cache/huggingface'
+
+Two real but modest faults:
+
+1. The banner names Whisper as the recogniser when the configured authoritative
+   engine is Parakeet, so the log describes a design the system no longer uses.
+2. The unit's `ProtectHome=read-only` makes HuggingFace unable to write its
+   cache, so the Whisper path cannot download. Whisper is the documented
+   **degradation** fallback, so breaking it removes the safety net that exists
+   precisely for when Parakeet cannot load.
+
+The lesson is the one this build keeps re-teaching, in a new shape: a negative
+result from a weak search is not evidence. `grep` for a symbol is not the same
+as reading the code that uses it, and I turned "I did not find it" into "it is
+not there" in a document and a commit message. The listening wiring was fine.
 
 ### What the service did get right
 
@@ -698,3 +720,53 @@ upgraded `huggingface_hub` 0.36.2 → 1.33.0 and `transformers` 4.46.3 → 5.19.
 this cannot be pinned back. Two tests in `test_log_progress.py` patched Hub
 internals that no longer exist (`_request_wrapper`, `refresh_xet_connection_info`)
 and were updated to the 1.x seams; the suite is green again at 3359 passed.
+
+## Fixed after that retraction: the authoritative engine only worked outside systemd
+
+Having established that the STT engines *are* wired, the remaining question was
+whether the wired path actually runs as a service. It did not. Under the unit:
+
+    RuntimeError("cannot cache function '__o_fold': no locator available for
+    file '.../librosa/core/notation.py'")
+    NeMo: Can't instantiate abstract class ASRModel without an implementation
+          for abstract methods 'setup_training_data', 'setup_validation_data'
+    ⚠️ Voice transcript degraded: ... produced no authoritative Parakeet transcript
+
+numba caches compiled helpers next to the source file that defines them unless
+told otherwise. `ProtectHome=read-only` makes the venv read-only, so that write
+fails, librosa fails to JIT, and NeMo cannot build its preprocessor. The
+authoritative recogniser then silently fell back to Whisper and Claire ran
+degraded - while the banner still said everything was fine.
+
+The fix is `Environment=NUMBA_CACHE_DIR=%h/.cache/numba` with that directory in
+`ReadWritePaths`. Verified under the same sandbox before and after: the engine
+went from `SttDecodeError` to `PARAKEET LOADED: ParakeetNemoEngine`.
+
+Two smaller faults fixed alongside it:
+
+- The startup banner printed `🎤 Using whisper model: medium` unconditionally,
+  describing the degraded fallback as though it were the design. It now names
+  the configured authoritative engine and reports Whisper as the fallback.
+- `ProtectHome=read-only` also blocked the HuggingFace cache, so the Whisper
+  fallback could not download and the safety net was missing exactly when it was
+  needed. `%h/.cache/huggingface` is now writable.
+
+## The service runs, and Claire works
+
+Final state of `systemctl --user status claire`: `active (running)`, zero
+restarts, and the log shows the whole chain coming up:
+
+    🎤 Authoritative recogniser: parakeet (whisper medium is the degraded fallback)
+    💾 Initializing dialogue memory...
+    ✓ Dialogue memory initialized
+    🔊 Initializing TTS engine (fish)...
+    ✅ TTS engine started
+    NeMo: Model EncDecRNNTBPEModel was successfully restored from
+          ~/.local/share/claire/models/parakeet-tdt-0.6b-v2/parakeet-tdt-0.6b-v2.nemo
+
+That is all three halves connected for the first time: she can hear through the
+authoritative Parakeet engine, she can speak through Fish on the free model, and
+she is supervised by systemd so she comes back if she dies. Acoustic wake
+detection is still UNPROVEN - no one has spoken the wake phrase into the
+microphone in a way that was captured - and that remains the one measurement
+this build has never been able to take.

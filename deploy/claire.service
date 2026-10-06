@@ -87,7 +87,30 @@ ProtectSystem=strict
 ProtectHome=read-only
 # ...except the directories Claire must write to. Widen these if you moved
 # $CLAIRE_VAULT_DIR / the schedule database.
-ReadWritePaths=%h/.local/share/claire %h/.config/claire
+#
+# %h/.cache is here for the speech-recognition fallback, not for the primary
+# recogniser. The authoritative engine reads a local model and needs no cache,
+# but Whisper - the documented degraded fallback for when that engine cannot
+# load - downloads from HuggingFace and writes its cache under ~/.cache. With
+# ProtectHome=read-only and no path granted here, that download fails with
+# "Read-only file system: /home/<user>/.cache/huggingface" and Claire loses the
+# safety net that exists precisely for the case it was needed.
+ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/huggingface %h/.cache/numba
+
+# numba caches compiled helpers next to whatever source file defines them unless
+# it is told otherwise. The NeMo Parakeet model reaches librosa, and librosa
+# JIT-compiles; with ProtectHome=read-only the venv is read-only, so the cache
+# write fails and the failure surfaces as an unrelated-looking import error:
+#
+#   RuntimeError("cannot cache function '__o_fold': no locator available for
+#   file '.../librosa/core/notation.py'")
+#   -> NeMo: Can't instantiate abstract class ASRModel ...
+#   -> "Voice transcript degraded: produced no authoritative Parakeet transcript"
+#
+# The authoritative recogniser silently fell back to Whisper and Claire ran
+# degraded, with nothing in the banner to say so. Pointing the cache at a
+# writable directory fixes it; this was verified under the same sandbox.
+Environment=NUMBA_CACHE_DIR=%h/.cache/numba
 
 [Install]
 # A user unit is enabled in the user's manager, so the target is default.target

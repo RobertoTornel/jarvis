@@ -941,7 +941,17 @@ def main(smoke_test: bool = False) -> None:
     debug_log("daemon started", "claire")
     print("✓ Daemon started", flush=True)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
-    print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
+    # Name the recogniser that actually transcribes turns. This banner said
+    # "Using whisper model: <name>" unconditionally, which described the
+    # degraded fallback as if it were the design - misleading once the
+    # authoritative Parakeet engine (D3/D4) is what answers. Whisper is still
+    # reported, because it is the documented fallback and its model matters.
+    _stt_name = str(getattr(cfg, "stt_engine", "") or "whisper").strip().lower()
+    if _stt_name in ("", "whisper"):
+        print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
+    else:
+        print(f"🎤 Authoritative recogniser: {_stt_name} "
+              f"(whisper {cfg.whisper_model} is the degraded fallback)", flush=True)
 
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
