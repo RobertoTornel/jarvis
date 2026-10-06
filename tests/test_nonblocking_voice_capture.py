@@ -1,6 +1,20 @@
 """Microphone frames keep reaching speech detection during slow language work."""
 from dataclasses import replace
 import threading
+
+# These tests assert ORDERING: that completed audio is decoded, and delivered,
+# without waiting for the slow language stage. They do it by blocking that stage
+# and proving the fast path still completes. The numbers therefore encode a
+# RATIO, not a speed expectation, and raising only the deadlines would destroy
+# the test: if BLOCK_SECONDS expired before a deadline, a decoder that really did
+# serialise behind language work would pass by waiting it out. So the block is
+# long and the deadlines are short - but both carry enough headroom for a loaded
+# machine, which the old 3s/1s pair did not. Under the full suite those 1s
+# deadlines failed consistently while passing in isolation: a scheduling delay,
+# not a regression. The product was never slow; the test was impatient.
+BLOCK_SECONDS = 60.0   # the slow stage stays blocked for the whole test
+START_SECONDS = 10.0   # liveness: reach the starting checkpoint
+FAST_SECONDS = 5.0     # the discriminating deadline: must stay well under BLOCK_SECONDS
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -55,7 +69,7 @@ def test_audio_reaches_vad_while_language_processing_is_blocked(synthetic_listen
 
     def block(*args):
         entered.set()
-        if not release.wait(3):
+        if not release.wait(BLOCK_SECONDS):
             raise AssertionError('Synthetic language work was not released')
 
     if blocked_stage == 'intent':
@@ -77,10 +91,10 @@ def test_audio_reaches_vad_while_language_processing_is_blocked(synthetic_listen
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        assert entered.wait(2), 'Synthetic listener did not reach the slow language stage'
+        assert entered.wait(START_SECONDS), 'Synthetic listener did not reach the slow language stage'
         frames = obj.cfg.sample_rate * obj.cfg.vad_frame_ms // 1000
         obj._on_audio(np.ones((frames, 1), dtype=np.float32) * .1, frames, None, None)
-        assert processed.wait(.5), 'Audio stalled behind intent judging or reply generation'
+        assert processed.wait(FAST_SECONDS), 'Audio stalled behind intent judging or reply generation'
     finally:
         obj.stop()
         release.set()
@@ -112,7 +126,7 @@ def test_full_transcript_queue_cancels_pending_delivery(synthetic_listener, inva
     worker = threading.Thread(target=obj._run_transcription_worker)
     worker.start()
     try:
-        assert delivering.wait(1)
+        assert delivering.wait(FAST_SECONDS)
         if invalidate == 'shutdown':
             obj.stop()
         else:
@@ -193,7 +207,7 @@ def test_completed_audio_is_decoded_fifo_during_language_work(synthetic_listener
     samples = []
     def block(*args):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(BLOCK_SECONDS)
     if blocked_stage == 'intent':
         obj._transcription_results_q.put(object())
         obj._handle_transcription_result = block
@@ -211,11 +225,11 @@ def test_completed_audio_is_decoded_fifo_during_language_work(synthetic_listener
     thread = threading.Thread(target=obj.run)
     thread.start()
     try:
-        assert entered.wait(2)
+        assert entered.wait(START_SECONDS)
         size = obj.cfg.sample_rate * obj.cfg.max_utterance_ms // 1000
         for value in (.1, .2):
             obj._on_audio(np.full((size, 1), value, dtype=np.float32), size, None, None)
-        assert decoded.wait(1), 'Completed speech waited for language work'
+        assert decoded.wait(FAST_SECONDS), 'Completed speech waited for language work'
         assert len(samples) == 2
         for audio, value in zip(samples, (.1, .2)):
             np.testing.assert_array_equal(audio, np.full(size, value, dtype=np.float32))
@@ -240,7 +254,7 @@ def test_reset_discards_remaining_frames_in_an_already_dequeued_batch(synthetic_
             first_batch = False
             yield old
             reached.set()
-            assert resume.wait(2)
+            assert resume.wait(BLOCK_SECONDS)
             yield old
         else:
             yield fresh
@@ -257,11 +271,11 @@ def test_reset_discards_remaining_frames_in_an_already_dequeued_batch(synthetic_
     obj._start_audio_worker(obj.cfg.vad_frame_ms)
     try:
         obj._on_audio(old[:, None], len(old), None, None)
-        assert reached.wait(1)
+        assert reached.wait(START_SECONDS)
         obj._clear_audio_buffers()
         obj._on_audio(fresh[:, None], len(fresh), None, None)
         resume.set()
-        assert decoded.wait(1)
+        assert decoded.wait(FAST_SECONDS)
         assert len(samples) == 1
         np.testing.assert_array_equal(samples[0], np.concatenate([fresh, fresh]))
     finally:

@@ -602,7 +602,15 @@ class HeaderMap(Mapping[str, str]):
     """A case-insensitive, read-only view over the request headers."""
 
     def __init__(self, headers: Mapping[str, str] | Iterable[tuple[str, str]]) -> None:
-        items = headers.items() if isinstance(headers, Mapping) else headers
+        # Duck-type on .items() rather than isinstance(Mapping). The live server
+        # hands us http.client's HTTPMessage (from email.message), which provides
+        # .items() but is NOT a registered Mapping - so the isinstance check used
+        # to fail and fall through to treating it as an iterable of pairs. An
+        # HTTPMessage iterates to its header NAMES, so unpacking "Host" as (k, v)
+        # raised ValueError and every request over a real socket died before
+        # routing, while every in-process test passed.
+        getter = getattr(headers, "items", None)
+        items = getter() if callable(getter) else headers
         self._data = {str(k).lower(): str(v) for k, v in items}
 
     def __getitem__(self, key: str) -> str:

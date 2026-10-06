@@ -1,0 +1,8 @@
+// Root build file.  The Android plugin is declared once here and applied in :app.
+//
+// The plugin version is pinned to the one whose artifacts are already in this
+// machine's Gradle cache (8.5.2) and whose wrapper distribution (Gradle 8.10.2)
+// is likewise cached, so the build does not depend on a fresh download to work.
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}
