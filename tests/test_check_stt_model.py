@@ -15,6 +15,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _ROOT / "scripts" / "check_stt_model.py"
 if str(_ROOT / "src") not in sys.path:

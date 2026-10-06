@@ -18,6 +18,10 @@ from claire.listening.transcript import (
 )
 from claire.listening.turn import TurnAssembler
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 PROVISIONAL = "book a table for two"
 AUTHORITATIVE = "book a table for four"
 

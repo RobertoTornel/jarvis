@@ -43,6 +43,10 @@ from claire.output.fish_tts import (
 )
 from claire.output.tts import _preprocess_for_speech
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 TIMEOUT = 5.0
 
 

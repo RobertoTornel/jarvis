@@ -30,6 +30,10 @@ import pytest
 import claire.system_prompt as sp
 from claire.memory import notes
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 LEGACY_PLAIN = sp._SYSTEM_PROMPT_TEMPLATE.format(name="Claire")
 LEGACY_FRIDAY = sp._SYSTEM_PROMPT_TEMPLATE.format(name="Friday")
 

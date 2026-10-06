@@ -39,6 +39,10 @@ from claire.output.fish_client import (
     redact,
 )
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 KEY_ONE = "sk-fish-AAAA1111BBBB2222"
 KEY_TWO = "sk-fish-CCCC3333DDDD4444"
 KEY_THREE = "sk-fish-EEEE5555FFFF6666"

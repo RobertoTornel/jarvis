@@ -22,6 +22,10 @@ from claire.listening.stt.base import (
     SttResult,
 )
 
+# The gate runs `pytest -m unit`. A test file without this marker is
+# silently DESELECTED, so it can pass forever without ever running.
+pytestmark = pytest.mark.unit
+
 SAMPLE_RATE = 16_000
 
 

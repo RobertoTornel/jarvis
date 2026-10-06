@@ -38,7 +38,7 @@ and are **not** part of the per-wave gate.
 | 0 | Scaffold, rename to `claire`, delete dictation + Windows/macOS, cloud policy | **complete** |
 | 1 | Voice: recognisers, transcript plumbing, Fish TTS, wake word | **complete** (1a and 1b committed) |
 | 2 | Memory: editable router file beside untouched RAG/graph | **complete** |
-| 3 | Scheduling: calendar, alternative slots, reminders, timers | not started |
+| 3 | Scheduling: calendar, alternative slots, reminders, timers | **complete** |
 | 4 | Senses: screenshot/OCR, GUI automation, vision routing, browser | not started |
 | 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | not started |
 | 6 | Platform: panel, keychain, backup/repair, systemd, Docker | not started |
@@ -324,3 +324,58 @@ Recorded so they are not silently re-litigated later.
     reminder that a tested seam is not the same as a wired feature. Verified by
     rendering the real prompt: 5 627 bytes without memory, 6 705 with the vault
     router present.
+
+## CORRECTION: the gate was silently skipping our own tests
+
+This is the most important entry in this file, because it invalidated a green
+result that had already been reported several times.
+
+The gate is `pytest tests/ -m unit`. A test file with **no unit marker is
+deselected, not failed**. Six of the seventeen test files added in Waves 1–3
+carried no marker, so **148 of our own tests had never once executed** under the
+gate — including `test_transcript_divergence.py`, the suite that guards the
+single most important behaviour in the voice pipeline (that the provisional
+recogniser can never authorise an action on its own). The suite reported green
+throughout, and green meant nothing about those files.
+
+Worse, the same hole swallowed the whole of Wave 3: 388 of the 426 schedule tests
+were deselected. The agents' own reports were accurate — the tests passed when run
+directly — which is exactly why the gap was invisible.
+
+Fixed by marking every file we added, and closed permanently by
+`tests/test_test_files_are_marked.py`, which records the 60 pre-existing upstream
+unmarked files and fails if any *new* unmarked file appears, naming it and saying
+what to do. A second assertion fails if a recorded file later gains a marker, so
+the record cannot rot in the quiet direction either.
+
+Corrected numbers: the gate now runs **2572 passed, 1 skipped** (1 620 deselected
+are upstream files plus the mutable integration/e2e/performance suites). The
+earlier figures in this file — 1 864, 1 941, 1 996 — were real but understated,
+and the increment between them understated how much was actually verified. The
+lesson recorded for future waves: after adding tests, prove the gate *ran* them
+(compare the deselected count), not merely that it was green.
+30. **Overlap is half-open, and touching ranges are not a conflict.** An event
+    ending 15:00 and one starting 15:00 do not collide; 15:59 does. Verified
+    directly: `ranges_overlap(900, 960, 960, 1020)` is `False`. This is worth a
+    numbered decision because the opposite choice is the intuitive one and it
+    silently refuses correct bookings.
+31. **A move excludes the event being moved from its own conflict check.**
+    Otherwise the event conflicts with itself and every legitimate move is
+    refused. Verified: moving the Dentist from 15:00 to 15:15 succeeds with zero
+    self-conflicts.
+32. **On conflict nothing is written, and the refusal carries the alternatives.**
+    Measured: a 60-minute "Haircut" at 15:30 against a 15:00 Dentist returns
+    `ok=False`, the message `'Haircut' clashes with 1 existing occurrence(s);
+    nothing was written`, and 360 ranked free slots — nearest first, starting at
+    16:00. The tool then speaks only the best 3, on the reasoning that more than
+    three is not a choice.
+33. **Proposals must fit inside the allowed window and horizon, checked over the
+    whole span.** A scan that checked only the start would propose a slot
+    overrunning the 21:00 window end, or a "nearest alternative" 400 days out,
+    which is not an alternative but a different plan.
+34. **Timers are not calendar events, and do not survive a restart.** Modelling a
+    25-minute timer as an appointment would be wrong, and claiming it persists
+    would be a lie about behaviour, so the code says so instead.
+35. **The unit gate must be proven to have run a new test, not assumed.** See the
+    correction above. Green is only meaningful once the deselected count shows the
+    new tests were collected.
