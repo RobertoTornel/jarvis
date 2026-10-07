@@ -29,7 +29,7 @@ Three surfaces:
 |---|---|---|
 | Daemon | `python -m claire` ([`src/claire/daemon.py`](../src/claire/daemon.py)), systemd user unit `claire` | none |
 | Web panel | `python -m claire.panel.server`, standalone stdlib server | `127.0.0.1:8765` ([`server.py:149`](../src/claire/panel/server.py)) |
-| Phone bridge | started *by the daemon*, not by `start.sh` | `127.0.0.1:8788` by default ([`bridge.py:193`](../src/claire/phone/bridge.py)), bound here to `100.104.1.69:8788` |
+| Phone bridge | started *by the daemon*, not by `start.sh` | `127.0.0.1:8788` by default ([`bridge.py:203`](../src/claire/phone/bridge.py)), bound here to `100.104.1.69:8788` |
 
 ### `./start.sh` is the single entry point
 
@@ -89,52 +89,53 @@ Two things about startup that are easy to get wrong:
 
 ---
 
-## 2. The test gate, and its most important trap
+## 2. The test gate, and why it is now honest
 
 ```
 cd /home/mana/Documents/jarvis_cloud
 .venv/bin/python -m pytest tests/ -m unit -q -p no:cacheprovider
 ```
 
-Current result on a clean tree at `1231655`: **3822 passed, 1 skipped, 1485 deselected, 0 failed**
-(about 157 s). The total collected is 5308.
+Current result: **5303 passed, 2 skipped, 25 deselected, 0 failed** (about 190 s). The total
+collected is 5330.
 
-### The trap: an unmarked test file is deselected, not failed
+### The trap that used to hide tests: an unmarked test is deselected, not failed
 
-`pytest -m unit` selects only tests carrying the `unit` marker. A test file with no marker is
-**deselected**: it still counts as "green", and its failures are invisible in the gate. This is not
-hypothetical.
+`pytest -m unit` selects only tests carrying the `unit` marker; a test carrying no marker is
+**deselected**. Deselection is silent — the gate prints a green summary and the test never runs.
+That trap had hidden 1,460 of the suite's 5,330 tests, and it is closed: those tests now run in the
+gate, so the only deselections left — **25** — are deliberate (`integration`, `e2e`, `performance`).
 
-Of the 1485 deselected tests:
+The guard is [`tests/test_test_files_are_marked.py`](../tests/test_test_files_are_marked.py). It
+no longer scans a file's *text* for a marker string. That whole-file heuristic passed a file with
+one marked test and a hundred unmarked ones, and it was hiding **356** unmarked tests inside
+otherwise-marked files — [`tests/test_voice_listener.py`](../tests/test_voice_listener.py) was the
+worst: one marker, **101 of its 104 tests deselected**, for the core voice path. The guard now runs
+`pytest tests/ --collect-only -m ""` in a subprocess with a small recording plugin and asks pytest
+itself for each collected test's own marker set, failing on any test that is neither `unit` nor
+deliberately `integration` / `e2e` / `performance` / `eval`. There is no file-level baseline and no
+cache to go stale. `PRE_EXISTING_UNMARKED` is **empty**, and
+`test_deselection_allowlist_stays_empty` fails if anyone re-adds to it. Mark a new test `unit`, or
+its honest non-unit marker; do not allowlist it.
 
-* **1117 are the entire contents of 56 files** whose text contains no `pytestmark` and no
-  `pytest.mark.unit` anywhere. Collecting just those files under `-m unit` collects nothing at all.
-  The list is pinned in `PRE_EXISTING_UNMARKED` in
-  [`tests/test_test_files_are_marked.py`](../tests/test_test_files_are_marked.py), and that list is
-  the baseline inherited from upstream. Do not add to it: mark the new file.
-* **Only 28 tests in the whole suite carry an explicit `integration`, `e2e` or `performance`
-  marker**, and some of those sit inside the 56 files above, so the two groups are not disjoint. The
-  point is that almost none of the 1485 is a deliberate "deferred suite" decision: the remainder are
-  tests that simply carry no marker, and they are not running anywhere by default.
-* The guard in `tests/test_test_files_are_marked.py` is looser than it looks: `_unmarked_files()`
-  skips a file as soon as the *strings* `pytest.mark.unit` or `pytestmark` appear anywhere in it
-  (`test_test_files_are_marked.py:36`). A file with one marked test and a hundred unmarked ones
-  passes the guard while those hundred are deselected. For example,
-  [`tests/test_voice_listener.py`](../tests/test_voice_listener.py) has exactly one
-  `@pytest.mark.unit` (line 2063) and **101 of its 104 tests are deselected**; the listener suite for
-  the core voice path is largely outside the gate.
+The newly visible tests had rotted while nothing ran them: two tests in
+[`tests/test_engine_planner_integration.py`](../tests/test_engine_planner_integration.py) failed
+because they drove their scenario through a tool that had been deleted, and were repaired by
+`1acc426` and `4722826`.
 
-**Verify with `-m ""` before believing a green gate:**
+The cost is real. The gate now takes about **190 s** and peaks near **6.8 GB RSS**, against roughly
+138 s and 1.75 GB before the change; run it alone on a memory-tight machine.
+
+Three tests carry both `unit` and `integration` — one in
+[`tests/test_piper_download_recovery.py`](../tests/test_piper_download_recovery.py) and two in
+[`tests/test_senses_browser.py`](../tests/test_senses_browser.py) — so they run in the gate despite
+their honest `integration` marker. That was already true before the marking pass.
+
+To see every test regardless of markers:
 
 ```
 .venv/bin/python -m pytest tests/ -m "" -q -p no:cacheprovider
 ```
-
-This has already masked real breakage. Two tests in
-[`tests/test_engine_planner_integration.py`](../tests/test_engine_planner_integration.py) were
-failing because they drove their scenario through a tool that had been deleted; the gate
-deselected the file, so the failures never surfaced until the file was run with `-m ""`. They were
-repaired by `1acc426` and `4722826`.
 
 ### The gate also never sees `evals/`
 
@@ -188,6 +189,13 @@ it.
 | `61a4842`, `bf1af83`, `2b01364`, `b57faa8` | **The planner/router overlap**: implemented, spec'd, reduced to a settle-only race, then reverted. The revert is the operative commit; see section 6. All four are deliberately left in history unscrubbed so the negative result stays auditable. |
 | `1acc426`, `4722826` | Planner-integration test repairs: one asserted a contract the extractor prefetch had invalidated, two drove their scenario through the deleted `getWeather` and now use `getTime`. |
 | `cd45a0b`, `1fee0d1`, `d055b49`, `a61965e`, `8fa6143`, `330ebc5`, `b870d1b`, `1231655` | **The Phase 5 documentation pass**: the weather removal and the extractor ceiling followed through the spokes, the 400-blame rule and the single-phase warm-up written down, and the hub and spoke symbol anchors re-based onto current source. |
+| `62c808c` | **The built distribution excludes the development trees.** `pyproject.toml` names the runtime roots and excludes `tests/`, `evals/` and the dev harnesses under `packages.find`; a new `MANIFEST.in` prunes the sdist, which had been leaking 201 `tests/test*.py` files from distutils' own default. sdist 369 -> 168 members, wheel unchanged at 139. Pinned offline by `tests/test_prod_packaging_excludes_dev_trees.py`. |
+| `c5fefe5` | **Retired seven dead config keys** (`location_city`, `stop_command_fuzzy_ratio`, `whisper_min_word_length`, `evaluator_enabled`, `evaluator_nudge_max`, `allowlist_bundles`, `active_profiles`), fixed a stale comment and a bogus `__all__` export in `notes.py`, corrected `recall_gate.py`'s module docstring and `summariser.spec.md`'s signature, and regenerated `examples/config.json`. |
+| `5bc78cb` | **Made 1,460 previously invisible tests visible to the unit gate** by classifying each as `unit` or its honest `integration` / `e2e` / `performance` marker, and repaired the tests that then failed. |
+| `83154d2` | **The marking guard detects partial marking per test** by asking pytest's own collection (`--collect-only -m ""` with a recording plugin), replacing a whole-file substring match that hid 356 tests inside otherwise-marked files (101 of 104 in `test_voice_listener.py`). `PRE_EXISTING_UNMARKED` is now empty. |
+| `4b62a82` | **The Settings window can represent the shipped `fish` TTS default.** The `tts_engine` dropdown had offered only Piper and Chatterbox while `config.py` defaults the engine to `fish`; Fish is now the first choice. Removed the strict xfail that had recorded the bug and left the per-field default-in-choices test asserting it. |
+| `d49f9d5` | Dropped the retired keys from `docs/CONFIGURATION.md` (the `whisper_min_word_length` "vestigial key" paragraph) and from `src/desktop_app/settings_window.spec.md` (`active_profiles`, `allowlist_bundles`, `stop_command_fuzzy_ratio`, `whisper_min_word_length`). |
+| this revision | Refreshed this handover: the gate section and its numbers, §6.2, §6.3, §6.4, §6.11 and the delivery table. |
 
 ---
 
@@ -250,6 +258,9 @@ prose page is the thing to fix.
 ## 6. What is still open
 
 This is the section to read twice. Items are ordered roughly by how much they cost to get wrong.
+A few subsections record work that has since closed — the unit gate (6.2), the retired
+`location_city` key (6.4) and the two owner follow-ups (6.11) — because the closing facts still
+matter to whoever reads this next.
 
 ### 6.1 The planner/router overlap is disproven, not pending a retry
 
@@ -284,38 +295,55 @@ catalogue.
 **Do not re-attempt the overlap.** The productive direction is the backend's capacity, not the
 ordering of the two calls. The four commits are left in history on purpose.
 
-### 6.2 The unit gate hides 1485 tests, and some of them are stale
+### 6.2 The unit gate is no longer a hole (resolved)
 
-See section 2 for the mechanics. Two consequences for whoever continues:
+See section 2. The deselection trap is closed: 1,460 formerly invisible tests run in the gate, the
+25 remaining deselections are all deliberate, `PRE_EXISTING_UNMARKED` is empty, and the guard now
+detects partial marking per test through pytest's own collection rather than a file-level substring
+match. What remains is cost, not a hidden hole: about 190 s and ~6.8 GB peak RSS per run, so it is
+not something to run alongside other heavy work. Fixing the gate exposed rot as well as missing
+coverage — some of the newly visible tests were stale — so when a test is added, give it an honest
+marker rather than shrinking what the gate runs.
 
-* Fixing the gate is a real task. The two options are to mark the 56 pinned files (and the unmarked
-  tests inside partially marked files) and repair whatever then fails, or to make the gate explicit
-  about what it excludes. The gate as it stands is not proof the suite passes.
-* Some of the hidden tests are genuinely stale. `4722826` and `1acc426` repaired two files that
-  were failing for reasons unrelated to what they asserted; expect more, since nothing has been
-  running them.
+### 6.3 Doc/code contradictions deliberately left
 
-### 6.3 Doc/code contradictions reported but not fixed
-
-These live in files the documentation pass could not touch (they sit under `src/`). Each was
-verified against the current source; these are the current line numbers.
+These live in files this pass did not own (they sit under `src/`). Each was verified against the
+current source; these are the current line numbers. They are known and intentionally untouched,
+not fresh findings.
 
 | Location | The disagreement |
 |---|---|
 | [`src/claire/output/tts.spec.md`](../src/claire/output/tts.spec.md) lines 3-5 | Claims synthesis "runs locally" and that "neither backend sends user text or audio to a cloud synthesis service". Fish Audio is the default engine and is cloud. The real policy is stated in [`ARCHITECTURE.md`](ARCHITECTURE.md) and `AGENTS.md`: synthesis is the cloud exception, Piper and Chatterbox are the offline fallbacks. |
 | [`src/claire/phone/bridge.spec.md`](../src/claire/phone/bridge.spec.md) line 186 | Says `DEFAULT_PORT == 8765`. Its own section 2.1 (line 51) and the code say `8788` ([`bridge.py:203`](../src/claire/phone/bridge.py)). The SSH example at line 200 repeats 8765. |
 | [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md) line 43 and line 123 | Line 43's `warm_up` row and line 123's "two-phase probe" both describe the removed two-phase warm-up. `b484518` replaced it with a single-token chat completion, because the `GET /models` gate always timed out. Line 123 is the explicit "two-phase" statement; line 43 is the API-table description that carries the same stale shape. Neither names the 180/300/60 ceilings that `9e5714f` replaced either. |
-| [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md) line 67 | Gives `llm_provider` a default of `"ollama"`. The code default is `"openai_compatible"` ([`config.py:570`](../src/claire/config.py), also `:894`). |
-| [`src/claire/reply/engine.py`](../src/claire/reply/engine.py) line 1974 | Still names the removed `getWeather` in a comment. |
+| [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md) line 67 | Gives `llm_provider` a default of `"ollama"`. The code default is `"openai_compatible"` ([`config.py:554`](../src/claire/config.py), also `:862`). |
 
-### 6.4 `location_city` is a dead config key
+Two other candidates reported as drift turned out to be **already correct**:
 
-[`config.py:321`](../src/claire/config.py) declares `location_city`, `:787` defaults it to `""`,
-and `:1109`/`:1281` accept and merge it. Its only consumer was the `getWeather` tool that `82605e5`
-removed, and a grep finds no other reader. The live `~/.config/claire/config.json` still sets it to
-`"Lisbon"`, which makes the deadness concrete: it is accepted, defaulted and merged, and nothing
-reads it. Either give it a consumer or retire it (retiring needs a config migration, and note the
-hard rule against deleting files: this is a key, not a file).
+* [`src/claire/memory/graph.spec.md`](../src/claire/memory/graph.spec.md) line 133 heads the section
+  "Auto-Merge (Future — requires LLM integration)". It does: `MERGE_THRESHOLD` (`graph.py:90`) is
+  read by no code, so the spec accurately describes unimplemented future work.
+* [`docs/MEMORY.md`](MEMORY.md) already documents the `vault_dir` key (lines 47 and 145), so it
+  needed no correction.
+
+The owner-approved cleanup (`c5fefe5`) did correct `src/` prose that really was stale:
+[`src/claire/reply/engine.py`](../src/claire/reply/engine.py) no longer names the removed
+`getWeather`; [`src/claire/memory/recall_gate.py`](../src/claire/memory/recall_gate.py)'s module
+docstring now says "asymmetric keyword coverage" rather than the symmetric Jaccard it never
+computed; and
+[`src/claire/memory/summariser.spec.md`](../src/claire/memory/summariser.spec.md)'s signature
+description matches the code. Two specs cite the removed tool on purpose, as historical measurement
+context, and stay as they are:
+[`src/claire/reply/reply.spec.md`](../src/claire/reply/reply.spec.md) line 122 and
+[`src/claire/reply/planner.spec.md`](../src/claire/reply/planner.spec.md) lines 231-233.
+
+### 6.4 `location_city` was a dead config key (resolved)
+
+`location_city` was declared, defaulted and merged but read by no code — its only consumer was the
+`getWeather` tool that `82605e5` removed. It has been **retired** along with six other dead keys
+(`c5fefe5`), so the schema no longer carries it. The live `~/.config/claire/config.json` still has
+the old `"Lisbon"` value as an unknown key, where it is inert; config load preserves unknown keys by
+design, and no migration is needed.
 
 ### 6.5 `get_location_info()` is a live landmine
 
@@ -369,17 +397,28 @@ The owner's model choice (`cmd/deepseek/deepseek-v4.1-flash` through the local O
 is not to be changed, and `fast_model` is intentionally left empty so the tier resolution falls
 back as designed. Do not "helpfully" fill it in.
 
-### 6.11 Two owner-approved follow-ups are still outstanding
+### 6.11 The two owner-approved follow-ups are done
 
-* **The production deployment must not ship tests.** `tests/`, `evals/` and the development
-  harnesses should be excluded from what `start.sh` and the systemd unit install onto the running
-  machine, while the suites stay in the repository. This is an owner decision, not yet implemented.
-* **A candidate list of "things we don't care about"** was requested: dead code, orphaned config,
-  leftover non-Linux paths, stale modules, for the owner to approve before anything is removed.
-  Nothing has been removed. A first concrete entry already exists in this tree: the compiled
-  leftovers `src/claire/tools/builtin/__pycache__/weather.cpython-312.pyc` and the two
-  `tests/tools/builtin/__pycache__/test_weather*.pyc` files survive the `getWeather` removal, while
-  the source and specs are gone. The hard rule stands: describe, do not delete.
+* **The production deployment no longer ships development trees.** `pyproject.toml` names the
+  runtime roots positively and the eight development trees negatively under
+  `[tool.setuptools.packages.find]`, and a new `MANIFEST.in` prunes the same trees from the sdist.
+  The wheel was already clean (139 members, no development files). The sdist was the real leak:
+  distutils adds `tests/test*.py` to every source distribution from `_add_defaults_optional()`,
+  which `packages.find` cannot override, so it carried **201** files under `tests/`; with
+  `MANIFEST.in` it drops from 369 members to **168** with none. The suites stay in the repository and
+  runnable from a checkout; nothing was deleted. `deploy/claire.service` needed no edit because it
+  runs the checkout, not an installed copy. `62c808c`; pinned offline by
+  [`tests/test_prod_packaging_excludes_dev_trees.py`](../tests/test_prod_packaging_excludes_dev_trees.py).
+* **The "things we don't care about" list was produced, approved and executed.** Seven dead config
+  keys were retired — `location_city`, `stop_command_fuzzy_ratio`, `whisper_min_word_length`,
+  `evaluator_enabled`, `evaluator_nudge_max`, `allowlist_bundles`, `active_profiles` — together with
+  a stale comment, a bogus `__all__` export in `notes.py`, and stale `src/` spec/doc text, in
+  `c5fefe5`. It is described in the delivery table (section 3); this is no longer open work.
+
+One leftover from that sweep is still on disk by design: the compiled artifacts
+`src/claire/tools/builtin/__pycache__/weather.cpython-312.pyc` and the two
+`tests/tools/builtin/__pycache__/test_weather*.pyc` files survive the `getWeather` removal while
+their sources and specs are gone. The hard rule stands — describe, do not delete.
 
 ### 6.12 Smaller, verified loose ends
 
