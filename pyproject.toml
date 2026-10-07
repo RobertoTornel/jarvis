@@ -34,6 +34,21 @@ version = { attr = "claire._version.VERSION" }
 [tool.setuptools]
 package-dir = { "" = "src" }
 
+# WHAT SHIPS IN THE DISTRIBUTION, STATED TWICE ON PURPOSE.
+#
+# `include` names the runtime packages positively; `exclude` names the
+# development trees negatively.  The negative list is what keeps the guarantee
+# true under a change the positive list cannot see: a stray `__init__.py`
+# dropped into `tests/` or `evals/`, or a future relaxation of `include` (to
+# `["*"]`, say) during a package rename, would otherwise make a development tree
+# discoverable as a package and ship it in the wheel.
+#
+# These two keys govern PACKAGE DISCOVERY, which is the wheel's file set.  An
+# sdist's file set is governed separately by `MANIFEST.in`, because setuptools
+# adds `tests/test*.py` to every sdist from a legacy default that is invisible
+# to `packages.find` (see docs/subsystems/deployment.md).  Both halves are
+# pinned by tests/test_prod_packaging_excludes_dev_trees.py.
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["claire*", "desktop_app*"]
+exclude = ["tests*", "test*", "evals*", "eval*", "scripts*", "examples*", "deploy*", "docs*", "templates*", "android*"]
