@@ -290,11 +290,14 @@ class TestOpenAICompatibleChat:
         assert sent["tools"][0]["function"]["name"] == "x"
 
     @patch("claire.llm.requests.post")
-    def test_raises_tools_not_supported_on_400_with_tools(self, mock_post):
+    def test_raises_tools_not_supported_when_body_blames_tools(self, mock_post):
+        """Only a 400 whose body actually names tools may downgrade the
+        session to text-based tool calling."""
         import requests
         from claire.llm import OpenAICompatibleBackend, ToolsNotSupportedError
 
         http_resp = MagicMock(status_code=400)
+        http_resp.text = '{"error": {"message": "this model does not support tools"}}'
         err = requests.exceptions.HTTPError(response=http_resp)
         mock_post.return_value = _make_response(raise_http=err)
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
@@ -305,6 +308,54 @@ class TestOpenAICompatibleChat:
                 [{"role": "user", "content": "hi"}],
                 tools=[{"type": "function", "function": {"name": "x"}}],
             )
+
+    @patch("claire.llm.requests.post")
+    def test_400_not_about_tools_does_not_downgrade(self, mock_post):
+        """Regression guard: every HTTP 400 used to be read as "tools not
+        supported", which permanently downgraded the session to text tools,
+        rebuilt a larger system prompt on every later turn and burned a
+        retry. A 400 that never mentions tools must stay a plain failure."""
+        import requests
+        from claire.llm import OpenAICompatibleBackend, ToolsNotSupportedError
+
+        http_resp = MagicMock(status_code=400)
+        http_resp.text = '{"error": {"message": "invalid request error: unknown model"}}'
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
+
+        try:
+            result = backend.chat(
+                "any",
+                [{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "x"}}],
+            )
+        except ToolsNotSupportedError:
+            pytest.fail("a non-tools 400 must not downgrade the session")
+        assert result is None
+
+    @patch("claire.llm.requests.post")
+    def test_400_with_empty_body_does_not_downgrade(self, mock_post):
+        """No body means no evidence: stay with native tools."""
+        import requests
+        from claire.llm import OpenAICompatibleBackend, ToolsNotSupportedError
+
+        http_resp = MagicMock(status_code=400)
+        http_resp.text = ""
+        http_resp.content = b""
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
+
+        try:
+            result = backend.chat(
+                "any",
+                [{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "x"}}],
+            )
+        except ToolsNotSupportedError:
+            pytest.fail("a bare 400 must not downgrade the session")
+        assert result is None
 
     @patch("claire.llm.requests.post")
     def test_returns_none_on_400_without_tools(self, mock_post):
@@ -569,110 +620,65 @@ class TestOpenAICompatibleListModels:
 
 
 # ---------------------------------------------------------------------------
-# warm_up() — two-phase probe: reachability + inference
+# warm_up() — the inference request IS the probe
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
 class TestOpenAICompatibleWarmUp:
-    """``warm_up`` is a two-phase probe for OpenAI-compatible servers: it
-    first checks reachability via ``GET /models``, then sends a minimal
-    chat completion (``max_tokens=1``) to force the runtime to load the
-    model into memory. A failure in either phase surfaces ``False`` so
-    the listener can warn the user early instead of the first real
-    request paying cold-start latency."""
+    """``warm_up`` sends a minimal chat completion (``max_tokens=1``) to
+    force the runtime to load the model into memory, and reports that
+    request's outcome.
 
-    @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_accepts_keep_alive_kwarg_and_ignores_it(self, mock_get, mock_post):
-        """The shared ``warm_up_chat_model`` helper always passes
-        ``keep_alive`` (Ollama parity). The OpenAI-compatible backend must
-        accept the kwarg; before the fix it raised ``TypeError`` and every
-        warmup silently failed."""
+    Regression guard: an earlier revision gated the inference behind a
+    ``GET /models`` reachability check capped at ``min(timeout*0.25, 5)`` s.
+    Against a gateway that proxies a large catalogue, listing models costs
+    more than the cap (measured: 9508 entries, 4.5 MB, 5.0-5.5 s just to
+    response headers), so the gate expired on every call, ``warm_up``
+    returned False, and the inference that actually warms the model never
+    ran. These tests pin that the catalogue is not consulted at all and
+    that the inference alone decides the result.
+    """
+
+    @staticmethod
+    def _backend():
         from claire.llm import OpenAICompatibleBackend
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
+        return OpenAICompatibleBackend("http://localhost:1234/v1")
 
+    @staticmethod
+    def _ok_post(mock_post):
         post_resp = MagicMock()
         post_resp.__enter__.return_value.ok = True
         mock_post.return_value = post_resp
+        return post_resp
 
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        assert backend.warm_up("gpt-4o-mini", keep_alive="1m") is True
-
-        _, kwargs = mock_post.call_args
-        assert "keep_alive" not in kwargs["json"]
-
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warm_up_chat_model_helper_works_on_openai_compatible(
-        self, mock_get, mock_post
-    ):
-        """The shared warmup helper used by the listener and intent judge
-        must not fail on OpenAI-compatible providers — the exact regression
-        reported in review (TypeError swallowed inside
-        ``warm_up_chat_model``)."""
-        from claire.listening.intent_judge import warm_up_chat_model
-
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        cfg = MagicMock()
-        cfg.llm_provider = "openai_compatible"
-        cfg.llm_base_url = "http://localhost:1234/v1"
-        cfg.llm_api_key = None
-        cfg.fast_model = "gpt-4o-mini"
-        cfg.low_power_mode = False
-
-        assert warm_up_chat_model(cfg, "gpt-4o-mini", timeout=10.0) is True
-
-    # ── success paths ─────────────────────────────────────────────────
-
     @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_succeeds_when_both_phases_pass(self, mock_get, mock_post):
-        """GET /models succeeds and POST /chat/completions returns 200."""
-        from claire.llm import OpenAICompatibleBackend
+    def test_warmup_never_lists_models(self, mock_post, mock_get):
+        """The catalogue endpoint must not be touched: consulting it is
+        exactly what used to turn every warmup into a false negative."""
+        self._ok_post(mock_post)
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
+        assert self._backend().warm_up("gpt-4o-mini") is True
 
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        assert backend.warm_up("gpt-4o-mini") is True
+        assert not mock_get.called
         mock_post.assert_called_once()
 
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warmup_inference_payload_is_minimal(self, mock_get, mock_post):
+    @patch("claire.llm.requests.post")
+    def test_warmup_succeeds_on_inference_ok(self, mock_post, mock_get):
+        self._ok_post(mock_post)
+
+        assert self._backend().warm_up("gpt-4o-mini") is True
+
+    @patch("claire.llm.requests.get")
+    @patch("claire.llm.requests.post")
+    def test_warmup_inference_payload_is_minimal(self, mock_post, mock_get):
         """The inference request uses max_tokens=1 and a short message."""
-        from claire.llm import OpenAICompatibleBackend
+        self._ok_post(mock_post)
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        backend.warm_up("gpt-4o-mini")
+        self._backend().warm_up("gpt-4o-mini")
 
         _, kwargs = mock_post.call_args
         payload = kwargs["json"]
@@ -681,225 +687,100 @@ class TestOpenAICompatibleWarmUp:
         assert payload["max_tokens"] == 1
         assert payload["stream"] is False
 
-    # ── failure in phase 1 (reachability) ─────────────────────────────
-
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warmup_fails_when_server_unreachable(self, mock_get, mock_post):
-        """GET fails — phase 2 (POST) should never be attempted."""
-        from claire.llm import OpenAICompatibleBackend
-
-        mock_get.side_effect = RuntimeError("connection refused")
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-
-        assert backend.warm_up("gpt-4o-mini") is False
-        mock_post.assert_not_called()
-
     @patch("claire.llm.requests.post")
+    def test_warmup_accepts_keep_alive_kwarg_and_ignores_it(self, mock_post, mock_get):
+        """The shared ``warm_up_chat_model`` helper always passes
+        ``keep_alive`` (Ollama parity). The OpenAI-compatible backend must
+        accept the kwarg; before that fix it raised ``TypeError`` and every
+        warmup silently failed."""
+        self._ok_post(mock_post)
+
+        assert self._backend().warm_up("gpt-4o-mini", keep_alive="1m") is True
+
+        _, kwargs = mock_post.call_args
+        assert "keep_alive" not in kwargs["json"]
+
     @patch("claire.llm.requests.get")
-    def test_warmup_fails_when_model_list_empty(self, mock_get, mock_post):
-        """An empty list means the server is up but no model is loaded —
-        the first chat call would fail, so warmup must report ``False``
-        without attempting inference."""
-        from claire.llm import OpenAICompatibleBackend
-
-        resp = MagicMock()
-        resp.json.return_value = {"data": []}
-        resp.raise_for_status = MagicMock()
-        mock_get.return_value = resp
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-
-        assert backend.warm_up("gpt-4o-mini") is False
-        mock_post.assert_not_called()
-
     @patch("claire.llm.requests.post")
+    def test_warmup_gives_the_whole_budget_to_the_inference(self, mock_post, mock_get):
+        """No slice of the budget is reserved for a catalogue listing."""
+        self._ok_post(mock_post)
+
+        self._backend().warm_up("gpt-4o-mini", timeout_sec=60.0)
+        assert mock_post.call_args[1]["timeout"] == 60.0
+
+        self._backend().warm_up("gpt-4o-mini", timeout_sec=3.0)
+        assert mock_post.call_args[1]["timeout"] == 3.0
+
     @patch("claire.llm.requests.get")
-    def test_warmup_fails_on_get_http_error(self, mock_get, mock_post):
-        """GET /models raises — phase 2 not attempted."""
-        from claire.llm import OpenAICompatibleBackend
-
-        resp = MagicMock()
-        resp.raise_for_status.side_effect = RuntimeError("500 server error")
-        mock_get.return_value = resp
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-
-        assert backend.warm_up("gpt-4o-mini") is False
-        mock_post.assert_not_called()
-
-    # ── failure in phase 2 (inference) ────────────────────────────────
-
     @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_fails_when_inference_returns_non_200(self, mock_get, mock_post):
-        """GET succeeds but POST returns a non-200 status."""
-        from claire.llm import OpenAICompatibleBackend
-
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
+    def test_warmup_returns_false_when_inference_not_ok(self, mock_post, mock_get):
         post_resp = MagicMock()
         post_resp.__enter__.return_value.ok = False
         mock_post.return_value = post_resp
 
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        assert backend.warm_up("gpt-4o-mini") is False
+        assert self._backend().warm_up("gpt-4o-mini") is False
 
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warmup_fails_when_inference_raises(self, mock_get, mock_post):
-        """GET succeeds but POST raises an exception."""
-        from claire.llm import OpenAICompatibleBackend
+    @patch("claire.llm.requests.post")
+    def test_warmup_returns_false_when_server_unreachable(self, mock_post, mock_get):
+        """A refused connection fails immediately on the inference request,
+        so no separate reachability probe is needed to detect it."""
+        import requests as _requests
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
+        mock_post.side_effect = _requests.exceptions.ConnectionError("refused")
 
+        assert self._backend().warm_up("gpt-4o-mini") is False
+
+    @patch("claire.llm.requests.get")
+    @patch("claire.llm.requests.post")
+    def test_warmup_returns_false_on_unexpected_error(self, mock_post, mock_get):
         mock_post.side_effect = RuntimeError("model load failed")
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        assert backend.warm_up("gpt-4o-mini") is False
 
-    # ── timeout budget calculation ─────────────────────────────────────
+        assert self._backend().warm_up("gpt-4o-mini") is False
 
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warmup_timeout_split_at_60s_default(self, mock_get, mock_post):
-        """At default 60s, GET gets 5s (capped) and POST gets 55s."""
+    @patch("claire.llm.requests.post")
+    def test_warmup_sends_auth_header_when_key_set(self, mock_post, mock_get):
         from claire.llm import OpenAICompatibleBackend
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
+        self._ok_post(mock_post)
 
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
+        OpenAICompatibleBackend("http://localhost:1234/v1", api_key="sk-test").warm_up(
+            "gpt-4o-mini"
+        )
 
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        backend.warm_up("gpt-4o-mini", timeout_sec=60.0)
+        assert mock_post.call_args[1]["headers"]["Authorization"] == "Bearer sk-test"
 
-        get_kwargs = mock_get.call_args[1]
-        post_kwargs = mock_post.call_args[1]
-        assert get_kwargs["timeout"] == 5.0
-        assert post_kwargs["timeout"] == 55.0
-
-    @patch("claire.llm.requests.post")
     @patch("claire.llm.requests.get")
-    def test_warmup_timeout_split_when_very_small(self, mock_get, mock_post):
-        """Below 2s, both phases floor to 1s each."""
-        from claire.llm import OpenAICompatibleBackend
-
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        backend.warm_up("gpt-4o-mini", timeout_sec=1.0)
-
-        get_kwargs = mock_get.call_args[1]
-        post_kwargs = mock_post.call_args[1]
-        assert get_kwargs["timeout"] == 1.0
-        assert post_kwargs["timeout"] == 0.1
-
     @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_timeout_split_at_intermediate(self, mock_get, mock_post):
-        """At 20s, GET has 5s (25%→5 capped) and POST has 15s."""
-        from claire.llm import OpenAICompatibleBackend
+    def test_warmup_omits_auth_header_when_no_key(self, mock_post, mock_get):
+        self._ok_post(mock_post)
 
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
+        self._backend().warm_up("gpt-4o-mini")
 
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        backend.warm_up("gpt-4o-mini", timeout_sec=20.0)
-
-        get_kwargs = mock_get.call_args[1]
-        post_kwargs = mock_post.call_args[1]
-        assert get_kwargs["timeout"] == 5.0
-        assert post_kwargs["timeout"] == 15.0
-
-    # ── warmup POST header behaviour ──────────────────────────────────
-
-    @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_sends_auth_header_when_api_key_set(self, mock_get, mock_post):
-        """When an API key is configured, the inference POST carries it."""
-        from claire.llm import OpenAICompatibleBackend
-
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1", api_key="sk-test")
-        backend.warm_up("gpt-4o-mini")
-
-        get_headers = mock_get.call_args[1]["headers"]
-        assert get_headers["Authorization"] == "Bearer sk-test"
-
-        post_headers = mock_post.call_args[1]["headers"]
-        assert post_headers["Authorization"] == "Bearer sk-test"
-
-    @patch("claire.llm.requests.post")
-    @patch("claire.llm.requests.get")
-    def test_warmup_omits_auth_header_when_no_key(self, mock_get, mock_post):
-        """When no API key is set, the inference POST has no Auth header."""
-        from claire.llm import OpenAICompatibleBackend
-
-        get_resp = MagicMock()
-        get_resp.json.return_value = {"data": [{"id": "gpt-4o-mini"}]}
-        get_resp.raise_for_status = MagicMock()
-        mock_get.return_value = get_resp
-
-        post_resp = MagicMock()
-        post_resp.__enter__.return_value.ok = True
-        mock_post.return_value = post_resp
-
-        backend = OpenAICompatibleBackend("http://localhost:1234/v1")
-        backend.warm_up("gpt-4o-mini")
-
-        get_headers = mock_get.call_args[1]["headers"]
-        assert "Authorization" not in get_headers
-
-        post_headers = mock_post.call_args[1]["headers"]
-        assert "Authorization" not in post_headers
+        assert "Authorization" not in mock_post.call_args[1]["headers"]
 
     # ── guard cases ───────────────────────────────────────────────────
 
-    @patch("claire.llm.requests.get")
-    def test_warmup_fails_for_empty_base_url(self, mock_get):
+    @patch("claire.llm.requests.post")
+    def test_warmup_fails_for_empty_base_url(self, mock_post):
         from claire.llm import OpenAICompatibleBackend
 
-        backend = OpenAICompatibleBackend("")
-        assert backend.warm_up("gpt-4o-mini") is False
-        assert not mock_get.called
+        assert OpenAICompatibleBackend("").warm_up("gpt-4o-mini") is False
+        assert not mock_post.called
 
-    @patch("claire.llm.requests.get")
-    def test_warmup_fails_for_empty_model(self, mock_get):
+    @patch("claire.llm.requests.post")
+    def test_warmup_fails_for_empty_model(self, mock_post):
         from claire.llm import OpenAICompatibleBackend
 
         backend = OpenAICompatibleBackend("http://localhost:1234/v1")
+
         assert backend.warm_up("") is False
         assert backend.warm_up(None) is False
-        assert not mock_get.called
+        assert not mock_post.called
+
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,7 @@ import json
 import requests
 
 from ..debug import debug_log
-from .errors import is_timeout_error
+from .errors import indicates_tools_unsupported, is_timeout_error
 from .backend import LLMBackend, ToolsNotSupportedError, strip_nonstandard_message_fields
 
 
@@ -332,13 +332,28 @@ class OpenAICompatibleBackend(LLMBackend):
             print("  ❌ LLM connection error", flush=True)
             raise
         except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 400 and tools:
+            if (
+                e.response is not None
+                and e.response.status_code == 400
+                and tools
+                and indicates_tools_unsupported(e.response)
+            ):
                 raise ToolsNotSupportedError(
                     f"Model {chat_model!r} returned HTTP 400 — native tools API not supported"
                 )
             # ``str(e)`` includes "for url: <full URL>" — keep the status code
             # for diagnosis and drop the URL.
             status = e.response.status_code if e.response is not None else "?"
+            if status == 400 and tools:
+                # A 400 that is not about tools must NOT downgrade the session
+                # to text tools: that rebuilds a larger system prompt on every
+                # later turn and the retry fails the same way. Report it as the
+                # failed turn it is.
+                debug_log(
+                    "HTTP 400 with tools attached but the body does not blame "
+                    "tools — not downgrading to text-based tool calling",
+                    "llm",
+                )
             print(f"  ❌ LLM HTTP error (status {status})", flush=True)
             return None
         except Exception as e:
@@ -404,16 +419,23 @@ class OpenAICompatibleBackend(LLMBackend):
     ) -> bool:
         """Warm up the model by sending a minimal inference request.
 
-        Phase 1 (reachability check): calls ``GET /models`` to confirm
-        the server is up and has models loaded. Fast (capped at 25 % of
-        the budget, max 5 s).
+        The inference *is* the probe. An earlier revision gated it behind a
+        ``GET /models`` reachability check capped at ``min(timeout*0.25, 5)``
+        s, on the assumption that listing models is cheap. It is not, on
+        every gateway that proxies a large catalogue: measured against the
+        local OmniRoute gateway, ``/v1/models`` returns 9508 model entries
+        (4.5 MB) and takes 5.0-5.5 s *to response headers*, because the
+        gateway materialises the whole catalogue before answering. The cap
+        therefore expired on every call, ``warm_up`` returned False, and the
+        model-loading inference below never ran — a permanent false negative
+        that the listener reported to the user as ``warmup probe failed``
+        for a model that was perfectly healthy.
 
-        Phase 2 (model loading): sends a single-token chat completion
-        (``max_tokens=1``) so the runtime actually loads the model into
-        memory. Without this, an OpenAI-compatible server may leave the
-        model cold until the first real request, incurring latency on the
-        user's first query. This mirrors what ``OllamaBackend.warm_up()``
-        does.
+        Reachability is instead established by the inference request itself:
+        a refused connection raises immediately, a wrong model name or an
+        unsupported request returns an error status, and a hanging server is
+        bounded by ``timeout_sec``. This is strictly more accurate than the
+        catalogue gate and costs one fewer round trip.
 
         ``keep_alive`` is accepted for signature parity with
         ``OllamaBackend.warm_up`` but ignored: OpenAI-compatible servers
@@ -426,13 +448,6 @@ class OpenAICompatibleBackend(LLMBackend):
         if not self._base_url or not model:
             return False
 
-        # Phase 1: reachability probe (fast).
-        list_to = min(max(timeout_sec * 0.25, 1.0), 5.0)
-        if not self.list_models(timeout_sec=list_to):
-            return False
-
-        # Phase 2: minimal inference to force model loading.
-        remaining = max(0.1, timeout_sec - list_to)
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -444,7 +459,7 @@ class OpenAICompatibleBackend(LLMBackend):
                 f"{self._base_url}/chat/completions",
                 json=payload,
                 headers=self._headers(),
-                timeout=remaining,
+                timeout=timeout_sec,
             ) as resp:
                 return resp.ok
         except Exception:

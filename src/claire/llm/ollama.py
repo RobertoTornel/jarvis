@@ -13,7 +13,7 @@ import json
 import requests
 
 from ..debug import debug_log
-from .errors import is_timeout_error
+from .errors import indicates_tools_unsupported, is_timeout_error
 from .backend import LLMBackend, ToolsNotSupportedError, strip_nonstandard_message_fields
 
 
@@ -308,11 +308,25 @@ class OllamaBackend(LLMBackend):
             print("  ❌ LLM connection error", flush=True)
             raise
         except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 400 and tools:
+            if (
+                e.response is not None
+                and e.response.status_code == 400
+                and tools
+                and indicates_tools_unsupported(e.response)
+            ):
                 raise ToolsNotSupportedError(
                     f"Model {chat_model!r} returned HTTP 400 — native tools API not supported"
                 )
             status = e.response.status_code if e.response is not None else "?"
+            if status == 400 and tools:
+                # See errors.indicates_tools_unsupported: a bare 400 is not
+                # evidence that tools are unsupported, and downgrading on it
+                # is permanent for the session.
+                debug_log(
+                    "HTTP 400 with tools attached but the body does not blame "
+                    "tools — not downgrading to text-based tool calling",
+                    "llm",
+                )
             print(f"  ❌ LLM HTTP error (status {status})", flush=True)
             return None
         except Exception as e:

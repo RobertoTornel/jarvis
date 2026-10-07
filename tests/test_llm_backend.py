@@ -130,11 +130,16 @@ class TestOllamaBackendChat:
         assert result == payload
 
     @patch("claire.llm.requests.post")
-    def test_raises_tools_not_supported_on_http_400_with_tools(self, mock_post):
+    def test_raises_tools_not_supported_when_body_blames_tools(self, mock_post):
+        """Ollama says exactly this when the loaded model has no native
+        tool-calling support."""
         import requests
         from claire.llm import OllamaBackend, ToolsNotSupportedError
 
         http_resp = MagicMock(status_code=400)
+        http_resp.text = (
+            '{"error":"registry.ollama.ai/library/small-model does not support tools"}'
+        )
         err = requests.exceptions.HTTPError(response=http_resp)
         mock_post.return_value = _make_response(raise_http=err)
         backend = OllamaBackend("http://localhost:11434")
@@ -145,6 +150,29 @@ class TestOllamaBackendChat:
                 [{"role": "user", "content": "hi"}],
                 tools=[{"type": "function", "function": {"name": "x"}}],
             )
+
+    @patch("claire.llm.requests.post")
+    def test_400_not_about_tools_does_not_downgrade(self, mock_post):
+        """A 400 that never mentions tools is an ordinary failure, not
+        evidence that the model cannot call tools natively."""
+        import requests
+        from claire.llm import OllamaBackend, ToolsNotSupportedError
+
+        http_resp = MagicMock(status_code=400)
+        http_resp.text = '{"error":"invalid request error"}'
+        err = requests.exceptions.HTTPError(response=http_resp)
+        mock_post.return_value = _make_response(raise_http=err)
+        backend = OllamaBackend("http://localhost:11434")
+
+        try:
+            result = backend.chat(
+                "small-model",
+                [{"role": "user", "content": "hi"}],
+                tools=[{"type": "function", "function": {"name": "x"}}],
+            )
+        except ToolsNotSupportedError:
+            pytest.fail("a non-tools 400 must not downgrade the session")
+        assert result is None
 
     @patch("claire.llm.requests.post")
     def test_translates_max_tokens_to_num_predict(self, mock_post):
