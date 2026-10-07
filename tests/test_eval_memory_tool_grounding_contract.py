@@ -29,8 +29,13 @@ def load_case(monkeypatch, case):
 
 
 def tool_turn(engine, cfg, text, city, result):
-    args = {} if 'tomorrow Claire' in text else {'location': city}
-    engine.run_tool_with_retries(db=None, cfg=cfg, tool_name='getTime', tool_args=args)
+    # Every grounding case here supplies the place through memory, so the
+    # synthetic call always carries it. The no-location form (getTime
+    # auto-deriving the user's own zone) is a different path and is covered
+    # by the router and tool-selection cases, not by these.
+    engine.run_tool_with_retries(
+        db=None, cfg=cfg, tool_name='getTime', tool_args={'location': city}
+    )
     return result
 
 
