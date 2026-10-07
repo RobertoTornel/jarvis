@@ -291,7 +291,13 @@ Turn 4: LLM → {content: "Here's a comprehensive comparison of the iPhone 15 mo
 ### Configuration and Defaults
 - Timeouts (seconds):
 
-  - `llm_tools_timeout_sec` (enrichment extraction)
+  - `llm_tools_timeout_sec` (tool router, and tool execution elsewhere)
+  - `llm_extractor_timeout_sec` (memory keyword extraction) — a cheap
+    classification-shaped call on the fast tier, so it does **not** inherit
+    the tool-execution ceiling. Default 8 s, sized like the other distil
+    pass. Shared by the speculative prefetch and the serial fallback, so one
+    unresponsive extractor can no longer hold the pre-chat phase open for the
+    full 15 s and then return an empty result anyway.
   - `llm_embedding_timeout_sec` (vector search)
   - `llm_chat_timeout_sec` (messages loop turn)
 - Memory enrichment:

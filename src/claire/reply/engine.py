@@ -957,7 +957,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # The callable is bound to the module-level ``extract_search_params_for_memory``
     # HERE, at start time, so a test that patches that symbol still captures
     # the background call instead of it reaching a real backend after teardown.
-    _extractor_timeout_sec = float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+    # The extractor is a cheap classification-shaped call, so it gets its own
+    # short ceiling instead of inheriting `llm_tools_timeout_sec` (sized for
+    # tool execution, 15 s here). A single unresponsive extractor call used to
+    # burn that whole ceiling and then return an empty result anyway, holding
+    # the pre-chat phase open for the full timeout for no benefit. Fall back to
+    # the old key for callers holding a hand-built cfg without the new field.
+    _extractor_timeout_sec = getattr(cfg, "llm_extractor_timeout_sec", None)
+    if not isinstance(_extractor_timeout_sec, (int, float)):
+        _extractor_timeout_sec = float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+    _extractor_timeout_sec = float(_extractor_timeout_sec)
     _memory_prefetch = None
     try:
         _extractor_call = extract_search_params_for_memory

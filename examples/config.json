@@ -15,6 +15,7 @@
   "ollama_chat_model": "gemma4:e2b",
   "llm_chat_timeout_sec": 45.0,
   "llm_tools_timeout_sec": 15.0,
+  "llm_extractor_timeout_sec": 8.0,
   "llm_digest_timeout_sec": 8.0,
   "llm_embedding_timeout_sec": 5.0,
   "llm_profile_select_timeout_sec": 30.0,
