@@ -24,7 +24,6 @@ Any code change must either adhere to our spec files perfectly or you should ask
 | `src/desktop_app/chat_window.spec.md` | Text chat interface alongside voice; shared conversation, no TTS, bundled callbacks + subprocess IPC | One conversation for voice + text; text never speaks; redaction shared with voice path |
 | `src/claire/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline | — |
 | `src/claire/reply/reply.spec.md` | LLM reply generation, tool use, profiles | Tools return raw data; profiles handle formatting |
-| `src/claire/reply/evaluator.spec.md` | **Deprecated** — evaluator no longer runs in the reply engine; preserved for reference | Replaced by the planner; see planner.spec.md |
 | `src/claire/reply/planner.spec.md` | Task-list planner: pre-loop query decomposition + direct-exec step resolver for small models | Fail-open; rides warm small model chain; advisory for large models, direct-exec for small |
 | `src/claire/tools/builtin/local_files.spec.md` | Local file operations and listing boundaries | Home-directory confinement; literal UTF-8 content; boolean recursion |
 | `src/claire/tools/builtin/tool_search.spec.md` | toolSearchTool escape hatch for mid-loop tool routing | Re-runs the same router; never removes stop/self; capped per reply |
