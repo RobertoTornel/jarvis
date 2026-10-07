@@ -402,7 +402,7 @@ def test_router_always_runs_and_plan_tools_are_unioned(
     """select_tools is the authoritative picker. When the planner picks
     tools, the names are unioned into the router's allow-list, not used
     to replace it. Small models often pick the most universal tool
-    (webSearch) instead of a dedicated one (getWeather); the router is
+    (webSearch) instead of a dedicated one (getTime); the router is
     tuned for that classification and must remain authoritative."""
     from claire.reply import engine as engine_mod
     from claire.tools.types import ToolExecutionResult
@@ -417,8 +417,8 @@ def test_router_always_runs_and_plan_tools_are_unioned(
 
     def fake_select_tools(*args, **kwargs):
         router_calls[0] += 1
-        # Router picks getWeather — the dedicated tool for this question.
-        return ["getWeather", "stop"]
+        # Router picks getTime — the dedicated tool for this question.
+        return ["getTime", "stop"]
 
     def fake_chat(*args, **kwargs):
         # Grab the schema from kwargs/args to inspect the allow-list.
@@ -432,7 +432,7 @@ def test_router_always_runs_and_plan_tools_are_unioned(
 
     # Planner picks webSearch (the weaker, more universal choice).
     plan = [
-        "webSearch query='weather in Hackney'",
+        "webSearch query='time in Hackney'",
         "Reply to the user with the combined findings.",
     ]
 
@@ -449,7 +449,7 @@ def test_router_always_runs_and_plan_tools_are_unioned(
             db=db,
             cfg=mock_config,
             tts=None,
-            text="how's the weather here?",
+            text="what time is it here?",
             dialogue_memory=dialogue_memory,
         )
 
@@ -459,7 +459,7 @@ def test_router_always_runs_and_plan_tools_are_unioned(
     assert captured_allow_lists, "chat model must have been called"
     exposed = captured_allow_lists[0]
     # Router's pick (authoritative, specific) is present …
-    assert "getWeather" in exposed, (
+    assert "getTime" in exposed, (
         "Router's dedicated pick must be preserved in the allow-list"
     )
     # … and the planner's pick is unioned in, not dropped.
@@ -504,23 +504,25 @@ def test_direct_exec_fires_despite_prior_query_tool_carryover(
     def fake_tool_runner(db, cfg, tool_name, tool_args, **kwargs):
         invoked_tools.append(tool_name)
         return ToolExecutionResult(
-            success=True, reply_text="London: 17°C, overcast", error_message=None
+            success=True,
+            reply_text="Current time in London, United Kingdom:\nLocal time: 17:42",
+            error_message=None,
         )
 
     def fake_chat(*args, **kwargs):
-        return _assistant_content("Tomorrow in London will be overcast, 17°C.")
+        return _assistant_content("It is 17:42 in London.")
 
     def fake_resolve(*args, **kwargs):
-        return ("getWeather", {"location": "London"})
+        return ("getTime", {"location": "London"})
 
     plan = [
-        "getWeather location='London'",
+        "getTime location='London'",
         "Reply to the user with the combined findings.",
     ]
 
     with patch.object(engine_mod, "run_tool_with_retries", side_effect=fake_tool_runner), \
          patch.object(engine_mod, "chat_with_messages", side_effect=fake_chat), \
-         patch.object(engine_mod, "select_tools", return_value=["getWeather", "stop"]), \
+         patch.object(engine_mod, "select_tools", return_value=["getTime", "stop"]), \
          patch.object(
              engine_mod,
              "extract_search_params_for_memory",
@@ -532,12 +534,12 @@ def test_direct_exec_fires_despite_prior_query_tool_carryover(
             db=db,
             cfg=mock_config,
             tts=None,
-            text="tell me about the weather tomorrow",
+            text="what time is it in London?",
             dialogue_memory=dialogue_memory,
         )
 
-    assert "getWeather" in invoked_tools, (
-        "direct-exec must fire for the current plan's getWeather step even when "
+    assert "getTime" in invoked_tools, (
+        "direct-exec must fire for the current plan's getTime step even when "
         "prior-query tool results are present in dialogue carryover"
     )
 
