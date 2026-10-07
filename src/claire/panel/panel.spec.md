@@ -250,7 +250,7 @@ Two further behaviours worth stating rather than discovering:
 | Name | Contract |
 | --- | --- |
 | `PanelState` | The injectable source: `provider_model`, `key_status`, `config_credentials`, `router_status`, `calendar_today`, `self_check`, `last_actions`, `transcript`, `diary`, `memory_notes`, `memory_note`, `memory_search`, `save_note`, `delete_note`, `chat_reply`, `available_providers`, `available_models`, `select_model`. The base class implements none of the sections (they raise `PanelStateError`); `PROVIDERS`, `config_credentials()`, `memory_notes()` and `memory_search()` have defaults that say "this state does not read memory" rather than claiming there is none. |
-| `RealPanelState` | The real sources. Every path is injectable (`config_path`, `key_store`, `router_path`, `schedule_path`, `action_log_path`, `diary_path`, `vault_dir`, `transcript`, `chat_call`, `environ`, `now`, `self_check_factory`). Reads `CLAIRE.md` with `create=False` — the panel never creates a memory file behind the owner's back. Reads the diary through a read-only SQLite URI and never creates it. Resolves the vault exactly as Claire does when `vault_dir` is not injected (environment, then the `vault_dir` config key), so `router_status()` and the memories browser cannot disagree about which vault is Claire's. Caches the self-check for `SELF_CHECK_TTL_SECONDS` (30). |
+| `RealPanelState` | The real sources. Every path is injectable (`config_path`, `key_store`, `router_path`, `schedule_path`, `action_log_path`, `diary_path`, `vault_dir`, `transcript`, `chat_call`, `environ`, `now`, `self_check_factory`). Reads `CLAIRE.md` with `create=False` — the panel never creates a memory file behind the owner's back. Reads the diary through a read-only SQLite URI and never creates it. Vault resolution mirrors `_router_file()` in the other direction: an injected `vault_dir` wins, then the **parent directory of an injected `router_path`** — the router lives in the vault root by definition, so `router_path` alone names its vault — and only then the global rule (environment, then the `vault_dir` config key). The middle step is what makes an explicitly-constructed state read *only* its injected paths: without it a state given a `router_path` but no `vault_dir` showed its router card from the injected file and its memories browser from the owner's real vault. The `config_path` fallback is deliberately global: when `config_path` is not injected the panel resolves the machine's config exactly as Claire does. Caches the self-check for `SELF_CHECK_TTL_SECONDS` (30). |
 | `TranscriptBuffer` | A bounded, lock-guarded `deque` of `TurnRecord`; `record`, `turns` (oldest first), `clear`, `limit`. |
 | `TurnRecord` | One turn: `role` in `TURN_ROLES` (`you`/`claire`/`note`), scrubbed `text` and `at`. An unknown role becomes `note` rather than being rendered as Claire. |
 | `TranscriptStatus` | `turns`, `source`, `durable`, `note`, `error`, `fix`. `durable=False` is what the page's "in memory" badge reports. |
@@ -353,4 +353,9 @@ because in-process tests structurally cannot cover wire behaviour. It adds:
   `.obsidian/` marker, and the file is mode `0600`;
 - the existing write guards still apply: no `Origin` → `403`, a key-shaped field → `403`,
   `GET` on a write route → `405`, an oversized body → `413`;
-- the index page links to the browser.
+- the index page links to the browser;
+- **vault resolution**: a state built with `router_path` but no `vault_dir` resolves the vault to the
+  router's parent directory, shows that vault's notes and not a decoy `$CLAIRE_VAULT_DIR` vault's,
+  and opens no file outside the injected router directory; an injected `vault_dir` still outranks the
+  router's parent. Every vault in these tests is a `tmp_path` directory — the owner's real vault is
+  never read.

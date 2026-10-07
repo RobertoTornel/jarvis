@@ -1928,15 +1928,27 @@ class RealPanelState(PanelState):
     def vault_path(self) -> Path:
         """The markdown vault the memories browser reads and writes.
 
-        An injected *vault_dir* wins; otherwise this is
+        Resolution order, mirroring :meth:`_router_file` in the other direction:
+        an injected *vault_dir* wins; then the parent of an injected
+        *router_path* (the router lives in the vault root by definition —
+        ``notes.resolve_router_path(v)`` is exactly ``v / "CLAIRE.md"``, so an
+        explicit router names its vault); then
         ``claire.memory.notes.resolve_vault_dir()`` — the environment variable
-        and config key in the same order the daemon uses.  Nothing here invents
-        a second resolution rule, so the panel and Claire look at one vault.
+        and config key in the same order the daemon uses.
+
+        The middle step matters: without it a state built with an explicit
+        ``router_path`` but no ``vault_dir`` would read its router card from the
+        injected file and its memories browser from the *global* vault, i.e. two
+        different vaults for one panel.  Deriving the vault from the router keeps
+        every read inside the paths the state was actually constructed with, so
+        ``files=`` and ``pytest`` cannot reach the owner's real vault.
         """
         from claire.memory import notes as notes_module
 
         if self._vault_dir is not None:
             return notes_module.resolve_vault_dir(self._vault_dir)
+        if self._router_path is not None:
+            return Path(self._router_path).expanduser().parent
         return notes_module.resolve_vault_dir()
 
     def memory_notes(self) -> MemoryNotesStatus:

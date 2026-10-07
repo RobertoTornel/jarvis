@@ -449,3 +449,116 @@ def test_index_still_links_to_the_browser_with_no_notes_directory(
     assert "NotesDirectoryError" in body  # named, with the fix
     assert "The browser still opens" in body
     assert f'href="{ROUTE_MEMORY}"' in body
+
+# ---------------------------------------------------------------------------
+# Vault resolution: an injected router_path names its own vault
+# ---------------------------------------------------------------------------
+
+def test_injected_router_path_names_the_vault_without_vault_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``router_path`` must pin the vault to the router's directory.
+
+    The router lives in the vault root by definition — ``resolve_router_path(v)``
+    is exactly ``v / "CLAIRE.md"`` — so a state constructed with a ``router_path``
+    and no ``vault_dir`` has already been told which vault it is looking at.
+    Resolving ``$CLAIRE_VAULT_DIR`` / the config key / the built-in default
+    instead shows the router and the notes from two different vaults at once,
+    and in a test that second vault is the owner's real one.
+
+    Non-vacuous: before the fix ``vault_path()`` fell through to the global
+    vault, so ``CLAIRE_VAULT_DIR``'s decoy note appeared on the page and this
+    test failed.  The global vault here is a ``tmp_path`` directory, so the real
+    vault is never read.
+    """
+    router_dir = tmp_path / "injected-vault"
+    (router_dir / "notes").mkdir(parents=True)
+    (router_dir / "CLAIRE.md").write_text(
+        "---\ntitle: injected router\n---\n\n# Pointers\n\n- here: notes/here.md\n",
+        encoding="utf-8",
+    )
+    (router_dir / "notes" / "here.md").write_text(
+        "---\ntitle: Here\n---\n\nThis note belongs to the injected vault.\n",
+        encoding="utf-8",
+    )
+
+    # A stand-in for the machine-wide vault, reached through the same knobs the
+    # real resolver uses.  Nothing under the owner's home directory is touched.
+    global_vault = tmp_path / "global-vault"
+    (global_vault / "notes").mkdir(parents=True)
+    (global_vault / "CLAIRE.md").write_text("# Global router\n", encoding="utf-8")
+    (global_vault / "notes" / "decoy.md").write_text(
+        "---\ntitle: Decoy\n---\n\nGLOBAL-VAULT-DECOY\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("CLAIRE_VAULT_DIR", str(global_vault))
+
+    state = RealPanelState(
+        router_path=router_dir / "CLAIRE.md",
+        config_path=tmp_path / "config.json",
+        diary_path=tmp_path / "claire.db",
+        action_log_path=tmp_path / "actions.jsonl",
+    )
+
+    assert state.vault_path() == router_dir
+    assert state.memory_notes().vault_dir == str(router_dir)
+
+    body = get(ROUTE_MEMORY, state).text
+    assert "here" in body
+    assert "GLOBAL-VAULT-DECOY" not in body, body
+    assert "decoy" not in body, body
+
+def test_injected_router_path_reads_nothing_from_the_global_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Serving the memories routes opens files under the injected router only.
+
+    This is the read-level counterpart of the resolution assertion above: even
+    if the two vaults happened to resolve alike, no global-vault file may be
+    opened.  The first request proves the recorder sees the panel's reads at
+    all, so the "nothing" assertions cannot pass by observing nothing.
+    """
+    router_dir = tmp_path / "injected-vault"
+    _write_vault(router_dir)
+
+    global_vault = tmp_path / "global-vault"
+    _write_vault(global_vault)
+    monkeypatch.setenv("CLAIRE_VAULT_DIR", str(global_vault))
+
+    state = RealPanelState(
+        router_path=router_dir / "CLAIRE.md",
+        config_path=tmp_path / "config.json",
+        diary_path=tmp_path / "claire.db",
+        action_log_path=tmp_path / "actions.jsonl",
+    )
+
+    opened: list[str] = []
+    real_open = Path.open
+
+    def recording_open(self: Path, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        opened.append(str(self))
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", recording_open)
+
+    opened.clear()
+    assert get(ROUTE_MEMORY, state).status == 200
+    assert state.memory_notes().vault_dir == str(router_dir)
+    assert opened, "the recorder did not observe the panel's own reads"
+    assert all(str(router_dir) in path for path in opened), opened
+
+def test_injected_vault_dir_outranks_the_router_parent(tmp_path: Path) -> None:
+    """Two explicit paths: the router file is read, the vault_dir is the vault."""
+    vault = tmp_path / "vault"
+    _write_vault(vault)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "CLAIRE.md").write_text("# Not the vault\n", encoding="utf-8")
+
+    state = RealPanelState(
+        vault_dir=vault,
+        router_path=elsewhere / "CLAIRE.md",
+        config_path=tmp_path / "config.json",
+        diary_path=tmp_path / "claire.db",
+        action_log_path=tmp_path / "actions.jsonl",
+    )
+    assert state.vault_path() == vault
