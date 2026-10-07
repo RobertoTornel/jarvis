@@ -252,10 +252,22 @@ def test_planner_search_memory_overrides_recall_gate(
     run_reply_engine(db=db, cfg=cfg, tts=None,
                      text="bieber more about justin", dialogue_memory=dm)
 
-    # Planner explicitly demanded memory → extractor must run.
-    assert mock_extractor.call_count == 1, (
-        "extractor must run when planner emits searchMemory, "
-        "regardless of recall-gate coverage"
+    # Planner explicitly demanded memory → the topic-anchored extractor must
+    # run. The assertion is on the *topic-hinted* call specifically, because
+    # the engine also starts one topic-free speculative prefetch before the
+    # planner runs (Finding E); that one is abandoned here precisely because
+    # the planner supplied a topic, so only the topic-hinted call feeds this
+    # turn. Asserting on it keeps the original intent (the recall gate must
+    # not suppress a planner-demanded memory search) and is stricter than a
+    # bare call count.
+    topic_calls = [
+        c for c in mock_extractor.call_args_list
+        if c.args and "[Memory topic: justin bieber]" in str(c.args[0])
+    ]
+    assert len(topic_calls) == 1, (
+        "extractor must run with the planner's topic hint when the planner "
+        "emits searchMemory, regardless of recall-gate coverage; got "
+        f"{mock_extractor.call_args_list!r}"
     )
 
 

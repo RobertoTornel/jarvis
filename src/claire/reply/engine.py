@@ -48,6 +48,7 @@ from .enrichment import (
 from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, new_session_id
 from .prompts import ModelSize, detect_model_size, get_system_prompts
 from .compound_query import split_compound_query
+from .memory_prefetch import start_memory_extractor_prefetch
 from .planner import (
     plan_query,
     format_plan_block,
@@ -936,6 +937,54 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # come out concrete ("getTime location='Paris'") so the direct-exec
     # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
+
+    # Finding E — speculative keyword-memory-extractor prefetch.
+    #
+    # The extractor depends only on ``redacted`` and ``context_hint``, both
+    # known right here, yet it used to run strictly AFTER the tool router and
+    # the planner. Those two hops exist only to decide *whether* the turn
+    # needs long-term memory, so the extractor was sitting serially behind a
+    # decision it does not depend on — ~30% of the whole reply, all of it
+    # before the first assistant turn. Start it now and let it overlap them.
+    #
+    # The worker publishes into the very same ``enrichment:<query>``
+    # hot-window entry the serial path reads, so a turn that ends up needing
+    # memory with no planner topic hint finds the answer already in the cache
+    # and pays nothing. A turn that does not need memory simply abandons the
+    # prefetch; it is a daemon thread that swallows its own errors and refuses
+    # to publish across a cache wipe, so abandonment is always safe.
+    #
+    # The callable is bound to the module-level ``extract_search_params_for_memory``
+    # HERE, at start time, so a test that patches that symbol still captures
+    # the background call instead of it reaching a real backend after teardown.
+    _extractor_timeout_sec = float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+    _memory_prefetch = None
+    try:
+        _extractor_call = extract_search_params_for_memory
+
+        def _prefetch_once(
+            _query=redacted,
+            _cfg=cfg,
+            _call=_extractor_call,
+            _timeout=_extractor_timeout_sec,
+            _hint=context_hint,
+        ):
+            return _call(
+                _query, _cfg, resolve_model(_cfg, Tier.FAST),
+                timeout_sec=_timeout,
+                thinking=getattr(_cfg, "llm_thinking_enabled", False),
+                context_hint=_hint,
+            )
+
+        _memory_prefetch = start_memory_extractor_prefetch(
+            query=redacted,
+            call=_prefetch_once,
+            dialogue_memory=dialogue_memory,
+        )
+    except Exception as _pf_exc:  # noqa: BLE001 - speculation is optional and
+        # must never be able to fail the turn it was trying to speed up.
+        debug_log(f"memory extractor prefetch not started: {_pf_exc}", "memory")
+
     try:
         strategy = ToolSelectionStrategy(getattr(cfg, "tool_selection_strategy", "llm"))
     except ValueError:
@@ -1235,12 +1284,29 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 search_params = _cached_params
                 debug_log("memory extractor served from hot-window cache", "memory")
             else:
-                search_params = extract_search_params_for_memory(
-                    _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
-                    timeout_sec=float(getattr(cfg, 'llm_tools_timeout_sec', 8.0)),
-                    thinking=getattr(cfg, 'llm_thinking_enabled', False),
-                    context_hint=context_hint,
-                )
+                # The prefetch computes exactly this key only when the planner
+                # supplied no topic hint; with a topic the extractor's input is
+                # different, so the speculative answer is deliberately not
+                # substituted (see reply/memory_prefetch.py). Either way, the
+                # wait is clamped to the budget the plain call would have had,
+                # so a prefetch can never make this turn slower than not
+                # speculating at all.
+                _params = None
+                if _memory_prefetch is not None and not _memory_topic_hint:
+                    _params = _memory_prefetch.result(_extractor_timeout_sec)
+                    if _params is not None:
+                        debug_log(
+                            "memory extractor served from speculative prefetch",
+                            "memory",
+                        )
+                if _params is None:
+                    _params = extract_search_params_for_memory(
+                        _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
+                        timeout_sec=_extractor_timeout_sec,
+                        thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                        context_hint=context_hint,
+                    )
+                search_params = _params
                 if dialogue_memory and hasattr(dialogue_memory, "hot_cache_put"):
                     dialogue_memory.hot_cache_put(_extractor_cache_key, search_params)
             keywords = search_params.get('keywords', [])
