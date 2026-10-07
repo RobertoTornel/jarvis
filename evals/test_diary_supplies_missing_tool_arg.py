@@ -1,4 +1,4 @@
-"""Recalled diary location facts ground weather tool arguments and answers.
+"""Recalled diary location facts ground time tool arguments and answers.
 
 GeoIP is disabled and the hot window is empty. The diary supplies Manchester
 through long-term memory enrichment. Model failures remain visible.
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from evals.memory_tool_grounding import assert_forecast_reply
+from evals.memory_tool_grounding import assert_time_reply
 
 from conftest import requires_judge_llm
 from helpers import (
@@ -22,17 +22,17 @@ from helpers import (
 _DIARY_MANCHESTER = [
     (
         "2026-04-26",
-        "The user mentioned they live in Manchester and prefer celsius "
-        "for weather queries.",
+        "The user mentioned they live in Manchester and prefer the 24-hour "
+        "clock for time queries.",
     ),
 ]
 
 
-_MANCHESTER_FORECAST = (
-    "Weather for Manchester, UK:\n"
-    "Today: 12°C, overcast. High 14°C, low 8°C.\n"
-    "Tomorrow: 13°C, light rain, high 15°C, low 9°C."
-)
+_MANCHESTER_TIME = """Current time in Manchester, United Kingdom:
+Timezone: Europe/London
+Local time: 12:15
+Date: Sunday, 2026-04-26
+"""
 
 
 def _make_runner(capture: ToolCallCapture):
@@ -40,38 +40,41 @@ def _make_runner(capture: ToolCallCapture):
 
     def _runner(db, cfg, tool_name, tool_args, **kwargs):
         capture.record(tool_name, tool_args or {})
-        if tool_name == "getWeather":
+        if tool_name == "getTime":
             location = ((tool_args or {}).get("location") or "").strip()
             if not location:
                 return ToolExecutionResult(
-                    success=False,
+                    success=True,
                     reply_text=(
-                        "I couldn't auto-detect your location. Please "
-                        "tell me which city to check the weather for."
+                        "Current time (your location):\n"
+                        "Timezone: UTC\n"
+                        "Local time: 11:15\n"
                     ),
                 )
             if "manchester" not in location.casefold():
                 return ToolExecutionResult(
                     success=False,
-                    reply_text="This fixture has no weather for that location.",
+                    reply_text=(
+                        f"Could not find location '{location}'. Try a "
+                        "different city name or spelling."
+                    ),
                 )
             return ToolExecutionResult(
                 success=True,
-                reply_text=_MANCHESTER_FORECAST,
+                reply_text=_MANCHESTER_TIME,
             )
         return ToolExecutionResult(success=True, reply_text="OK")
 
     return _runner
 
-
 @pytest.mark.eval
 @requires_judge_llm
 class TestDiarySuppliesMissingToolArg:
     """Diary-recall path: location surfaced from a prior conversation
-    grounds the getWeather call without needing the hot window or
+    grounds the getTime call without needing the hot window or
     explicit user re-statement."""
 
-    def test_diary_location_grounds_get_weather_call(
+    def test_diary_location_grounds_time_call(
         self, eval_db, eval_dialogue_memory,
     ):
         from claire.reply.engine import run_reply_engine
@@ -92,7 +95,7 @@ class TestDiarySuppliesMissingToolArg:
         ):
             response = run_reply_engine(
                 db=eval_db, cfg=cfg, tts=None,
-                text="how's the weather, Claire?",
+                text="what time is it where I live, Claire?",
                 dialogue_memory=eval_dialogue_memory,
             )
 
@@ -102,20 +105,20 @@ class TestDiarySuppliesMissingToolArg:
             print(f"    🔧 {c['name']}({c['args']})")
         print(f"  💬 Response: {(response or '')[:300]}")
 
-        assert_forecast_reply(response, _MANCHESTER_FORECAST, "diary-recall")
+        assert_time_reply(response, _MANCHESTER_TIME, "diary-recall")
 
         # The reply must actually use the recalled location, both at the
         # tool call layer and in the user-facing reply.
-        weather_calls = [c for c in capture.calls if c["name"] == "getWeather"]
+        time_calls = [c for c in capture.calls if c["name"] == "getTime"]
         manchester_calls = [
-            c for c in weather_calls
+            c for c in time_calls
             if "manchester" in (c["args"].get("location") or "").lower()
         ]
         assert manchester_calls, (
-            "getWeather was not invoked with location='Manchester' even "
+            "getTime was not invoked with location='Manchester' even "
             "though the diary contains the user's stated location. The "
             "memory enrichment → tool argument grounding path is broken. "
-            f"All getWeather calls: {[c['args'] for c in weather_calls]}. "
+            f"All getTime calls: {[c['args'] for c in time_calls]}. "
             f"Tools observed: {capture.tool_names()}. "
             f"Response: {(response or '')[:400]}"
         )

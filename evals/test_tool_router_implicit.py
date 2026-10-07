@@ -10,8 +10,9 @@ one tool to be answered usefully.
 This file captures those shapes so regressions where the router over-prunes
 are caught before they land. Known motivating failures:
 
-  - "how's the weather this week?" → router picked [getWeather, stop] only,
-    blocking the webSearch → fetchWebPage chain the mocked agent tests expect.
+  - "is it too late to ring my sister in Tokyo?" → router picked [stop] only.
+    getTime never reached the LLM, so the agent could not ground the answer
+    in Tokyo's local time.
   - "should I order pizza tonight?" → router picked [stop] only. fetchMeals
     never reached the LLM, so the agent could not ground its advice in
     today's intake.
@@ -65,16 +66,16 @@ IMPLICIT_INTENT_CASES = [
         id="calorie budget → fetchMeals",
     ),
     pytest.param(
-        "do I need a jacket today?",
-        ["getWeather"],
-        "Clothing question is a weather question in disguise.",
-        id="jacket → getWeather",
+        "is it too late to ring my sister in Tokyo?",
+        ["getTime"],
+        "Cross-timezone calling decision needs the other city's local time.",
+        id="call timing → getTime",
     ),
     pytest.param(
-        "will the run be miserable this afternoon?",
-        ["getWeather"],
-        "Activity planning with weather subtext, no 'weather' keyword.",
-        id="run forecast → getWeather",
+        "should I say good morning or good night to my colleague in Sydney?",
+        ["getTime"],
+        "Greeting choice is a time question in disguise, no 'time' keyword.",
+        id="greeting choice → getTime",
     ),
     pytest.param(
         "what did I put in my body today?",
@@ -132,10 +133,10 @@ class TestImplicitIntent:
 # (query, must_include_all, rationale)
 MULTI_TOOL_CASES = [
     pytest.param(
-        "plan my day around the weather and what I've eaten",
-        ["getWeather", "fetchMeals"],
+        "what time is it in Tokyo and what have I eaten today",
+        ["getTime", "fetchMeals"],
         "Two explicit subjects, two tools.",
-        id="weather + meals",
+        id="time + meals",
     ),
     pytest.param(
         "find me a detailed article about the Apollo program",
@@ -144,11 +145,11 @@ MULTI_TOOL_CASES = [
         id="research → webSearch + fetchWebPage",
     ),
     pytest.param(
-        "how's the weather this week?",
-        ["getWeather"],
-        "Must include getWeather; webSearch/fetchWebPage acceptable as backup "
-        "for multi-day forecasts the API may not cover.",
-        id="weekly weather keeps getWeather",
+        "what's the date in Sydney right now?",
+        ["getTime"],
+        "Must include getTime; the assistant's own context cannot answer "
+        "another city's local date.",
+        id="explicit city date keeps getTime",
     ),
 ]
 
@@ -195,7 +196,7 @@ NEVER_EMPTY_CASES = [
     "what's on my screen right now?",
     "search the web for flight deals",
     "log that I just ate a banana",
-    "what's the weather like?",
+    "what time is it in Tokyo?",
     "find the invoice PDF on my computer",
 ]
 

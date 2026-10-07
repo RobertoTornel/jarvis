@@ -2,7 +2,7 @@
 Tool Selection Evaluations
 
 Tests that the embedding-based tool selection strategy actually filters tools
-meaningfully — a weather query should select weather-related tools, not all tools.
+meaningfully — a time query should select the time tool, not all tools.
 
 Run: .venv/bin/python -m pytest evals/test_tool_selection.py -v
 """
@@ -22,16 +22,16 @@ from claire.llm import get_embedding_backend
 # The max count ensures the strategy actually filters rather than passing everything.
 TOOL_SELECTION_CASES = [
     pytest.param(
-        "what's the weather like tomorrow",
-        ["getWeather"],
+        "what time is it in Tokyo",
+        ["getTime"],
         5,
-        id="weather query selects getWeather and few others",
+        id="time query selects getTime and few others",
     ),
     pytest.param(
-        "what's the weather in London this weekend",
-        ["getWeather"],
+        "what's the local time in London right now",
+        ["getTime"],
         5,
-        id="location weather query selects getWeather and few others",
+        id="location time query selects getTime and few others",
     ),
     pytest.param(
         "log that I had a chicken salad for lunch",

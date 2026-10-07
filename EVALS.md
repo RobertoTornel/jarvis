@@ -75,7 +75,7 @@ report above; a targeted local run does not refresh the full report.
 | Cross turn pronoun resolution | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | DIRECTIVES: tone, length, forbidden phrases, address form | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Date query with date in context returns none | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Diary location grounds getWeather call (#352) | ❌ 0/1 (0%) | ➖ |
+| Diary location grounds time call | ❌ 0/1 (0%) | ➖ |
 | Diet changed from bulking to cutting | ⏭️ SKIPPED | 🔸 1/1 XFAIL |
 | Digested tool result produces grounded reply | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
 | Director-then-filmography needs two searches | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -88,11 +88,11 @@ report above; a targeted local run does not refresh the full report.
 | Follow up after correction calls web search | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
 | Follow up resolves pronoun in search query | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Follow-up references previous turn context | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Followup naming place routes to getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Followup naming place routes to getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Followup supplies missing tool arg — short follow-up continues previous tool chain (#352) | ✅ 1/1 (100%) | ➖ |
 | Good: brief but informative | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Good: complete weekly forecast | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Graph supplies missing tool arg — warm-profile fact grounds getWeather call (#352) | ❌ 0/1 (0%) | ➖ |
+| Warm profile user fact grounds time call | ❌ 0/1 (0%) | ➖ |
 | Graph-enriched facts surface in the reply, no denial | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Greeting: hello | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Greeting: ni hao (Chinese) | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -137,7 +137,7 @@ report above; a targeted local run does not refresh the full report.
 | Omits deflection narration for unknown entity | ✅ 1/1 (100%) | 🔸 1/1 XFAIL |
 | Omits deflection when topic never resolved | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
 | Open-ended prompt grounds in stored knowledge | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
-| Parallel weather lookup: compare Paris and London | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Parallel time lookup: compare Paris and London | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Preserves legitimate user preferences | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Realistic web search payload is not deflected to links | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
 | Recommendation query still surfaces engagement when user facts present | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -149,7 +149,7 @@ report above; a targeted local run does not refresh the full report.
 | Returns NONE for non-food inputs | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Returns valid JSON with all required fields | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
 | Simple meal baseline (2 boiled eggs) | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Single weather query ends after one tool call | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
+| Single time query ends after one tool call | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
 | Speech long after tts requires wake word | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Stop during tts interrupts immediately | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Time query with time in context returns none | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -158,11 +158,11 @@ report above; a targeted local run does not refresh the full report.
 | Tool retry: vague go ahead | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Tool retry: vague just try | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Toolsearchtool widens then navigate | 🔸 1/1 XFAIL | 🔸 1/1 XFAIL |
-| Topic switch: search → weather uses getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Topic switch: weather → store hours uses webSearch | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Topic switch: search → time uses getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Topic switch: time → store hours uses webSearch | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Trivial conversations produce no extracted facts | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Tts echo segments skipped user query extracted | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Turn1 possessor then turn2 weather | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
+| Turn1 possessor then turn2 time | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
 | Two-turn celebrity flow: identity then pronoun follow-up | 🔸 1/1 XFAIL | ❌ 0/1 (0%) |
 | USER: identity, location, pets, diet, job | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Unknown entity with poisoned diary still triggers web search live | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
@@ -179,8 +179,8 @@ report above; a targeted local run does not refresh the full report.
 | Wake word query uses judge extraction | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Watch recommendation surfaces recently discussed films | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Weather query is answered with current conditions | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
-| Weather query still picks getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| Weather query still triggers tools after a greeting | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Time query for other zone still picks getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| Time query still triggers tools after a greeting | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Wikipedia payload produces grounded reply | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | Wikipedia rescues when ddg blocks | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | calorie budget \u2192 fetchMeals | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -190,8 +190,8 @@ report above; a targeted local run does not refresh the full report.
 | explicit-recall-then-search | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
 | find the invoice PDF on my computer | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | food decision \u2192 fetchMeals | 🔸 1/1 XFAIL | ✅ 1/1 (100%) |
-| jacket \u2192 getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| location weather query selects getWeather and few others | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
+| call timing \u2192 getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| location time query selects getTime and few others | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
 | log that I just ate a banana | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | meal logging selects logMeal and few others | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | meal recall (colloquial) \u2192 fetchMeals | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
@@ -201,21 +201,21 @@ report above; a targeted local run does not refresh the full report.
 | news-that-would-interest-me | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | recommend a book I'd like | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | research \u2192 webSearch + fetchWebPage | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| run forecast \u2192 getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| greeting choice \u2192 getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | search the web for flight deals | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | suggest something I'd enjoy watching ton | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | take a screenshot | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | tell me some news that might interest me | ✅ 1/1 (100%) | ❌ 0/1 (0%) |
 | warm-memory-short-query-how's the weather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| weather + meals | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| weather query selects getWeather and few others | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| time + meals | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| time query selects getTime and few others | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | web search query selects webSearch and few others | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| weekly weather keeps getWeather | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| explicit city date keeps getTime | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | what is the capital of France | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | what should I cook for dinner | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | what's 2 plus 2 | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | what's on my screen right now? | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
-| what's the weather like? | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
+| what time is it in Tokyo? | ✅ 1/1 (100%) | ✅ 1/1 (100%) |
 | who is Britney Spears | ❌ 0/1 (0%) | ✅ 1/1 (100%) |
 
 ---
@@ -318,7 +318,7 @@ report above; a targeted local run does not refresh the full report.
 **Result:** ✅ No regression. The sorted `FAILED` lists are byte-identical between base and the change for both file sets. All 38 failures are pre-existing model-behaviour issues of the `google/gemma-4-e2b` / LM Studio combination (router and planner misroutes, gemma-native tool-fence emissions) that also occur on base.
 
 **Notes:**
-- One intermediate layout (context line appended *after* the text-tool syntax guidance) produced a single extra failure on `test_multi_turn_context.py::TestTopicSwitching::test_search_then_weather` (the model emitted the forbidden gemma-native `<|tool_call|>` fence instead of the JSON literal). It passed 3/3 in isolation, and the final layout (context inserted *before* the tool-call syntax guidance, keeping the instruction block final for small models) restored the exact base failure set. The same fence-emission failure mode appears on base in other tests, so it is ambient small-model variance rather than a prompt-placement effect.
+- One intermediate layout (context line appended *after* the text-tool syntax guidance) produced a single extra failure on `test_multi_turn_context.py::TestTopicSwitching::test_search_then_time` (the model emitted the forbidden gemma-native `<|tool_call|>` fence instead of the JSON literal). It passed 3/3 in isolation, and the final layout (context inserted *before* the tool-call syntax guidance, keeping the instruction block final for small models) restored the exact base failure set. The same fence-emission failure mode appears on base in other tests, so it is ambient small-model variance rather than a prompt-placement effect.
 - The unit-level KV-cache assertions (byte-identical system message across in-loop calls, once-per-reply context fetch, context at the tail) live in `tests/test_engine_kv_cache.py`; the full unit suite showed no regressions (99 pre-existing environment failures, identical before and after).
 
 ---

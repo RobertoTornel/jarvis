@@ -199,28 +199,28 @@ unit's `SIGINT` and `start.sh`'s `SIGTERM` both reach the same cleanup path.
 
 | What | Path | Override |
 |---|---|---|
-| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH`, `XDG_CONFIG_HOME` (`config.py:830`–`:841`) |
-| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:794`–`:809`, `service.py:404`) |
-| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:547`, `_default_db_path` at `:67`) |
+| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH` (`config.py:849`–`:850`), `XDG_CONFIG_HOME` (`:343`) |
+| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:808`–`:817`, `service.py:404`) |
+| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:556`, `_default_db_path` at `:67`) |
 
 `load_settings()` merges `config.json` over `get_default_config()`
-(`config.py:830`, `:851`–`:852`). Config keys that change deployment behaviour
-include `db_path` (default from `config.py:547`), `voice_debug` (`:856`, env
+(`config.py:857`–`:858`, `:865`–`:866`). Config keys that change deployment behaviour
+include `db_path` (default from `config.py:556`), `voice_debug` (`:870`, env
 `CLAIRE_VOICE_DEBUG`), `llm_base_url` (defaults to
-`http://127.0.0.1:20129/v1`, `config.py:47`/`:896`), `llm_chat_model`
-(`config.py:909`), `tts_engine` (default `"fish"`, `:617`), `stt_engine`
-(default `"parakeet"`, `:676`), `wake_word` (default `"claire"`, `:651`) and
-`mcps` (`:781`).
+`http://127.0.0.1:20129/v1`, `config.py:47`/`:910`), `llm_chat_model`
+(`config.py:917`), `tts_engine` (default `"fish"`, `:631`), `stt_engine`
+(default `"parakeet"`, `:690`), `wake_word` (default `"claire"`, `:665`) and
+`mcps` (`:795`).
 
 ### Environment variables the code reads
 
-- `CLAIRE_CONFIG_PATH` — config file location (`config.py:835`).
-- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:794`–`:809`).
-- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:856`).
+- `CLAIRE_CONFIG_PATH` — config file location (`config.py:849`).
+- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:808`–`:817`).
+- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:870`).
 - `CLAIRE_PHONE_BRIDGE` — `0`/`false`/`no` disables the phone bridge
   (`daemon.py:1295`).
 - `OMNIROUTE_API_KEY` — the LLM key, read from the environment; never stored in
-  `config.json` (`config.py:47`–`:48`, `:901`).
+  `config.json` (`config.py:47`–`:48`, `:915`).
 - `CLAIRE_KEY_STORE`, `CLAIRE_VAULT_DIR`, `CLAIRE_BACKUP_ROOT`,
   `CLAIRE_SCHEDULE_PATH`, `CLAIRE_WHISPER_BACKEND` — feature-specific path and
   backend overrides read elsewhere in `config.py`.
@@ -252,7 +252,7 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
   default `~/.local/state/claire/logs` (`start.sh:73`–`:78`, `:418`, `:463`,
   `:472`).
 - **In-process debug:** `debug_log` prints to stderr and is a no-op unless
-  `voice_debug` is on (`debug.py:25`–`:36`, `config.py:856`). There is no log
+  `voice_debug` is on (`debug.py:25`–`:36`, `config.py:870`). There is no log
   file written by the daemon itself and no rotation to configure.
 
 ## Extension points

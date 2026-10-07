@@ -184,16 +184,21 @@ literal) and its coercion block.
 
 - **`tts.spec.md` describes only local synthesis** and never mentions the Fish
   Audio streaming engine that is the configured default
-  (`src/claire/output/tts.spec.md:3` versus `src/claire/config.py:617`). The
+  (`src/claire/output/tts.spec.md:3` versus `src/claire/config.py:631`). The
   listening-side consequence is real: whether `tts.interrupt()` cuts audio off
   within tens of milliseconds depends on the engine, and only the Fish engine
   implements `flush` (`src/claire/output/fish_tts.py:827`).
 - **`listener.py` fallback defaults differ from the config defaults** for the
-  wake ratio and the chat timeout: `getattr(self.cfg, "wake_fuzzy_ratio", 0.78)`
-  at `src/claire/listening/listener.py:1404` versus `"wake_fuzzy_ratio": 0.82` at
-  `src/claire/config.py:659`. The config value wins in practice because
-  `Settings` always carries the attribute; the stale fallback only shows itself
-  in a hand-built settings object.
+  wake ratio, the voice-energy floor and the LLM warmup probe:
+  `getattr(self.cfg, "wake_fuzzy_ratio", 0.78)` at
+  `src/claire/listening/listener.py:1404` and `:2173` versus
+  `"wake_fuzzy_ratio": 0.82` at `src/claire/config.py:673`;
+  `getattr(self.cfg, "voice_min_energy", 0.0045)` at `:1621` and `:1633` versus
+  `"voice_min_energy": 0.02` at `src/claire/config.py:657`; and
+  `getattr(self.cfg, "llm_tools_timeout_sec", 8.0)` at `:2776` versus
+  `"llm_tools_timeout_sec": 15.0` at `src/claire/config.py:601`. The config
+  value wins in practice because `Settings` always carries the attribute; the
+  stale fallbacks only show themselves in a hand-built settings object.
 - **`reply.spec.md` names `src/claire/system_prompt.py` as the single unified
   `SYSTEM_PROMPT`** (`src/claire/reply/reply.spec.md:8`) while the prompt is
   actually assembled per model size from `src/claire/reply/prompts/`

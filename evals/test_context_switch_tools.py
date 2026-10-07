@@ -3,7 +3,8 @@ Regression eval: tool selection must switch when the conversation topic
 switches from one turn to the next.
 
 Captured from a real field session on 2026-04-20 (gemma4:e2b) where the
-user asked two consecutive questions:
+user asked two consecutive questions (tool and query names below follow
+the current builtin catalogue):
 
   Turn 1: "Tell me about the movie possessor"
           → correct tool: webSearch
@@ -11,10 +12,10 @@ user asked two consecutive questions:
             ("Possessor is a science fiction film from 2006 directed by
             Brandon Cronenberg" — wrong year, no tool call)
 
-  Turn 2: "And how is the weather today?"
-          → correct tool: getWeather (with no args — location auto-derives)
+  Turn 2: "And what time is it in Tokyo?"
+          → correct tool: getTime (a place outside the user's own context)
           → model produced gemma's native Google-training fallback syntax
-            ("tool_code\\nprint(google_search.search(query='current weather'))
+            ("tool_code\\nprint(google_search.search(query='time in Tokyo'))
             <unused88>") — i.e. it tried to use a tool but in the wrong
             protocol, so our parser missed it and no tool was actually
             invoked.
@@ -77,7 +78,7 @@ _NATIVE_TOOL_CODE_LEAKS = (
 @pytest.mark.eval
 @requires_judge_llm
 class TestContextSwitchTools:
-    """Two-turn sequence: webSearch on turn 1, getWeather on turn 2."""
+    """Two-turn sequence: webSearch on turn 1, getTime on turn 2."""
 
     def _run_turn(
         self, query, mock_config, eval_db, eval_dialogue_memory,
@@ -88,8 +89,8 @@ class TestContextSwitchTools:
 
         mock_config.ollama_base_url = "http://localhost:11434"
         mock_config.ollama_chat_model = JUDGE_MODEL
-        # Location enabled so getWeather's auto-derive path would succeed
-        # if the model actually calls it.
+        # Location enabled so the assistant's own place is available if
+        # the model needs it while resolving another city's time.
         mock_config.location_enabled = True
         mock_config.location_auto_detect = True
 
@@ -109,14 +110,14 @@ class TestContextSwitchTools:
 
         return response, capture
 
-    def test_turn1_possessor_then_turn2_weather(
+    def test_turn1_possessor_then_turn2_time(
         self, mock_config, eval_db, eval_dialogue_memory,
     ):
-        """Sequence: ask about a movie, then ask about weather.
+        """Sequence: ask about a movie, then ask for another city's time.
 
         Both turns must invoke the CORRECT tool. The second turn is the
-        interesting one — diary enrichment for 'weather' may also surface
-        the Possessor entry, but the tool pick must still be getWeather.
+        interesting one — diary enrichment may also surface the Possessor
+        entry, but the tool pick must still be getTime.
         """
         from helpers import JUDGE_MODEL
 
@@ -150,18 +151,18 @@ class TestContextSwitchTools:
 
         # --- Turn 2 -----------------------------------------------------------
         # Diary entries available to turn 2: the just-settled Possessor entry
-        # (which will surface via keyword search for 'weather' if the memory
-        # layer happens to fuzzy-match, and more importantly will be in the
-        # hot-window dialogue state).
-        turn2_query = "And how is the weather today?"
+        # (which will surface via keyword search if the memory layer happens to
+        # fuzzy-match, and more importantly will be in the hot-window dialogue
+        # state).
+        turn2_query = "And what time is it in Tokyo?"
         turn2_response, turn2_capture = self._run_turn(
             turn2_query,
             mock_config, eval_db, eval_dialogue_memory,
             diary_entries=[POSSESSOR_DIARY],
             tool_responses={
-                "getWeather": (
-                    "Current weather in Hackney, London: 14°C, partly cloudy, "
-                    "wind 10 km/h. Forecast: highs around 15°C."
+                "getTime": (
+                    "Current time in Tokyo, Japan: 02:42 (Asia/Tokyo), "
+                    "Monday, 2026-04-21."
                 ),
             },
         )
@@ -188,15 +189,15 @@ class TestContextSwitchTools:
                 f"{(turn2_response or '')[:400]}"
             )
 
-        # Turn 2 assertion 2: getWeather must be invoked. Asking for a
+        # Turn 2 assertion 2: getTime must be invoked. Asking for a
         # location pre-emptively, or answering without any tool, both fail.
-        if not turn2_capture.has_tool("getWeather"):
+        if not turn2_capture.has_tool("getTime"):
             hit = next(
                 (p for p in _PRE_TOOL_CLARIFICATION if p in response_lower),
                 None,
             )
             msg = (
-                f"Turn 2: getWeather was never invoked. "
+                f"Turn 2: getTime was never invoked. "
                 f"Tools called: {turn2_capture.tool_names() or 'none'}. "
                 f"Pre-tool clarification phrase hit: {hit!r}. "
                 f"Response: {(turn2_response or '')[:400]}"
@@ -208,10 +209,10 @@ class TestContextSwitchTools:
             pytest.fail(msg)
 
         # Turn 2 assertion 3: no stale Possessor token leaked into the
-        # weather reply (previous-turn contamination).
+        # time reply (previous-turn contamination).
         for stale_tok in ("Cronenberg", "Riseborough", "Possessor"):
             assert stale_tok.lower() not in response_lower, (
                 f"Turn 2: previous-turn topic token {stale_tok!r} leaked "
-                f"into the weather reply. Response: "
+                f"into the time reply. Response: "
                 f"{(turn2_response or '')[:400]}"
             )

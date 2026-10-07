@@ -7,7 +7,7 @@ Tests the agent's ability to handle multi-turn conversations correctly:
 3. Follow-up Handling - Using context from previous turns when relevant
 
 These evals are critical for catching regressions where the model might:
-- Call the wrong tool after a topic change (e.g., getWeather for store hours)
+- Call the wrong tool after a topic change (e.g., getTime for store hours)
 - Ignore context from previous turns
 - Fail to follow up on established conversation context
 
@@ -37,12 +37,11 @@ def _assert_answer(response, context):
 # Test Data - Consistent tool responses for reproducibility
 # =============================================================================
 
-MOCK_WEATHER_RESPONSE = """Current weather in Kensington, Royal Kensington and Chelsea, United Kingdom:
-Conditions: Overcast
-Temperature: 7.8°C
-Feels like: 5°C
-Humidity: 75%
-Wind: 12 km/h from the west
+MOCK_TIME_RESPONSE = """Current time in Tokyo, Japan:
+Timezone: Asia/Tokyo
+Local time: 02:42
+Date: Monday, 2026-04-21
+UTC offset: +09:00
 """
 
 MOCK_STORE_HOURS_SEARCH = """Web search results for 'CEX store hours Kensington':
@@ -87,16 +86,16 @@ class TestTopicSwitching:
 
     @pytest.mark.eval
     @requires_judge_llm
-    def test_weather_then_store_hours(self, mock_config, eval_db, eval_dialogue_memory):
+    def test_time_then_store_hours(self, mock_config, eval_db, eval_dialogue_memory):
         """
-        After weather query, asking about store hours should use webSearch.
+        After a time query, asking about store hours should use webSearch.
 
         Scenario:
-        - Turn 1: "How's the weather?" -> getWeather (correct)
-        - Turn 2: "Can you check when CEX closes?" -> webSearch (NOT getWeather!)
+        - Turn 1: "What time is it in Tokyo?" -> getTime (correct)
+        - Turn 2: "Can you check when CEX closes?" -> webSearch (NOT getTime!)
 
-        This tests the exact bug scenario where llama3.2:3b called getWeather
-        for a store hours query because it got anchored on the previous tool.
+        This tests the exact bug scenario where llama3.2:3b called the previous
+        turn's tool for a store hours query because it got anchored on it.
         """
         from claire.reply.engine import run_reply_engine
 
@@ -104,18 +103,18 @@ class TestTopicSwitching:
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
-            "getWeather": MOCK_WEATHER_RESPONSE,
+            "getTime": MOCK_TIME_RESPONSE,
             "webSearch": MOCK_STORE_HOURS_SEARCH,
         })
 
         with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
              patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, Royal Kensington and Chelsea, United Kingdom", None)):
 
-            # Turn 1: Weather query
+            # Turn 1: Time query for another city
             capture.clear()
             response1 = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="How's the weather today?",
+                text="What time is it in Tokyo?",
                 dialogue_memory=eval_dialogue_memory
             )
             turn1_tools = capture.tool_sequence()
@@ -132,25 +131,25 @@ class TestTopicSwitching:
         _assert_answer(response1, "first turn")
         _assert_answer(response2, "follow-up turn")
 
-        print(f"\n📊 Topic Switching - Weather → Store Hours:")
-        print(f"   Turn 1 query: 'How's the weather today?'")
+        print(f"\n📊 Topic Switching - Time → Store Hours:")
+        print(f"   Turn 1 query: 'What time is it in Tokyo?'")
         print(f"   Turn 1 tools: {turn1_tools}")
         print(f"   Turn 1 response: {response1[:100] if response1 else 'None'}...")
         print(f"   Turn 2 query: 'can you check how long CEX is open for?'")
         print(f"   Turn 2 tools: {turn2_tools}")
         print(f"   Turn 2 response: {response2[:100] if response2 else 'None'}...")
 
-        # Turn 1 should use getWeather
-        assert "getWeather" in turn1_tools, \
-            f"Turn 1 should use getWeather for weather query. Used: {turn1_tools}"
+        # Turn 1 should use getTime
+        assert "getTime" in turn1_tools, \
+            f"Turn 1 should use getTime for a Tokyo time query. Used: {turn1_tools}"
 
-        # Turn 2 MUST use webSearch, NOT getWeather
+        # Turn 2 MUST use webSearch, NOT getTime
         # This is the critical assertion - the model should recognize topic change
-        used_wrong_tool = "getWeather" in turn2_tools and "webSearch" not in turn2_tools
+        used_wrong_tool = "getTime" in turn2_tools and "webSearch" not in turn2_tools
 
         if used_wrong_tool:
             pytest.fail(
-                f"❌ CONTEXT ANCHORING BUG: Model used getWeather for store hours!\n"
+                f"❌ CONTEXT ANCHORING BUG: Model used getTime for store hours!\n"
                 f"   Turn 2 tools: {turn2_tools}\n"
                 f"   Expected: webSearch\n"
                 f"   The model got 'stuck' on the previous turn's tool.\n"
@@ -160,16 +159,16 @@ class TestTopicSwitching:
         assert "webSearch" in turn2_tools, \
             f"Turn 2 should use webSearch for store hours. Used: {turn2_tools}"
 
-        print(f"   ✅ Correctly switched from getWeather to webSearch")
+        print(f"   ✅ Correctly switched from getTime to webSearch")
 
     @pytest.mark.eval
     @requires_judge_llm
-    def test_search_then_weather(self, mock_config, eval_db, eval_dialogue_memory):
+    def test_search_then_time(self, mock_config, eval_db, eval_dialogue_memory):
         """
-        After a web search, asking about weather should use getWeather.
+        After a web search, asking for another city's time should use getTime.
 
         Tests the reverse direction - ensuring the model doesn't stay stuck
-        on webSearch when weather is asked.
+        on webSearch when the time is asked.
         """
         from claire.reply.engine import run_reply_engine
 
@@ -177,7 +176,7 @@ class TestTopicSwitching:
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
-            "getWeather": MOCK_WEATHER_RESPONSE,
+            "getTime": MOCK_TIME_RESPONSE,
             "webSearch": MOCK_NEWS_SEARCH,
         })
 
@@ -193,11 +192,11 @@ class TestTopicSwitching:
             )
             turn1_tools = capture.tool_sequence()
 
-            # Turn 2: Weather
+            # Turn 2: Another city's time
             capture.clear()
             response2 = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="How's the weather outside?",
+                text="What time is it in Tokyo?",
                 dialogue_memory=eval_dialogue_memory
             )
             turn2_tools = capture.tool_sequence()
@@ -205,7 +204,7 @@ class TestTopicSwitching:
         _assert_answer(response1, "first turn")
         _assert_answer(response2, "follow-up turn")
 
-        print(f"\n📊 Topic Switching - News → Weather:")
+        print(f"\n📊 Topic Switching - News → Time:")
         print(f"   Turn 1 tools: {turn1_tools}")
         print(f"   Turn 2 tools: {turn2_tools}")
 
@@ -213,17 +212,17 @@ class TestTopicSwitching:
             f"Turn 1 should use webSearch for news. Used: {turn1_tools}"
 
         # Check for reverse anchoring
-        if "webSearch" in turn2_tools and "getWeather" not in turn2_tools:
+        if "webSearch" in turn2_tools and "getTime" not in turn2_tools:
             pytest.fail(
-                f"❌ CONTEXT ANCHORING BUG: Model used webSearch for weather query!\n"
+                f"❌ CONTEXT ANCHORING BUG: Model used webSearch for time query!\n"
                 f"   Turn 2 tools: {turn2_tools}\n"
                 f"   Response: {response2[:200] if response2 else 'None'}"
             )
 
-        assert "getWeather" in turn2_tools, \
-            f"Turn 2 should use getWeather for weather query. Used: {turn2_tools}"
+        assert "getTime" in turn2_tools, \
+            f"Turn 2 should use getTime for the Tokyo time query. Used: {turn2_tools}"
 
-        print(f"   ✅ Correctly switched from webSearch to getWeather")
+        print(f"   ✅ Correctly switched from webSearch to getTime")
 
 
 # =============================================================================
@@ -243,35 +242,36 @@ class TestFollowUpContext:
         Follow-up questions should reference information from previous turns.
 
         Scenario:
-        - Turn 1: "How's the weather?" -> (gets weather data showing overcast, 7.8°C)
-        - Turn 2: "Should I bring an umbrella?" -> Response should reference weather
+        - Turn 1: "What time is it in Tokyo?" -> (gets local time 02:42 JST)
+        - Turn 2: "Is it too late to call my colleague there?" -> Response
+          should reference the supplied local time.
 
-        The model should use the weather context to inform the umbrella advice.
+        The model should use the time context to inform the calling advice.
         """
         from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
         capture = ToolCallCapture()
-        mock_tool_run = create_mock_tool_run(capture, {"getWeather": MOCK_WEATHER_RESPONSE})
+        mock_tool_run = create_mock_tool_run(capture, {"getTime": MOCK_TIME_RESPONSE})
 
         with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
              patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
-            # Turn 1: Weather query
+            # Turn 1: Time query
             capture.clear()
             response1 = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="How's the weather today?",
+                text="What time is it in Tokyo?",
                 dialogue_memory=eval_dialogue_memory
             )
             turn1_tools = capture.tool_sequence()
 
-            # Turn 2: Follow-up about umbrella
+            # Turn 2: Follow-up advice about calling
             capture.clear()
             response2 = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="Should I bring an umbrella?",
+                text="Is it too late to call my colleague there?",
                 dialogue_memory=eval_dialogue_memory
             )
             turn2_tools = capture.tool_sequence()
@@ -279,26 +279,24 @@ class TestFollowUpContext:
         _assert_answer(response1, "first turn")
         _assert_answer(response2, "follow-up turn")
 
-        print(f"\n📊 Follow-Up Context - Weather → Umbrella:")
+        print(f"\n📊 Follow-Up Context - Time → Calling:")
         print(f"   Turn 1 tools: {turn1_tools}")
         print(f"   Turn 1 response: {response1[:80] if response1 else 'None'}...")
         print(f"   Turn 2 tools: {turn2_tools}")
         print(f"   Turn 2 response: {response2[:120] if response2 else 'None'}...")
 
-        # Turn 1 should fetch weather
-        assert "getWeather" in turn1_tools, "Turn 1 should fetch weather"
+        # Turn 1 should fetch the time
+        assert "getTime" in turn1_tools, "Turn 1 should fetch the time"
 
         # Ground advice in the supplied fixture, including accepted paraphrases.
-        fields = dict(line.split(": ", 1) for line in MOCK_WEATHER_RESPONSE.splitlines()
+        fields = dict(line.split(": ", 1) for line in MOCK_TIME_RESPONSE.splitlines()
                       if ": " in line)
-        condition = fields["Conditions"].casefold()
-        temperature = fields["Temperature"].removesuffix("°C")
-        terms = (condition, temperature, temperature.replace(".", ","))
-        if condition == "overcast":
-            terms += ("cloud",)
+        local_time = fields["Local time"]
+        terms = (local_time, local_time.lstrip("0"))
+        if int(local_time.split(":")[0]) < 6:
+            terms += ("night", "early hours")
         grounded = any(term in response2.casefold() for term in terms)
-        assert grounded, f"🌦️ Umbrella advice did not use the supplied weather: {response2}"
-
+        assert grounded, f"🕐 Calling advice did not use the supplied local time: {response2}"
 
 # =============================================================================
 # Self-Contained Tool Argument Evaluations (Live LLM)
@@ -438,8 +436,8 @@ class TestMultiTurnExtended:
         """
         Three-turn conversation with multiple topic changes.
 
-        Turn 1: Weather query
-        Turn 2: Store hours query (topic change from weather)
+        Turn 1: Time query
+        Turn 2: Store hours query (topic change from time)
         Turn 3: News query (topic change from store)
 
         Each turn should select the appropriate tool.
@@ -455,8 +453,8 @@ class TestMultiTurnExtended:
             from claire.tools.types import ToolExecutionResult
             capture.record(tool_name, tool_args or {})
 
-            if tool_name == "getWeather":
-                return ToolExecutionResult(success=True, reply_text=MOCK_WEATHER_RESPONSE)
+            if tool_name == "getTime":
+                return ToolExecutionResult(success=True, reply_text=MOCK_TIME_RESPONSE)
             elif tool_name == "webSearch":
                 # Return appropriate content based on query
                 args_str = str(tool_args).lower() if tool_args else ""
@@ -470,7 +468,7 @@ class TestMultiTurnExtended:
              patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
             queries = [
-                ("How's the weather today?", "getWeather"),
+                ("What time is it in Tokyo?", "getTime"),
                 ("What time does CEX close?", "webSearch"),
                 ("What's happening in tech news?", "webSearch"),
             ]

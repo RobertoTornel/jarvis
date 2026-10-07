@@ -31,7 +31,7 @@ Two facts define this fork and are worth stating before anything else:
 - [The reply pipeline and tools](#the-reply-pipeline-and-tools)
 - [Memory](#memory)
 - [Senses](#senses)
-- [Scheduling, weather and location](#scheduling-weather-and-location)
+- [Scheduling and location](#scheduling-and-location)
 - [The phone bridge](#the-phone-bridge)
 - [The web panel](#the-web-panel)
 - [The desktop app](#the-desktop-app)
@@ -255,11 +255,12 @@ speak HTTP directly, so the provider is a configuration choice:
 
 Two tiers are resolved from settings: the **chat model** (`llm_chat_model`) and
 a **fast model** (`fast_model`) used for real-time classification-shaped work —
-the intent judge, tool routing, planner, digests and the weather place
+the intent judge, tool routing, planner, digests and the memory keyword
 extractor. On an OpenAI-compatible provider an unset `fast_model` resolves to the
 active chat model rather than to an Ollama pull name. Separate timeouts exist
-for chat (`llm_chat_timeout_sec`), tool calls (`llm_tools_timeout_sec`), cheap
-digests (`llm_digest_timeout_sec`), embeddings (`llm_embedding_timeout_sec`) and
+for chat (`llm_chat_timeout_sec`), tool calls (`llm_tools_timeout_sec`), the
+memory keyword extractor (`llm_extractor_timeout_sec`), cheap digests
+(`llm_digest_timeout_sec`), embeddings (`llm_embedding_timeout_sec`) and
 profile selection (`llm_profile_select_timeout_sec`).
 
 `config.py` also ships a list of supported Ollama chat models
@@ -279,7 +280,6 @@ specs beside their code:
 | `lookThroughCamera` | Take one picture and ask a vision model what is in it |
 | `browseWeb` | Real browser: open a page, read it, find a phrase, click, type, screenshot, back, close |
 | `schedule` | `add`, `list`, `move`, `cancel`, `due` against Claire's own calendar |
-| `getWeather` | Current weather, with place extraction through the fast tier when no coordinates are known |
 | `logMeal`, `fetchMeals`, `deleteMeal` | Nutrition log: estimate macros for a described meal, list or delete entries |
 | `getTime` | Current date and time |
 | `screenshot` | Native screenshot capture |
@@ -387,7 +387,7 @@ nobody checks).
 
 ---
 
-## Scheduling, weather and location
+## Scheduling and location
 
 ### Calendar
 
@@ -415,10 +415,11 @@ rotating backups.
 
 ### Weather
 
-The `getWeather` tool answers with current conditions. When no coordinates are
-known it extracts a place from the (redacted) utterance using the fast-tier
-model, bounded to a short generation, and geocodes it. If extraction fails it
-asks for a city rather than inventing coordinates.
+There is no dedicated conditions tool. Weather, climate, temperature and
+"what is it like outside" are answered through `webSearch`: the prompt tells the
+model to call the search tool in the same turn for any current-conditions
+request, direct or indirect, and forbids answering from training data, which
+cannot know today's temperature anywhere.
 
 ### Location
 

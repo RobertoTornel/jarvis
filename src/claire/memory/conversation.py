@@ -991,6 +991,13 @@ class DialogueMemory:
         # invalidation hooks (``clear_hot_cache``, ``invalidate_warm_profile``,
         # new-conversation reset) still apply unchanged.
         self._hot_cache: "OrderedDict[str, Tuple[float, object]]" = OrderedDict()
+        # Generation counter for the hot cache. Bumped every time the cache is
+        # wiped (new conversation, stop). A speculative background writer
+        # captures the epoch before it starts and refuses to publish if the
+        # epoch moved: without this, a prefetch launched during conversation A
+        # could land in conversation B's cache under the same query key and be
+        # read as a memory answer computed under a different context hint.
+        self._hot_cache_epoch: int = 0
         # Hard ceiling on stored tool turns. With the default
         # ``tool_carryover_max_turns=2`` re-injected per reply, 16 lets a
         # session accumulate roughly 8x the visible budget before the
@@ -1257,9 +1264,26 @@ class DialogueMemory:
                 self._hot_cache.popitem(last=False)
 
     def clear_hot_cache(self) -> None:
-        """Drop all conversation-scoped cache entries."""
+        """Drop all conversation-scoped cache entries.
+
+        Also advances :attr:`hot_cache_epoch`, so a speculative writer that
+        started before the wipe (see ``reply/memory_prefetch.py``) will not
+        repopulate the fresh conversation's cache with a stale result.
+        """
         with self._lock:
             self._hot_cache = OrderedDict()
+            self._hot_cache_epoch += 1
+
+    @property
+    def hot_cache_epoch(self) -> int:
+        """Generation of the current hot cache; advances on every wipe.
+
+        Read by the reply engine's speculative memory-extractor prefetch to
+        decide whether its result is still attributable to the conversation
+        it was computed for.
+        """
+        with self._lock:
+            return self._hot_cache_epoch
 
     def invalidate_warm_profile(self) -> None:
         """Drop the cached warm-profile block. Called from the graph

@@ -112,16 +112,16 @@ TEST_DESCRIPTIONS = {
     "test_simple_meal_extraction": "Simple meal baseline (2 boiled eggs)",
     "test_extraction_with_quantities": "Extraction with explicit quantities",
     # Multi-turn context tests
-    "test_weather_then_store_hours": "Topic switch: weather → store hours uses webSearch",
+    "test_time_then_store_hours": "Topic switch: time → store hours uses webSearch",
     "test_weather_then_restaurant_search": "Topic switch: weather → restaurant uses webSearch",
-    "test_search_then_weather": "Topic switch: search → weather uses getWeather",
+    "test_search_then_time": "Topic switch: search → time uses getTime",
     "test_follow_up_references_previous_context": "Follow-up references previous turn context",
     "test_three_turn_topic_changes": "3-turn conversation with topic changes",
     "test_rapid_topic_switching": "Rapid back-and-forth topic switching",
     # Greeting no-tools live tests
     "test_greeting_no_tools_live": "Greetings do not trigger tool calls",
     "test_user_instructions_no_tools_live": "User instructions do not trigger tool calls",
-    "test_weather_still_triggers_tools_live": "Weather query still triggers tools after a greeting",
+    "test_time_query_still_triggers_tools_live": "Time query still triggers tools after a greeting",
     # Helpfulness / anti-deflection tests
     "test_no_deflection_for_weather_forecast_live": "No deflection on weather forecast questions",
     "test_no_deflection_for_answerable_queries_live": "No deflection on answerable questions",
@@ -130,10 +130,10 @@ TEST_DESCRIPTIONS = {
     "test_does_not_deny_long_term_memory_live": "Assistant does not deny having long-term memory",
     # Multi-step entity / complex flow tests
     "test_chained_research_possessor_director": "Chained research: who directed Possessor and what else have they made",
-    "test_parallel_comparison_paris_vs_london": "Parallel weather lookup: compare Paris and London",
+    "test_parallel_comparison_paris_vs_london": "Parallel time lookup: compare Paris and London",
     "test_director_then_filmography_requires_two_searches": "Director-then-filmography needs two searches",
     "test_two_turn_celebrity_flow": "Two-turn celebrity flow: identity then pronoun follow-up",
-    "test_single_weather_call_terminates": "Single weather query ends after one tool call",
+    "test_single_time_call_terminates": "Single time query ends after one tool call",
     "test_max_turn_triggers_digest": "Max-turn cap delivers a digest reply, never silence",
     # Knowledge extraction
     "test_judge_mixed_summary_filters_noise": "Mixed summary: keep novel facts, drop stale weather/recommendations",

@@ -115,6 +115,15 @@ class Settings:
     ollama_chat_model: str
     llm_chat_timeout_sec: float
     llm_tools_timeout_sec: float
+    # Tight deadline for the memory keyword extractor
+    # (reply.enrichment.extract_search_params_for_memory). It is a small
+    # classification-shaped call on the fast tier, not a long-running tool,
+    # so it must not inherit `llm_tools_timeout_sec` — that ceiling is sized
+    # for tool execution (15 s here) and a single unresponsive extractor
+    # call then holds the whole pre-chat phase open for the full ceiling and
+    # returns `{}` anyway. Sized like `llm_digest_timeout_sec`, the other
+    # cheap distil pass on this path.
+    llm_extractor_timeout_sec: float
     # Tight deadline for the cheap distil passes used by memory_digest and
     # tool_result_digest. Separate from `llm_tools_timeout_sec` because
     # those paths run a small classification-shaped LLM call, not a
@@ -590,6 +599,11 @@ def get_default_config() -> Dict[str, Any]:
         #   embedding probe      -> 5 s  (a missing embed model 404s in ms)
         "llm_chat_timeout_sec": 45.0,
         "llm_tools_timeout_sec": 15.0,
+        # The memory keyword extractor is a cheap classification-shaped call,
+        # not a tool, so it gets a short ceiling of its own. A hung extractor
+        # used to burn the full `llm_tools_timeout_sec` (15 s) before
+        # returning an empty result and letting the reply proceed.
+        "llm_extractor_timeout_sec": 8.0,
         # Cheap distil passes should fail fast — a hung digest call would
         # block the reply loop per tool call, amplified by agentic turns.
         "llm_digest_timeout_sec": 8.0,
@@ -1118,6 +1132,7 @@ def load_settings() -> Settings:
     streaming_stt_num_threads = int(merged.get("streaming_stt_num_threads", 2))
     llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 45.0))
     llm_tools_timeout_sec = float(merged.get("llm_tools_timeout_sec", 15.0))
+    llm_extractor_timeout_sec = float(merged.get("llm_extractor_timeout_sec", 8.0))
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
     llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 5.0))
     llm_profile_select_timeout_sec = float(merged.get("llm_profile_select_timeout_sec", 30.0))
@@ -1142,6 +1157,7 @@ def load_settings() -> Settings:
         ollama_chat_model=ollama_chat_model,
         llm_chat_timeout_sec=llm_chat_timeout_sec,
         llm_tools_timeout_sec=llm_tools_timeout_sec,
+        llm_extractor_timeout_sec=llm_extractor_timeout_sec,
         llm_digest_timeout_sec=llm_digest_timeout_sec,
         llm_embedding_timeout_sec=llm_embedding_timeout_sec,
         llm_profile_select_timeout_sec=llm_profile_select_timeout_sec,

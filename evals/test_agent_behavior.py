@@ -905,7 +905,6 @@ class TestHelpfulness:
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {
-            "getWeather": MOCK_WEATHER_FORECAST,
             "webSearch": "Weather forecast: partly cloudy, 14°C tomorrow.",
             "fetchWebPage": "Detailed 7-day forecast...",
         })
@@ -960,7 +959,7 @@ class TestHelpfulness:
         mock_tool_run = create_mock_tool_run(capture, {
             "webSearch": "Top tech news: AI advances, new chip announcements.",
             "fetchWebPage": "Detailed article about tech trends...",
-            "getWeather": "Current time info...",
+            "getTime": "Current time info...",
         })
 
         with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
@@ -984,7 +983,7 @@ class TestHelpfulness:
     @requires_judge_llm
     @pytest.mark.parametrize("follow_up", [
         pytest.param(
-            "you have a weather tool, try again",
+            "you have a time tool, try again",
             id="Tool retry: explicit tool mention"
         ),
         pytest.param(
@@ -992,7 +991,7 @@ class TestHelpfulness:
             id="Tool retry: vague go ahead"
         ),
         pytest.param(
-            "just try checking the weather one more time",
+            "just try checking the time one more time",
             id="Tool retry: vague just try"
         ),
     ])
@@ -1004,12 +1003,12 @@ class TestHelpfulness:
         unhelpful results, the agent should actually call the tool again —
         not narrate its intention to do so.
 
-        Reproduces the bug where the model says "I will try checking the weather now"
+        Reproduces the bug where the model says "I will try checking the time now"
         without actually producing a tool_calls field, causing the engine to treat
         the narration as a final response.
 
         Scenario:
-        - Turn 1: User asks about weather in an obscure location → tool returns
+        - Turn 1: User asks for the time in an obscure location → tool returns
           error/no data → model deflects or gives partial answer
         - Turn 2: User insists "try again" → model MUST call the tool, not
           just say "I will try"
@@ -1035,7 +1034,7 @@ class TestHelpfulness:
             capture.record(tool_name, tool_args or {})
             call_count["n"] += 1
 
-            if tool_name == "getWeather":
+            if tool_name == "getTime":
                 if call_count["n"] <= 1:
                     # First call: tool can't find the location
                     return ToolExecutionResult(
@@ -1047,7 +1046,7 @@ class TestHelpfulness:
                     # Subsequent calls: tool succeeds
                     return ToolExecutionResult(
                         success=True,
-                        reply_text="Current weather near Kazbegi (Stepantsminda), Georgia:\nConditions: Partly cloudy\nTemperature: 2.5°C\nWind: 25 km/h\n7-day: 2026-04-10: -1–5°C, Snow showers"
+                        reply_text="Current time near Kazbegi (Stepantsminda), Georgia:\nTimezone: Asia/Tbilisi\nLocal time: 21:05\nDate: Sunday, 2026-04-20"
                     )
             return ToolExecutionResult(success=True, reply_text="OK")
 
@@ -1056,11 +1055,11 @@ class TestHelpfulness:
         with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
              patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
 
-            # Turn 1: Ask about weather in obscure location — tool will fail
+            # Turn 1: Ask for the time in an obscure location — tool will fail
             capture.clear()
             run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="how's the weather in Kazbegi today?",
+                text="what time is it in Kazbegi today?",
                 dialogue_memory=eval_dialogue_memory
             )
             turn1_tools = capture.tool_names()

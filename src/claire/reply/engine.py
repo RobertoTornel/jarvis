@@ -48,6 +48,7 @@ from .enrichment import (
 from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, new_session_id
 from .prompts import ModelSize, detect_model_size, get_system_prompts
 from .compound_query import split_compound_query
+from .memory_prefetch import start_memory_extractor_prefetch
 from .planner import (
     plan_query,
     format_plan_block,
@@ -527,13 +528,12 @@ _HINT_MESSAGE_CHAR_LIMIT = 200
 
 
 # Tools whose output is already structured, concise, and small-model-friendly.
-# Digesting them throws away substantive data (e.g. a 7-day forecast being
+# Digesting them throws away substantive data (a 7-day forecast being
 # summarised down to just the current conditions because the distil is
 # capped at 4–5 sentences). Add tools here only when their output is
 # consistently <~2 KB AND the user commonly wants the full payload rather
 # than a fact note.
 _DIGEST_SKIP_TOOLS = frozenset({
-    "getWeather",
     "getTime",
 })
 
@@ -934,9 +934,66 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # narrowed tool names — not a 30+ catalogue it has to paraphrase. Two
     # gains: small planners stop inventing tool names ("get the weather")
     # because the relevant ones are already named for them; and tool steps
-    # come out concrete ("getWeather location='Paris'") so the direct-exec
+    # come out concrete ("getTime location='Paris'") so the direct-exec
     # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
+
+    # Finding E — speculative keyword-memory-extractor prefetch.
+    #
+    # The extractor depends only on ``redacted`` and ``context_hint``, both
+    # known right here, yet it used to run strictly AFTER the tool router and
+    # the planner. Those two hops exist only to decide *whether* the turn
+    # needs long-term memory, so the extractor was sitting serially behind a
+    # decision it does not depend on — ~30% of the whole reply, all of it
+    # before the first assistant turn. Start it now and let it overlap them.
+    #
+    # The worker publishes into the very same ``enrichment:<query>``
+    # hot-window entry the serial path reads, so a turn that ends up needing
+    # memory with no planner topic hint finds the answer already in the cache
+    # and pays nothing. A turn that does not need memory simply abandons the
+    # prefetch; it is a daemon thread that swallows its own errors and refuses
+    # to publish across a cache wipe, so abandonment is always safe.
+    #
+    # The callable is bound to the module-level ``extract_search_params_for_memory``
+    # HERE, at start time, so a test that patches that symbol still captures
+    # the background call instead of it reaching a real backend after teardown.
+    # The extractor is a cheap classification-shaped call, so it gets its own
+    # short ceiling instead of inheriting `llm_tools_timeout_sec` (sized for
+    # tool execution, 15 s here). A single unresponsive extractor call used to
+    # burn that whole ceiling and then return an empty result anyway, holding
+    # the pre-chat phase open for the full timeout for no benefit. Fall back to
+    # the old key for callers holding a hand-built cfg without the new field.
+    _extractor_timeout_sec = getattr(cfg, "llm_extractor_timeout_sec", None)
+    if not isinstance(_extractor_timeout_sec, (int, float)):
+        _extractor_timeout_sec = float(getattr(cfg, "llm_tools_timeout_sec", 8.0))
+    _extractor_timeout_sec = float(_extractor_timeout_sec)
+    _memory_prefetch = None
+    try:
+        _extractor_call = extract_search_params_for_memory
+
+        def _prefetch_once(
+            _query=redacted,
+            _cfg=cfg,
+            _call=_extractor_call,
+            _timeout=_extractor_timeout_sec,
+            _hint=context_hint,
+        ):
+            return _call(
+                _query, _cfg, resolve_model(_cfg, Tier.FAST),
+                timeout_sec=_timeout,
+                thinking=getattr(_cfg, "llm_thinking_enabled", False),
+                context_hint=_hint,
+            )
+
+        _memory_prefetch = start_memory_extractor_prefetch(
+            query=redacted,
+            call=_prefetch_once,
+            dialogue_memory=dialogue_memory,
+        )
+    except Exception as _pf_exc:  # noqa: BLE001 - speculation is optional and
+        # must never be able to fail the turn it was trying to speed up.
+        debug_log(f"memory extractor prefetch not started: {_pf_exc}", "memory")
+
     try:
         strategy = ToolSelectionStrategy(getattr(cfg, "tool_selection_strategy", "llm"))
     except ValueError:
@@ -999,11 +1056,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # tool that FAILED (success=False on the ToolExecutionResult), union
     # the previous tool name back into the allow-list. Compensates for
     # small routers that misroute follow-ups where the user is supplying
-    # the missing info — e.g. turn 1 "how's the weather tomorrow?" stalls
-    # because no location is configured, turn 2 "I'm in London" routes to
-    # webSearch instead of re-invoking getWeather. Gating on the prior
-    # tool's failure flag (rather than query length) means a successful
-    # chain followed by a genuine new short ask ("play some music")
+    # the missing info — the assistant asks for a place, the user answers
+    # with just that place on the next turn, and the router picks a generic
+    # search instead of re-invoking the tool that was waiting for it. The
+    # dated field trace that motivated this lives in reply.spec.md. Gating on
+    # the prior tool's failure flag (rather than query length) means a
+    # successful chain followed by a genuine new short ask ("play some music")
     # correctly does NOT carry over the prior tool. The flag distinguishes
     # only success vs failure, not failure mode (argument issue vs network
     # vs anything else); the user is most likely to follow up with a
@@ -1235,12 +1293,29 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 search_params = _cached_params
                 debug_log("memory extractor served from hot-window cache", "memory")
             else:
-                search_params = extract_search_params_for_memory(
-                    _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
-                    timeout_sec=float(getattr(cfg, 'llm_tools_timeout_sec', 8.0)),
-                    thinking=getattr(cfg, 'llm_thinking_enabled', False),
-                    context_hint=context_hint,
-                )
+                # The prefetch computes exactly this key only when the planner
+                # supplied no topic hint; with a topic the extractor's input is
+                # different, so the speculative answer is deliberately not
+                # substituted (see reply/memory_prefetch.py). Either way, the
+                # wait is clamped to the budget the plain call would have had,
+                # so a prefetch can never make this turn slower than not
+                # speculating at all.
+                _params = None
+                if _memory_prefetch is not None and not _memory_topic_hint:
+                    _params = _memory_prefetch.result(_extractor_timeout_sec)
+                    if _params is not None:
+                        debug_log(
+                            "memory extractor served from speculative prefetch",
+                            "memory",
+                        )
+                if _params is None:
+                    _params = extract_search_params_for_memory(
+                        _extractor_query, cfg, resolve_model(cfg, Tier.FAST),
+                        timeout_sec=_extractor_timeout_sec,
+                        thinking=getattr(cfg, 'llm_thinking_enabled', False),
+                        context_hint=context_hint,
+                    )
+                search_params = _params
                 if dialogue_memory and hasattr(dialogue_memory, "hot_cache_put"):
                     dialogue_memory.hot_cache_put(_extractor_cache_key, search_params)
             keywords = search_params.get('keywords', [])
@@ -1895,7 +1970,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # name and every argument, and re-deriving it costs a whole extra
         # chat round-trip on the full system prompt. Measured on this
         # host that redundant turn is 2.0-3.6 s for a call the plan
-        # already contained verbatim (plan `getWeather location='Lisbon'
+        # already contained verbatim (the measurement predates the
+        # removal of the getWeather tool; plan `getWeather location='Lisbon'
         # timeframe='tomorrow'` → the chat model emitted exactly the same
         # arguments one round-trip later). So LARGE models take this path
         # too, but only through `deterministic_only`: when the step is not

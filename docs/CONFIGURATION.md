@@ -283,12 +283,12 @@ primary name's onset consonant cluster (`k` folded to `c`), which is what reject
 
 **Tool Router** - When `"tool_selection_strategy": "llm"` (the default), Claire asks the fast model to pick which tools are relevant for each query, shrinking the tool catalogue the chat model sees. It's already warm and small enough not to stall the turn. Other strategies: `"keyword"` (fast, no LLM), `"embedding"` (nomic-embed-text), `"all"` (no filtering).
 
-**Task-list Planner** - Before the agentic loop, Claire runs a short planning pass that decomposes multi-step queries into an ordered list of sub-tasks. For small models (`gemma4:e2b` class), each planned step is directly resolved to a concrete tool call without relying on the chat model to re-plan turn-by-turn. This significantly improves multi-step reliability. Config options:
+**Task-list Planner** - Before the agentic loop, Claire runs a short planning pass that decomposes multi-step queries into an ordered list of sub-tasks. A planned step that already names a tool and every argument it needs is executed directly, without a chat turn to re-derive it: for small models (`gemma4:e2b` class) every planned step takes that path, and large models take it whenever the step is fully concrete, through the deterministic parser only (a step that would need a resolver call falls back to the model's own native tool calling). This significantly improves multi-step reliability. Config options:
 
 ```json
 {
   "planner_enabled": true,          // set to false to disable the planner entirely
-  "planner_timeout_sec": 6.0        // per-call timeout for plan and step-resolver LLM calls
+  "planner_timeout_sec": 3.0        // per-call timeout for plan and step-resolver LLM calls
 }
 ```
 
@@ -308,9 +308,12 @@ Both digest passes auto-enable for small models (≤7B) and stay off for large m
 {
   "memory_digest_enabled": null,          // null = auto-on for SMALL, false to force off, true to force on
   "tool_result_digest_enabled": null,     // null = auto-on for SMALL, false to force off, true to force on
-  "llm_digest_timeout_sec": 8.0           // tight ceiling shared by both passes
+  "llm_digest_timeout_sec": 8.0,          // tight ceiling shared by both passes
+  "llm_extractor_timeout_sec": 8.0        // tight ceiling for the memory keyword extractor
 }
 ```
+
+The memory keyword extractor (which turns a query into diary/graph search parameters) is a small classification-shaped call, so it gets its own ceiling rather than the tool-execution one; it is started speculatively alongside the tool router and its answer is used only when the turn needs memory.
 
 Field logs show `🧩 Memory digest: …` and `🧩 Tool digest: …` lines when a pass ran, so you can see when the substrate was replaced.
 
@@ -327,7 +330,7 @@ Field logs show `🧩 Memory digest: …` and `🧩 Tool digest: …` lines when
 {
   "tts_engine": "fish",
   "fish_voice_id": "your-cloned-voice-id",
-  "fish_key_file": "~/.config/claire/fish_api_key",
+  "fish_key_file": "~/.config/claire/fish-keys.txt",
   "fish_latency": "low",
   "fish_model": "s1"
 }
@@ -337,7 +340,7 @@ Field logs show `🧩 Memory digest: …` and `🧩 Tool digest: …` lines when
 - `tts_voice`: the generic voice selector; leave `null` to use the engine's default.
 - `tts_rate`: speaking rate in words per minute, `200` = normal.
 - `fish_voice_id`: the cloned voice to speak with (the Fish Audio voice id; `null` falls back to the engine voice).
-- `fish_key_file`: path to a `0600` file **outside the repository** holding the Fish Audio key. The key value is never written to `config.json` and is never printed or logged. A missing file, an empty one, or permissions looser than `0600` raises a named error (`FishKeyFileMissingError`, `FishKeyFileEmptyError`, `FishKeyFilePermissionsError`) that carries the exact path, and an unknown `tts_engine` raises rather than substituting a different engine — there is no silent fallback to another voice.
+- `fish_key_file`: path to a `0600` file **outside the repository** holding the Fish Audio key; the default is `~/.config/claire/fish-keys.txt`, expanded at use time. The key value is never written to `config.json` and is never printed or logged. A missing file, an empty one, or permissions looser than `0600` raises a named error (`FishKeyFileMissingError`, `FishKeyFileEmptyError`, `FishKeyFilePermissionsError`) that carries the exact path, and an unknown `tts_engine` raises rather than substituting a different engine — there is no silent fallback to another voice.
 - `fish_latency`: `"low"` is the default and the only setting suitable for conversation; `"normal"` makes Fish Audio wait roughly 3.4 s *before the first audio* and that wait grows with the length of the reply, which to a listener is indistinguishable from being ignored. Do not make `"normal"` the conversation default — it is opt-in only, for offline or pre-rendered audio.
 - `fish_model`: the Fish Audio model that serves the voice (`"s1"` by default).
 
@@ -372,7 +375,7 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 <details>
 <summary><strong>Location Detection</strong></summary>
 
-Claire can provide location-aware responses (weather, local time, etc.) using a local GeoLite2 database: no cloud geolocation services are used.
+Claire can provide location-aware responses (local time, for example) using a local GeoLite2 database: no cloud geolocation services are used.
 
 **IP detection chain** (in order of preference):
 1. **Manual IP**: configure `location_ip_address` in settings

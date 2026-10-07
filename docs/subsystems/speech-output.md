@@ -139,7 +139,7 @@ unrequested voice.
 | `tts_voice` | `None` | Voice name for local engines (not the Fish voice id). |
 | `tts_rate` | `200` | Words per minute, used for echo-timing estimates. |
 | `fish_voice_id` | `None` | The cloned Fish voice. Fish refuses to speak without it. |
-| `fish_key_file` | a machine-specific path outside the repository | File holding the Fish API keys, one per line, comments allowed. Must not be group- or world-readable. |
+| `fish_key_file` | `~/.config/claire/fish-keys.txt` | File holding the Fish API keys, one per line, comments allowed. The default is a portable `~` path, expanded at use time. Must not be group- or world-readable. |
 | `fish_latency` | `"low"` | `low` or `normal`; anything else falls back to `low`. |
 | `fish_model` | `"s1"` | Fish model id sent in the `model` header. |
 | `tts_piper_model_path`, `tts_piper_speaker`, `tts_piper_length_scale`, `tts_piper_noise_scale`, `tts_piper_noise_w`, `tts_piper_sentence_silence` | see `config.py:632`–`:637` | Piper voice and prosody. |
@@ -221,11 +221,14 @@ quiet fails in seconds rather than two minutes; a construction where
   `duration_callback` to every engine (`listener.py:1547`) while the comment at
   `listener.py:1533` notes it is Piper-only. Fish and Chatterbox ignore it; the
   echo detector falls back to `_estimate_tts_duration` (`tts.py:184`).
-- **`fish_key_file` defaults to a path on one specific machine**
-  (`src/claire/config.py:627`, repeated at `:965`): the default is an absolute
-  path outside the repository, so a fresh checkout that does not set the key
-  file is silent with only the printed reason to explain it. The path is a
-  location, not a secret; the key values inside it must never be printed.
+- **`fish_key_file` defaults to a portable path, not a machine-specific one**
+  (`src/claire/config.py:641`): the default is the unexpanded
+  `~/.config/claire/fish-keys.txt`, which `load_settings()` expands at use time
+  (`:979`, `_default_fish_key_file` at `:1293`), and
+  `test_examples_config_current.py::test_fish_key_file_default_is_portable` pins
+  it as portable. A fresh checkout that does not set the key file is still
+  silent, with only the printed reason to explain it. The path is a location,
+  not a secret; the key values inside it must never be printed.
 
 ## Related spokes
 

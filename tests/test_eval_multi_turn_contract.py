@@ -14,8 +14,8 @@ from evals import helpers
 pytestmark = pytest.mark.unit
 
 ENTRIES = [
-    ('TestTopicSwitching', 'test_weather_then_store_hours'),
-    ('TestTopicSwitching', 'test_search_then_weather'),
+    ('TestTopicSwitching', 'test_time_then_store_hours'),
+    ('TestTopicSwitching', 'test_search_then_time'),
     ('TestFollowUpContext', 'test_follow_up_references_previous_context'),
     ('TestSelfContainedToolArguments', 'test_follow_up_resolves_pronoun_in_search_query'),
     ('TestMultiTurnExtended', 'test_three_turn_topic_changes'),
@@ -42,7 +42,10 @@ def invoke(cases, entry, cfg):
 
 def synthetic_turn(engine, cfg, text, answer):
     lower = text.lower()
-    name = 'getWeather' if 'weather' in lower or 'umbrella' in lower else 'webSearch'
+    # A current-time ask goes to getTime; anything else (store hours, news)
+    # is a search, even when it happens to contain the word "time" — e.g.
+    # "What time does CEX close?".
+    name = 'getTime' if 'what time is it' in lower else 'webSearch'
     query = 'Harry Styles songs' if 'famous songs' in lower else text
     engine.run_tool_with_retries(db=None, cfg=cfg, tool_name=name, tool_args={'query': query})
     return answer
@@ -63,8 +66,8 @@ def test_selected_multi_turn_backend_receives_each_turn(monkeypatch, cases, entr
         calls.append((url, kwargs['json']['model']))
         response = MagicMock()
         response.__enter__.return_value = response
-        response.json.return_value = {'message': {'content': cases['MOCK_WEATHER_RESPONSE']},
-                                     'choices': [{'message': {'content': cases['MOCK_WEATHER_RESPONSE']}}]}
+        response.json.return_value = {'message': {'content': cases['MOCK_TIME_RESPONSE']},
+                                     'choices': [{'message': {'content': cases['MOCK_TIME_RESPONSE']}}]}
         return response
     monkeypatch.setattr(requests, 'post', post)
     def reply(*, cfg, text, **kwargs):
@@ -99,7 +102,7 @@ def test_umbrella_advice_requires_a_previous_weather_fact(monkeypatch, cases, an
 @pytest.mark.parametrize('answer', [None, '', '   ', 'Sorry, I had trouble understanding that request.'])
 def test_a_good_first_turn_does_not_hide_a_failed_follow_up(monkeypatch, cases, entry, answer):
     from claire.reply import engine
-    answers = iter([cases['MOCK_WEATHER_RESPONSE'], answer, answer])
+    answers = iter([cases['MOCK_TIME_RESPONSE'], answer, answer])
     monkeypatch.setattr(engine, 'run_reply_engine', lambda *, cfg, text, **kwargs:
                         synthetic_turn(engine, cfg, text, next(answers)))
     with pytest.raises((AssertionError, pytest.fail.Exception)):
@@ -118,7 +121,7 @@ def test_default_model_is_bound_to_the_canonical_field(monkeypatch, cases):
         observed.append(kwargs['json']['model'])
         response = MagicMock()
         response.__enter__.return_value = response
-        response.json.return_value = {'message': {'content': cases['MOCK_WEATHER_RESPONSE']}}
+        response.json.return_value = {'message': {'content': cases['MOCK_TIME_RESPONSE']}}
         return response
     monkeypatch.setattr(requests, 'post', post)
     def reply(*, cfg, text, **kwargs):

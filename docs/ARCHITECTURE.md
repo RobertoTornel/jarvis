@@ -75,11 +75,11 @@ microphone
                                   tool routing               tools/selection.py:385
                                   planning                   reply/planner.py:424
                                   memory recall              reply/enrichment.py, memory/
-                                  agentic turns              reply/engine.py:1870
+                                  agentic turns              reply/engine.py:1945
                                   tool execution             tools/registry.py:315
                                   MCP tools                  tools/external/mcp_runtime.py
   speech                        output/fish_tts.py:785      FishTTS.speak
-                                  cloud synth                output/fish_client.py:68
+                                  cloud synth                output/fish_client.py:428
                                   streaming playback         output/fish_tts.py:1056
 speaker
   hot window opens              listening/listener.py:1528  completion callback
@@ -171,10 +171,12 @@ line, because the line is only a snapshot of the working tree: the symbol is the
 stable part, the number is a pointer. Files under `src/` change, so treat any
 `file:line` here as "start looking around there", and prefer the named symbol.
 
-Two other documents are long-form guides rather than specs, and are worth
-knowing about: `docs/CONFIGURATION.md` (every key, by hand) and `README.md`
-(install, run, diagnose). The project's own working rules live in `AGENTS.md` at
-the repository root.
+Three other documents are long-form guides rather than specs, and are worth
+knowing about: `docs/CONFIGURATION.md` (every key, by hand), `docs/llm_contexts.md`
+(every LLM call in the app — model, gating, inputs, outputs, limits and the flow
+between them; any change that adds, removes or alters an LLM context must update
+it in the same change) and `README.md` (install, run, diagnose). The project's
+own working rules live in `AGENTS.md` at the repository root.
 
 ## Running the tests
 

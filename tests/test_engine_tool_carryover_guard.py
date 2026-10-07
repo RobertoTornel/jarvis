@@ -32,6 +32,35 @@ from src.claire.memory.conversation import DialogueMemory
 from src.claire.reply.engine import run_reply_engine
 
 
+class _SyntheticWeatherTool:
+    """A stand-in for the ``getWeather`` builtin that has since been removed.
+
+    These tests exercise the engine's failure-gated carry-over guard, which
+    only cares that *some* previously-failed tool name is present in the
+    catalogue. Pinning them to a tool production happens to ship was the
+    reason they broke when ``getWeather`` was deleted; the guard itself was
+    never about weather. Registering this double keeps the scenarios (and the
+    dated field trace above) readable without pretending the tool still
+    exists in the product.
+    """
+
+    name = "getWeather"
+    description = "Synthetic fixture tool for the carry-over guard."
+    inputSchema = {"type": "object", "properties": {}, "required": []}
+
+    def run(self, args=None, context=None):  # pragma: no cover — never invoked
+        raise AssertionError("synthetic fixture tool must not be executed")
+
+
+@pytest.fixture(autouse=True)
+def _register_synthetic_weather_tool():
+    """Make the synthetic tool visible to the engine's catalogue filter."""
+    from src.claire.reply import engine as _engine
+
+    with patch.dict(_engine.BUILTIN_TOOLS, {"getWeather": _SyntheticWeatherTool()}):
+        yield
+
+
 def _mock_cfg():
     cfg = Mock()
     cfg.ollama_base_url = "http://localhost:11434"

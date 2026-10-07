@@ -35,13 +35,14 @@ turn, so correcting a file corrects behaviour without a restart
 
 | Module | Owns | Anchors |
 |---|---|---|
-| `src/claire/memory/db.py` | SQLite schema, FTS5 triggers, optional sqlite-vss/FAISS/Python vector index, weighted reciprocal rank fusion | `_SCHEMA_SQL` `:10`, `conversation_summaries` `:37`, `summaries_fts` `:47`, FTS triggers `:56`, `_VSS_SCHEMA_SQL` `:68`, `_reciprocal_rank_fusion` `:95`, `Database.__init__` `:110`, `has_vector_store` `:147`, `_init_schema` `:151`, FTS rebuild marker `:159`, `search_hybrid` `:172`, `upsert_conversation_summary` `:312`, `upsert_summary_embedding` `:404`, `close` `:442` |
-| `src/claire/memory/conversation.py` | short-term `DialogueMemory`, the diary summariser, history budgeting, tool carryover, keyword/vector search, the deflection and topic sweeps | `_DIARY_SUMMARY_CHUNK_LIMIT` `:17`, `_embed_text` `:69`, `_rewrite_diary_summary` `:123`, `rewrite_all_diary_summaries` `:200`, `optimise_diary_topics` `:435`, `is_tool_message` `:648`, `bound_conversation_history` `:829`, `DialogueMemory` `:935`, `RECENT_WINDOW_SEC` `:1010`, `add_message` `:1039`, `record_tool_turn` `:1152`, `get_recent_turns_with_tools` `:1287`, `get_pending_chunks_with_snapshot` `:1387`, `should_update_diary` `:1421`, `mark_saved_up_to` `:1454`, `generate_conversation_summary` `:1494`, `update_daily_conversation_summary` `:1659`, `search_conversation_memory_by_keywords` `:1799`, `search_conversation_memory` `:1905`, `update_diary_from_dialogue_memory` `:2067` |
+| `src/claire/memory/db.py` | SQLite schema, FTS5 triggers, optional sqlite-vss/FAISS/Python vector index, weighted reciprocal rank fusion | `_SCHEMA_SQL` `:10`, `conversation_summaries` `:37`, `summaries_fts` `:47`, FTS triggers `:56`, `_VSS_SCHEMA_SQL` `:68`, `_reciprocal_rank_fusion` `:95`, `Database.__init__` `:110`, `has_vector_store` `:147`, `_init_schema` `:151`, FTS rebuild marker `:162`, `search_hybrid` `:172`, `upsert_conversation_summary` `:312`, `upsert_summary_embedding` `:404`, `close` `:442` |
+| `src/claire/memory/conversation.py` | short-term `DialogueMemory`, the diary summariser, history budgeting, tool carryover, keyword/vector search, the deflection and topic sweeps | `_DIARY_SUMMARY_CHUNK_LIMIT` `:17`, `_embed_text` `:69`, `_rewrite_diary_summary` `:123`, `rewrite_all_diary_summaries` `:200`, `optimise_diary_topics` `:435`, `is_tool_message` `:648`, `bound_conversation_history` `:829`, `DialogueMemory` `:935`, `RECENT_WINDOW_SEC` `:1017`, `add_message` `:1046`, `record_tool_turn` `:1159`, `HOT_CACHE_MAX_ENTRIES` `:1234`, `hot_cache_put` `:1253`, `clear_hot_cache` `:1266`, `hot_cache_epoch` `:1278`, `get_recent_turns_with_tools` `:1311`, `get_pending_chunks_with_snapshot` `:1411`, `should_update_diary` `:1445`, `mark_saved_up_to` `:1478`, `generate_conversation_summary` `:1518`, `update_daily_conversation_summary` `:1683`, `search_conversation_memory_by_keywords` `:1823`, `search_conversation_memory` `:1929`, `update_diary_from_dialogue_memory` `:2091` |
+| `src/claire/reply/memory_prefetch.py` | `MemoryExtractorPrefetch` — the speculative memory-extractor call the reply engine starts before the chat turn, and the epoch guard that stops an abandoned call repopulating a later conversation's hot cache | `MemoryExtractorPrefetch` `:44`, `start` `:85`, `_publish` `:107`, `result` `:129`, `_read_epoch` `:161`, `start_memory_extractor_prefetch` `:179` |
 | `src/claire/memory/graph.py` | node schema, fixed branches, traversal, decay, mutation listeners | `register_graph_mutation_listener` `:38`, `SPLIT_THRESHOLD` `:89`, `FIXED_BRANCHES` `:124`, `FIXED_BRANCH_IDS` `:148`, `_GRAPH_SCHEMA_SQL` `:216`, `GraphMemoryStore` `:241`, `_ensure_root` `:268`, `migrate_legacy_shape` `:308`, `append_to_node` `:552`, `touch_node` `:568`, `get_recent_nodes` `:582`, `get_top_nodes` `:594`, `get_ancestors` `:642`, `search_nodes` `:684`, `get_graph_data` `:754` |
 | `src/claire/memory/graph_ops.py` | extraction, semantic review, placement, merge, split, warm profile | `_review_graph_facts` `:83`, `extract_graph_memories` `:120`, unknown-branch fallback `:313`, `merge_node_data` `:617`, `auto_split_node` `:767`, `update_graph_from_dialogue` `:897`, automatic merge `:1028`, `consolidate_all_populated_nodes` `:1105`, `build_warm_profile` `:1207`, `format_warm_profile_block` `:1235` |
 | `src/claire/memory/notes.py` | vault path resolution, note frontmatter, note read/write/search, dangling-pointer report — no PyYAML | `VAULT_ENV_VAR` `:82`, `ROUTER_FILENAME` `:91`, `ROUTER_BUDGET_BYTES` `:94`, `resolve_vault_dir` `:133`, config-key step `:151`, `resolve_notes_dir` `:217`, `resolve_router_path` `:230`, `parse_frontmatter` `:249`, `normalize_note_name` `:329`, `list_notes` `:502`, `read_note` `:516`, `search_notes` `:586`, `unreferenced_notes` `:689`, `create_note` `:762`, `ensure_notes_dir` `:839`, `update_note` `:881`, `delete_note` `:939` |
 | `src/claire/memory/router.py` | reading, byte-accounting, truncating and rendering `CLAIRE.md`; template creation | `MEMORY_HEADER` `:82`, `router_template` `:115`, `_truncate_body` `:195`, `MemoryRouter` `:221`, `budget_bytes` `:238`, `reload` `:262`, `render_for_prompt` `:278`, `ensure_router` `:303`, `load_router` `:344` |
-| `src/claire/memory/recall_gate.py` | deterministic pre-flight check that can skip enrichment | `should_recall` `:48`, `min_coverage` `:52`, coverage computation `:82` |
+| `src/claire/memory/recall_gate.py` | deterministic pre-flight check that can skip enrichment | `should_recall` `:48`, `min_coverage` `:52`, coverage computation `:83` |
 | `src/claire/memory/obsidian.py` | Obsidian-compatible vault *shape* — `.obsidian/`, wiki links, document validation, conventions — not a store. Library-only from the reply path's point of view; wired into the panel's vault browser | `VaultLayout` `:99`, `OBSIDIAN_DIRNAME` `:82`, `describe_vault` `:132`, `is_obsidian_vault` `:151`, `ensure_vault` `:157`, `wiki_link` `:189`, `extract_wiki_links` `:209`, `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`, `validate_note_document` `:260`, `vault_conventions` `:331` |
 
 `src/claire/memory/__init__.py` is empty: the package deliberately re-exports
@@ -54,47 +55,47 @@ renders the vault into the prompt (`MEMORY_SECTION_HEADING` `:130`,
 `resolve_default_router_path` `:165`, `load_router_from_vault` `:172`,
 `build_memory_section` `:233`, `build_system_prompt` `:330`), and
 `src/claire/reply/engine.py` decides what is recalled
-(`:1104`–`:1125` gating, `:1148` warm profile, `:1194` enrichment source,
-`:1238` extractor, `:1259` diary, `:1297` graph, `:1367` digest, `:1506`–`:1512`
-router, `:1529`–`:1583` prompt injection).
+(`:1162`–`:1182` gating, `:1206` warm profile, `:1254` enrichment source,
+`:1312` extractor, `:1255` diary, `:1372` graph, `:1436` digest,
+`:1581`–`:1587` router, `:1616`–`:1658` prompt injection).
 
 ## Data and control flow
 
 ### What is written, in what order
 
 **1. The short-term window fills.** `DialogueMemory.add_message`
-(`conversation.py:1039`) appends `(timestamp, role, content)` under a lock and
+(`conversation.py:1046`) appends `(timestamp, role, content)` under a lock and
 assigns a strictly monotonic timestamp. `RECENT_WINDOW_SEC` and
 `MAX_UNSAVED_AGE_SEC` are both the configured `dialogue_memory_timeout`
-(`:1010`–`:1011`); `bound_conversation_history` (`:829`) caps what is *sent* to
+(`:1017`–`:1018`); `bound_conversation_history` (`:829`) caps what is *sent* to
 the model (`dialogue_memory_max_tokens` / `_max_messages`) without capping what
 is stored. Tool messages from the current conversation are re-recorded by
-`record_tool_turn` (`:1152`) and re-injected by `get_recent_turns_with_tools`
-(`:1287`).
+`record_tool_turn` (`:1159`) and re-injected by `get_recent_turns_with_tools`
+(`:1311`).
 
-**2. The flush trigger fires.** `should_update_diary` (`:1421`) returns true
+**2. The flush trigger fires.** `should_update_diary` (`:1445`) returns true
 when there are unsaved messages and either the user has been inactive for the
 window or the oldest unsaved message has reached `MAX_UNSAVED_AGE_SEC`. The
 daemon polls this every 60 s while it can take the chat-query lock
 (`daemon.py:1628`, `:1696`–`:1702`) and forces a final flush at shutdown
-(`daemon.py:1753`). `_check_and_update_diary` (`daemon.py:797`) resolves
+(`daemon.py:1754`). `_check_and_update_diary` (`daemon.py:797`) resolves
 `source_app` to `"stdin"` or `"voice"` (`:861`).
 
 **3. Pending work is snapshotted.** `update_diary_from_dialogue_memory`
-(`conversation.py:2067`) takes `_diary_flush_lock` non-blocking, so flushes on
-one `DialogueMemory` never overlap (`:2098`), then captures the pending chunks
+(`conversation.py:2091`) takes `_diary_flush_lock` non-blocking, so flushes on
+one `DialogueMemory` never overlap (`:2122`), then captures the pending chunks
 *and* the snapshot timestamp atomically
-(`_get_pending_diary_work` / `get_pending_chunks_with_snapshot`, `:2112`,
-`:1387`). Messages arriving during summarisation stay unsaved because the
+(`_get_pending_diary_work` / `get_pending_chunks_with_snapshot`, `:2136`,
+`:1411`). Messages arriving during summarisation stay unsaved because the
 watermark is the captured snapshot, not wall-clock now.
 
 **4. The summary is generated in bounded batches.**
-`update_daily_conversation_summary` (`:1659`) redacts every chunk first
-(`:1687`), reads today's existing row as the previous summary (`:1696`), and
-runs `generate_conversation_summary` (`:1494`) over batches of at most
-`_DIARY_SUMMARY_CHUNK_LIMIT` = 10 chunks (`:17`, `:1725`) until a deadline.
+`update_daily_conversation_summary` (`:1683`) redacts every chunk first
+(`:1711`), reads today's existing row as the previous summary (`:1720`), and
+runs `generate_conversation_summary` (`:1518`) over batches of at most
+`_DIARY_SUMMARY_CHUNK_LIMIT` = 10 chunks (`:17`, `:1749`) until a deadline.
 Intermediate summaries stay in memory; **nothing is written unless every batch
-completes** (`:1723`–`:1776`). Topic keywords come back from the same call.
+completes** (`:1747`–`:1800`). Topic keywords come back from the same call.
 
 **5. The row, its FTS index and its embedding are written.**
 `db.upsert_conversation_summary` (`db.py:312`) inserts or updates on the
@@ -102,15 +103,15 @@ completes** (`:1723`–`:1776`). Topic keywords come back from the same call.
 INSERT/UPDATE/DELETE` triggers (`db.py:56`) maintain `summaries_fts`, which is
 an external-content FTS5 table with the Porter tokenizer (`db.py:47`). The
 embedding is regenerated only when `db.has_vector_store` and
-`cfg.embedding_model` are both present (`conversation.py:1781`–`:1786`).
+`cfg.embedding_model` are both present (`conversation.py:1805`–`:1810`).
 
 **6. The watermark advances.** Only after a real write, and only if the
 snapshot is still current, `mark_saved_up_to(snapshot_timestamp)` is called
-(`:2139`–`:2142`). A superseded or failed snapshot leaves the diary untouched
+(`:2163`–`:2166`). A superseded or failed snapshot leaves the diary untouched
 and the chunks pending.
 
 **7. The graph is updated from that summary.** In the same flush, and
-non-fatally, a fresh `GraphMemoryStore(db.db_path)` (`:2152`) is opened and
+non-fatally, a fresh `GraphMemoryStore(db.db_path)` (`:2176`) is opened and
 `update_graph_from_dialogue` (`graph_ops.py:897`) runs: the summary is passed
 to `extract_graph_memories` (`:120`), whose candidates are filtered by a
 semantic review that keeps only `DURABLE` facts (`_review_graph_facts`, `:83`);
@@ -120,11 +121,11 @@ by `merge_node_data` (`:617`, called at `:1028`) or, if that merge fails,
 plainly appended via `append_to_node` (`graph.py:552`). A node past
 `SPLIT_THRESHOLD` tokens is passed to `auto_split_node` (`:767`). Graph
 extraction is wrapped so a failure cannot lose the diary write
-(`conversation.py:2148`).
+(`conversation.py:2172`).
 
 **8. The vault is written only by a human path.** Nothing in the flush or the
 reply engine calls `create_note` / `update_note`. The panel's memory editor is
-the writer (`panel/server.py:2199`, `:2206`, `:2223`), and
+the writer (`panel/server.py:2190` `save_note`, `:2231` `delete_note`), and
 `router.ensure_router` (`router.py:303`) creates `CLAIRE.md` from
 `router_template` (`:115`) when it is absent. There is no note-writing tool in
 the tool registry under `src/claire/tools/`.
@@ -134,24 +135,33 @@ the tool registry under `src/claire/tools/`.
 Order inside one `run_reply_engine` turn:
 
 1. **Recall decision.** The planner decides `plan_demands_memory`; an empty
-   plan fails open to `needs_memory = True` (`engine.py:1104`–`:1105`).
+   plan fails open to `needs_memory = True` (`engine.py:1162`–`:1163`).
 2. **Recall gate.** When the plan did not explicitly ask for memory and a hot
    window exists, `should_recall` (`recall_gate.py:48`) is consulted
-   (`engine.py:1115`–`:1125`). It returns skip only if the window already holds
+   (`engine.py:1173`–`:1182`). It returns skip only if the window already holds
    a tool message (`is_tool_message`, `conversation.py:648`) *and* at least
    `min_coverage` = 0.5 of the query's content words appear in the window text
-   (`recall_gate.py:52`, `:82`). It never raises outward: any error is logged
+   (`recall_gate.py:52`, `:83`). It never raises outward: any error is logged
    and recall continues.
 3. **Warm profile.** `build_warm_profile` (`graph_ops.py:1207`) walks the User
    and Directives subtrees and returns a `{"user", "directives"}` dict; the
    rendered block is cached on the `DialogueMemory` hot cache for the
    conversation and invalidated by a graph mutation listener registered in the
-   daemon (`engine.py:1148`–`:1190`, `daemon.py:1486`–`:1515`).
+   daemon (`engine.py:1206`–`:1248`, `daemon.py:1486`–`:1515`).
 4. **Extractor.** When memory is needed, an LLM pass turns the query into
-   `keywords` and implicit `questions` (`engine.py:1238`), cached per query in
-   the hot cache.
+   `keywords` and implicit `questions`, and it gets its own short ceiling,
+   `llm_extractor_timeout_sec` (`engine.py:966`–`:969`, default `8.0`), rather
+   than inheriting the tool-execution one. The call is not retried after a
+   timeout. Because the extractor is on the pre-chat critical path, the engine
+   starts it **speculatively** alongside the tool router
+   (`engine.py:988`, `memory_prefetch.py:179`) and reuses the result only when
+   the turn reaches memory recall with no planner topic hint
+   (`engine.py:1304`); otherwise the serial call at `engine.py:1312` runs. A
+   prefetch whose conversation was cleared cannot repopulate the cache: it
+   publishes only when its captured `hot_cache_epoch` still matches
+   (`memory_prefetch.py:161`, `conversation.py:1278`).
 5. **Diary recall.** With `memory_enrichment_source` in `("all", "diary")`,
-   `search_conversation_memory_by_keywords` (`conversation.py:1799`) builds an
+   `search_conversation_memory_by_keywords` (`conversation.py:1823`) builds an
    FTS `OR` query (capped at 5 keywords) and embeds the keyword cluster for
    `db.search_hybrid` (`db.py:172`): candidate pools of
    `max(top_k * 3, 50)` per source fused by weighted reciprocal rank fusion,
@@ -159,29 +169,29 @@ Order inside one `run_reply_engine` turn:
    a rank (`db.py:95`). With no query vector the FTS order is kept; with no
    usable keyword query the newest summaries are returned (`db.py:220`–`:238`).
    The engine caps results at `cfg.memory_enrichment_max_results`
-   (`engine.py:1274`).
+   (`engine.py:1349`).
 6. **Graph recall.** With the source in `("all", "graph")` and at least two
    content words in the implicit questions, `search_nodes` (`graph.py:684`) is
    queried with `limit=5`; each hit is prefixed with its branch/ancestor path
-   (`engine.py:1297`–`:1345`).
+   (`engine.py:1372`–`:1420`).
 7. **Digest.** For small models (auto, or forced by `memory_digest_enabled`),
    the raw diary and graph text is replaced by one relevance-filtered note from
-   `digest_memory_for_query` (`engine.py:1367`–`:1399`;
-   `src/claire/reply/enrichment.py:326`).
+   `digest_memory_for_query` (`engine.py:1436`–`:1472`;
+   `src/claire/reply/enrichment.py:346`).
 8. **Prompt assembly.** `build_system_prompt(name, load_default_router=True)`
-   (`engine.py:1512`) re-reads `<vault>/CLAIRE.md` and wraps it under
+   (`engine.py:1587`) re-reads `<vault>/CLAIRE.md` and wraps it under
    `## Memory (always loaded)` (`system_prompt.py:233`). The warm profile is
    appended next, unconditionally and outside the planner gate
-   (`engine.py:1529`), then the diary block (`:1539`), the graph block
-   (`:1560`) and the digest (`:1563`). Each block carries framing text: diary
+   (`engine.py:1616`), then the diary block (`:1614`–`:1632`), the graph block
+   (`:1635`) and the digest (`:1638`). Each block carries framing text: diary
    entries are reference-only with newest-wins, and anything the digest
    attributes to the assistant must be re-verified with a tool before restating
-   (`:1540`–`:1583`).
+   (`:1622`–`:1658`).
 
 ### Retrieval outside the reply path
 
-`search_conversation_memory` (`conversation.py:1905`) and
-`get_relevant_conversation_context` (`:2044`) are the natural-language
+`search_conversation_memory` (`conversation.py:1929`) and
+`get_relevant_conversation_context` (`:2068`) are the natural-language
 wrappers over the same hybrid search, used by callers that want "top N matches"
 without the engine's planner gating. The maintenance sweeps are user-triggered
 from the memory viewer, not the daemon:
@@ -194,23 +204,24 @@ change memory behaviour. Every value is overridable per key in the config file.
 
 | Key | Default | Effect |
 |---|---|---|
-| `db_path` | `~/.local/share/claire/claire.db` (`config.py:67`, `:547`) | the single SQLite file holding the diary *and* the graph |
-| `sqlite_vss_path` | `None` (`:548`) | optional sqlite-vss extension; when absent a FAISS or Python store is used (`db.py:119`–`:138`) |
-| `vault_dir` | `~/.local/share/claire/vault` (`config.py:73`, `:551`) | the markdown vault; the router and `notes/` live here |
-| `dialogue_memory_timeout` | `300.0` (`config.py:728`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
-| `dialogue_memory_max_tokens` | `8000` (`:731`) | ceiling on history sent to the model; `0` disables the dimension |
-| `dialogue_memory_max_messages` | `40` (`:732`) | second ceiling on that history |
-| `memory_enrichment_max_results` | `3` (`:733`) | diary hits passed to the prompt |
-| `memory_enrichment_source` | `"all"` (`:734`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1046`) |
-| `tool_carryover_max_turns` | `2` (`:736`) | prior tool turns re-injected into the hot window |
-| `tool_carryover_per_entry_chars` | `1200` (`:737`) | per-entry cap on that carryover |
-| `memory_digest_enabled` | `None` (`:739`) | `None` = auto (on for small models), `true`/`false` force it |
-| `tool_result_digest_enabled` | `None` (`:745`) | same tri-state for distilling raw tool results |
+| `db_path` | `~/.local/share/claire/claire.db` (`config.py:67`, `:556`) | the single SQLite file holding the diary *and* the graph |
+| `sqlite_vss_path` | `None` (`:557`) | optional sqlite-vss extension; when absent a FAISS or Python store is used (`db.py:119`–`:138`) |
+| `vault_dir` | `~/.local/share/claire/vault` (`config.py:73`, `:560`) | the markdown vault; the router and `notes/` live here |
+| `dialogue_memory_timeout` | `300.0` (`config.py:742`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
+| `dialogue_memory_max_tokens` | `8000` (`:745`) | ceiling on history sent to the model; `0` disables the dimension |
+| `dialogue_memory_max_messages` | `40` (`:746`) | second ceiling on that history |
+| `memory_enrichment_max_results` | `3` (`:747`) | diary hits passed to the prompt |
+| `memory_enrichment_source` | `"all"` (`:748`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1059`–`:1061`) |
+| `tool_carryover_max_turns` | `2` (`:750`) | prior tool turns re-injected into the hot window |
+| `tool_carryover_per_entry_chars` | `1200` (`:751`) | per-entry cap on that carryover |
+| `memory_digest_enabled` | `None` (`:753`) | `None` = auto (on for small models), `true`/`false` force it |
+| `tool_result_digest_enabled` | `None` (`:759`) | same tri-state for distilling raw tool results |
+| `llm_extractor_timeout_sec` | `8.0` (`:606`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:966`–`:969`) |
 
 **The vault path has an environment override:** `CLAIRE_VAULT_DIR`
 (`notes.py:82`). Resolution order is explicit argument, then the environment
 variable, then the `vault_dir` config key, then the built-in default
-(`notes.py:146`–`:154`). The environment variable outranks the config file on
+(`notes.py:147`–`:155`). The environment variable outranks the config file on
 purpose, as the per-run override a test or a one-off command can rely on
 (`notes.py:142`). The router's byte
 cap is not a config key: it is `ROUTER_BUDGET_BYTES` = 6000 (`notes.py:94`),
@@ -237,15 +248,15 @@ overridable per file by the router's own `budget_bytes` frontmatter
   (`:157`), wiki-link helpers (`wiki_link` `:189`, `extract_wiki_links` `:209`,
   `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`) and
   `validate_note_document` (`:260`). It is wired into the panel, which calls
-  `describe_vault` for the vault tab (`panel/server.py:1953`), the wiki-link
-  helpers and validator when reading a note (`:2056`–`:2059`), `ensure_vault`
-  before a write (`:2198`) and `link_targets_in_text` for backlinks (`:3486`).
+  `describe_vault` for the vault tab (`panel/server.py:1965`), the wiki-link
+  helpers and validator when reading a note (`:2066`–`:2071`), `ensure_vault`
+  before a write (`:2210`) and `link_targets_in_text` for backlinks (`:3507`).
   Nothing on the reply path imports it. `unreferenced_notes`
   (`notes.py:689`) counts `[[name]]`, `notes/name.md` and `name.md` pointers
   (`:675`, `:700`), which is what keeps the Obsidian-shaped vault and the
   router-honesty report agreeing.
 - **Panel surfaces.** `PanelState.router_status` (`panel/server.py:1714`),
-  `.diary` (`:1875`), `.memory_notes` (`:1942`) and `.memory_search` (`:2081`)
+  `.diary` (`:1875`), `.memory_notes` (`:1954`) and `.memory_search` (`:2093`)
   expose the vault and diary read-only to the browser; the graph explorer and
   the maintenance sweeps live in `src/desktop_app/memory_viewer.py`
   (`get_graph_store` `:311`, rewrite sweep `:678`, topic sweep `:768`).
@@ -290,7 +301,7 @@ Only behaviours the code actually implements are listed.
   `load_default_router=True`, and `load_router` defaults to `create=True`, so
   the missing file is created from the template (`router.py:115`, `:344`);
   creation is reported, never silent. A vault directory is returned even when
-  it does not exist yet (`notes.py:139`); `create_note` creates it on demand.
+  it does not exist yet (`notes.py:154`); `create_note` creates it on demand.
 - **The vault is unreadable or not decodable.** A real read failure raises a
   named error (`RouterReadError` / `RouterDecodeError`, `router.py:67`–`:71`)
   and `build_memory_section` turns it into a visible
@@ -298,9 +309,9 @@ Only behaviours the code actually implements are listed.
   (`system_prompt.py:223`–`:247`). An empty render becomes `[memory-empty]`.
 - **The note index is missing.** `_require_notes_dir` (`notes.py:398`–`:407`)
   raises a `NotesDirectoryError` naming the directory rather than returning an
-  empty list; it is reached from `list_notes` (`:512`), `search_notes`
-  (`:614`), `unreferenced_notes` (`:710`), `update_note` (`:906`) and
-  `delete_note` (`:951`). `read_note` resolves the path itself and raises
+  empty list; it is reached from `list_notes` (`:502`), `search_notes`
+  (`:586`), `unreferenced_notes` (`:689`), `update_note` (`:881`) and
+  `delete_note` (`:939`). `read_note` resolves the path itself and raises
   `NoteNotFoundError` naming both the note and the directory it looked in
   (`:530`, `:536`). A note name that would
   escape the vault is refused twice: at normalisation (`:329`) and again at
@@ -310,11 +321,11 @@ Only behaviours the code actually implements are listed.
   (`router.py:195`, `:99`–`:107`). `size_bytes`/`over_budget`/`dropped_bytes`
   describe the file, not the last render (`:238`–`:258`).
 - **Graph extraction fails.** It is wrapped so the diary write still counts as
-  success (`conversation.py:2148`). The semantic fact review fails closed for
+  success (`conversation.py:2172`). The semantic fact review fails closed for
   the graph cycle: an unavailable or malformed review returns no facts rather
   than unreviewed ones (`graph_ops.py:88`, `:112`).
 - **The recall gate fails.** Any exception is caught and treated as "recall"
-  (`engine.py:1125`), and a stopword-only or empty query cannot justify a skip
+  (`engine.py:1181`), and a stopword-only or empty query cannot justify a skip
   (`recall_gate.py:70`–`:72`).
 
 ## Where the tests live
@@ -327,7 +338,7 @@ Only behaviours the code actually implements are listed.
 | Short-term window, carryover and budget | `test_dialogue_memory.py`, `test_dialogue_memory_hot_cache.py`, `test_dialogue_memory_tool_carryover.py`, `test_context_budget.py`, `test_memory_injected_per_request.py` |
 | Knowledge graph | `test_graph_memory.py`, `test_graph_ops.py`, `test_graph_memory_tools.py`, `test_graph_fact_hygiene.py`, `test_graph_timing_context.py`, `test_graph_mutation_listener.py`, `test_memory_viewer_graph_api.py` |
 | Router, notes, vault shape and recall gate | `test_memory_router.py`, `test_memory_notes.py`, `test_memory_obsidian.py` (vault shape and the full resolution order), `test_panel_memory.py` (the panel's note round-trip through `notes`/`obsidian`), `test_recall_gate.py` |
-| Enrichment and digest | `test_enrichment.py`, `test_enrichment_model_routing.py`, `test_memory_digest_generation_budget.py`, `test_memory_recall_generation_budget.py` |
+| Enrichment and digest | `test_enrichment.py`, `test_enrichment_model_routing.py`, `test_memory_digest_generation_budget.py`, `test_memory_recall_generation_budget.py`, `test_memory_extractor_prefetch.py` (the speculative extractor and its epoch guard), `test_extractor_timeout_ceiling.py` (the extractor's own ceiling) |
 | Evaluations | `evals/test_hybrid_retrieval.py` (ranking, not a specific embedding model), `evals/test_graph_branch_routing.py`, `evals/test_knowledge_extraction.py`, `evals/test_merge_consolidation.py`, `evals/test_memory_digest_identity.py`, `evals/test_memory_digest_preferences.py`, `evals/test_memory_digest_relevance.py` |
 
 `test_memory_notes.py` monkeypatches `CLAIRE_VAULT_DIR` away from the real data
@@ -345,8 +356,8 @@ it stands. Both sides are given.
    wins over the default", and `:38` presents the environment variable as *the*
    way to move the vault. The code has four steps, with the `vault_dir` config
    key between the environment variable and the default
-   (`src/claire/memory/notes.py:146`–`:154`, `_configured_vault_dir` `:199`;
-   declared at `src/claire/config.py:95` and loaded at `:863`–`:864`).
+   (`src/claire/memory/notes.py:147`–`:155`, `_configured_vault_dir` `:199`;
+   declared at `src/claire/config.py:95` and loaded at `:877`–`:878`).
    `examples/config.json:4` already ships the key.
 
 2. **The topic sweep's spec signature is the old Ollama-shaped one.**
@@ -373,8 +384,8 @@ it stands. Both sides are given.
    diary system remains the primary memory system for now; the graph is a v2
    system being built in parallel". The same file records the default flipping
    to include graph recall (`graph.spec.md:190`), and the shipped default is
-   `"memory_enrichment_source": "all"` (`src/claire/config.py:734`), with the
-   warm profile injected on every turn (`src/claire/reply/engine.py:1529`).
+   `"memory_enrichment_source": "all"` (`src/claire/config.py:748`), with the
+   warm profile injected on every turn (`src/claire/reply/engine.py:1616`).
 
 5. **The vault-shape comments point at `docs/OBSIDIAN.md`.** `src/claire/config.py:94`,
    `src/claire/memory/notes.py:30` and `src/claire/memory/obsidian.py:46` all
@@ -387,7 +398,7 @@ spec-versus-docs, and are recorded here because they are checkable:
 
 6. `src/claire/memory/recall_gate.py:8` describes the heuristic as "keyword
    Jaccard", but the implemented measure is asymmetric coverage,
-   `|overlap| / |query_words|` (`recall_gate.py:82`), which is what
+   `|overlap| / |query_words|` (`recall_gate.py:83`), which is what
    `recall_gate.spec.md:28` describes. The module docstring is the odd one out.
 
 7. `src/claire/memory/notes.py:51` exports `DEFAULT_VAULT_DIR` in `__all__`,

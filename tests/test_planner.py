@@ -32,6 +32,11 @@ from claire.reply.planner import (
     tool_steps_of,
 )
 
+# Marked so the unit gate actually runs this file. It sat unmarked (and
+# therefore silently deselected) while a planner change landed, which is
+# exactly the blind spot tests/test_test_files_are_marked.py exists to catch.
+pytestmark = pytest.mark.unit
+
 
 def _cfg(**overrides):
     base = {

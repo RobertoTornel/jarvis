@@ -277,7 +277,7 @@ def _select_llm(
         "the query depends on data NOT in KNOWN FACTS — the user's logs, "
         "current conditions, web info, files, screen — pick a tool, even "
         "when the phrasing is indirect ('should I order pizza?' → needs the "
-        "meal log; 'do I need a jacket?' → needs the weather). Do NOT pick a "
+        "meal log; 'do I need a jacket?' → needs a current-conditions web search). Do NOT pick a "
         "tool merely because its domain is loosely adjacent. "
         "If the query asks for DETAILED information on a topic (articles, "
         "explanations, write-ups), include BOTH a search tool AND a page-fetch "
