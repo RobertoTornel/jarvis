@@ -49,7 +49,6 @@ from .prompt_dump import dump_reply_turn, is_enabled as _prompt_dump_enabled, ne
 from .prompts import ModelSize, detect_model_size, get_system_prompts
 from .compound_query import split_compound_query
 from .memory_prefetch import start_memory_extractor_prefetch
-from .planner_prefetch import start_planner_prefetch
 from .planner import (
     plan_query,
     format_plan_block,
@@ -62,12 +61,10 @@ from .planner import (
     memory_topic_of,
     is_search_memory_step,
     resolve_next_tool_call as _resolve_plan_step,
-    MIN_QUERY_CHARS as _PLANNER_MIN_QUERY_CHARS,
 )
 from ..tools.selection import select_tools, ToolSelectionStrategy
 import json
 import re
-import time
 import uuid
 from datetime import datetime, timezone
 from ..utils.location import get_location_context_with_timezone
@@ -780,31 +777,6 @@ def _build_enrichment_context_hint(cfg, recent_messages: list) -> Optional[str]:
     return "\n\n".join(parts) if parts else None
 
 
-def _planner_tool_catalog_for(names, mcp_tools) -> list[tuple[str, str]]:
-    """Build the planner's ``(tool name, first description line)`` catalogue.
-
-    One builder for both catalogues the planner can be handed: the router's
-    narrowed picks (the serial path) and the full catalogue (the speculative
-    path, which runs before the router's narrowing exists). Keeping the
-    truncation in one place is what makes the two arms comparable — the
-    concurrent planner is only acceptable because planning against the full
-    catalogue was measured to cost the same as planning against a narrowed
-    one, and that comparison is meaningless if the two prompts are shaped
-    differently here.
-    """
-    catalog: list[tuple[str, str]] = []
-    for schema in (generate_tools_json_schema(list(names), mcp_tools) or []):
-        fn = schema.get("function", {}) if isinstance(schema, dict) else {}
-        if not isinstance(fn, dict):
-            continue
-        nm = fn.get("name")
-        if not nm:
-            continue
-        desc = (fn.get("description") or "").strip().splitlines()
-        catalog.append((str(nm), (desc[0] if desc else "")[:120]))
-    return catalog
-
-
 def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     text: str, dialogue_memory: "DialogueMemory",
                     language: Optional[str] = None,
@@ -956,115 +928,14 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     _dialogue_ctx = "\n".join(_dialogue_lines[-_HINT_RECENT_MESSAGES:])
     debug_log(f"planner dialogue: {min(len(_dialogue_lines), _HINT_RECENT_MESSAGES)} non-empty dialogue messages", "planning")
 
-    # ── Speculative planner prefetch, started BEFORE the tool router ─────
+    # Step 2a: Tool routing FIRST.
     #
-    # The planner and the tool router are both LLM round-trips and used to run
-    # strictly in series (router ~2.2 s, planner ~2.1 s median on this host).
-    # The planner reads only the redacted query and the dialogue window, both
-    # known right here, so it can start now and overlap the router.
-    #
-    # The one thing it gives up by starting early is the router's narrowing:
-    # there is no narrowed catalogue yet, so it plans against the FULL
-    # catalogue. That narrowing is a quality device, not a dependency — and
-    # planning against the full catalogue was measured to cost the planner very
-    # little (see `planner_prefetch`): 30 paired calls, 3-tool vs 15-tool
-    # catalogue, median delta +0.00 s / mean +0.09 s. The catalogue the planner
-    # is handed is names + a truncated first description line (391 vs 1723
-    # characters), not the 2–3x schema growth a raw token count of
-    # `generate_tools_json_schema` suggests. The residual, honest cost is a
-    # slightly higher share of calls reaching the tight configured planner
-    # ceiling (6/30 -> 8/30 at 3.0 s), which fails open like any planner
-    # timeout.
-    #
-    # The consumption site below never waits: it takes the speculative plan
-    # only if the worker has ALREADY produced one when the router finishes, and
-    # otherwise runs the serial planner verbatim. Two guarantees fall out of
-    # that single rule:
-    #
-    #   1. Never slower. Nothing is ever waited for, so the speculative call
-    #      cannot add a millisecond to a turn. On the path where the plan is
-    #      not in hand the turn runs precisely the pre-existing serial code.
-    #   2. Never planless where serial would have planned. The serial planner
-    #      is skipped only when the turn already holds a real plan, so there is
-    #      no state in which the engine follows a plan the old code would not
-    #      have had.
-    #
-    # (A third, inherited guarantee: `allowed_tools` below already unions in
-    # every tool the plan names from `_full_catalog_names`, so a speculative
-    # plan that reaches for a tool the router did not pick — or that the router
-    # narrowed away — stays executable rather than 404-ing.)
-    #
-    # The turn may still be skipped by the fast path below (short, tool-free):
-    # that decision needs the router, so the prefetch fires anyway but is
-    # simply never waited on. It is a daemon thread that swallows its own
-    # errors, so abandonment is always safe.
-    _planner_timeout_sec = getattr(cfg, "planner_timeout_sec", None)
-    if not isinstance(_planner_timeout_sec, (int, float)) or isinstance(
-        _planner_timeout_sec, bool
-    ):
-        # Fall back for hand-built cfgs (and test doubles) without the field,
-        # matching `plan_query`'s own default so both paths use one ceiling.
-        _planner_timeout_sec = 3.0
-    _planner_timeout_sec = float(_planner_timeout_sec)
-    _planner_prefetch = None
-    _planner_prefetch_t0: Optional[float] = None
-    try:
-        if (
-            getattr(cfg, "planner_enabled", True)
-            and redacted
-            and len(redacted.strip()) >= _PLANNER_MIN_QUERY_CHARS
-        ):
-            _full_planner_catalog = _planner_tool_catalog_for(
-                _full_catalog_names, mcp_tools
-            )
-            # Bind the symbol HERE, at start time, so a test that patches
-            # `plan_query` captures the background call instead of it reaching
-            # a real backend after teardown.
-            _plan_call = plan_query
-
-            def _plan_once(
-                _call=_plan_call,
-                _cfg=cfg,
-                _query=redacted,
-                _dialogue=_dialogue_ctx,
-                _tools=_full_planner_catalog,
-                _timeout=_planner_timeout_sec,
-            ):
-                return _call(
-                    cfg=_cfg,
-                    query=_query,
-                    dialogue_context=_dialogue,
-                    tools=_tools,
-                    timeout_sec=_timeout,
-                )
-
-            _planner_prefetch = start_planner_prefetch(
-                call=_plan_once,
-                timeout_sec=_planner_timeout_sec,
-            )
-            _planner_prefetch_t0 = time.monotonic()
-            debug_log(
-                f"planner prefetch started against the full catalogue "
-                f"({len(_full_planner_catalog)} tools, "
-                f"ceiling {_planner_timeout_sec:.1f}s)",
-                "planning",
-            )
-    except Exception as _plan_pf_exc:  # noqa: BLE001 - speculation is optional
-        # and must never be able to fail the turn it was trying to speed up.
-        debug_log(f"planner prefetch not started: {_plan_pf_exc}", "planning")
-        _planner_prefetch = None
-        _planner_prefetch_t0 = None
-
-    # Step 2a: Tool routing.
-    #
-    # The router's picks narrow the catalogue the planner is handed — the
-    # speculative planner above has already started against the full one, so
-    # this narrowing now serves the *serial fallback* (and the allow-list
-    # union): small planners stop inventing tool names ("get the weather")
-    # because the relevant ones are already named for them, and tool steps
-    # come out concrete ("getTime location='Paris'") so the direct-exec fast
-    # path parses without needing the resolver LLM round-trip. The router no
-    # longer sits serially in front of the planner's round-trip.
+    # The router runs before the planner so the planner sees concrete,
+    # narrowed tool names — not a 30+ catalogue it has to paraphrase. Two
+    # gains: small planners stop inventing tool names ("get the weather")
+    # because the relevant ones are already named for them; and tool steps
+    # come out concrete ("getTime location='Paris'") so the direct-exec
+    # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
 
     # Finding E — speculative keyword-memory-extractor prefetch.
@@ -1143,7 +1014,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         dialogue_memory.hot_cache_get(_router_cache_key)
         if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get") else None
     )
-    _router_t0 = time.monotonic()
     if isinstance(_cached_routed, list):
         routed_tools = list(_cached_routed)
         debug_log("tool router served from hot-window cache", "planning")
@@ -1182,12 +1052,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         ):
             dialogue_memory.hot_cache_put(_router_cache_key, list(routed_tools or []))
 
-    # The router's own duration is the part of the planner's serial budget the
-    # speculative run has already spent. Everything the planner is allowed to
-    # wait for below is `planner_timeout_sec + this`, measured from the
-    # prefetch start — i.e. never more than the serial ordering would have cost.
-    _router_elapsed = time.monotonic() - _router_t0
-
     # Tool carry-over guard: when the previous assistant turn invoked a
     # tool that FAILED (success=False on the ToolExecutionResult), union
     # the previous tool name back into the allow-list. Compensates for
@@ -1220,7 +1084,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 "planning",
             )
 
-    _planner_tool_catalog = _planner_tool_catalog_for(routed_tools, mcp_tools)
+    _planner_schema = generate_tools_json_schema(routed_tools, mcp_tools)
+    _planner_tool_catalog: list[tuple[str, str]] = []
+    for _schema in (_planner_schema or []):
+        _fn = _schema.get("function", {}) if isinstance(_schema, dict) else {}
+        if isinstance(_fn, dict):
+            _nm = _fn.get("name")
+            _desc = (_fn.get("description") or "").strip().splitlines()
+            _first = _desc[0] if _desc else ""
+            if _nm:
+                _planner_tool_catalog.append((str(_nm), _first[:120]))
 
     action_plan: list[str] = []
 
@@ -1261,58 +1134,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             "planning",
         )
     else:
-        action_plan = []
-        _plan_source = "serial"
-        # The race, and its one rule: take the speculative plan only if it is
-        # ALREADY in hand, and otherwise run the planner exactly as if the
-        # prefetch had never started. Nothing is ever waited for, so the
-        # speculative call can only ever give the turn something it would not
-        # have had — it can never spend budget, and it can never be the reason
-        # a plan is missing.
-        #
-        # This matters because the backend is shared. When the router and the
-        # planner are both in flight the gateway may serve them concurrently
-        # (which is where the win comes from) or queue one behind the other
-        # (measured: a contended planner call can outrun the ceiling its serial
-        # counterpart met comfortably). A design that *waited* for the
-        # speculative plan had to guess which had happened, and on a queued
-        # backend it guessed wrong in both directions at once: it spent the
-        # whole budget waiting and then followed no plan at all. Requiring the
-        # plan to be ready removes the guess: queued backends degrade to the
-        # serial path, batched ones keep the whole overlap.
-        if _planner_prefetch is not None:
-            _prefetched_plan = _planner_prefetch.plan_if_ready()
-            if _prefetched_plan:
-                action_plan = _prefetched_plan
-                _plan_source = "prefetch"
-                if _planner_prefetch_t0 is not None:
-                    debug_log(
-                        f"planner served from the speculative prefetch "
-                        f"({len(action_plan)} step(s), "
-                        f"{time.monotonic() - _planner_prefetch_t0:.2f}s "
-                        f"into the turn; router took {_router_elapsed:.2f}s)",
-                        "planning",
-                    )
-            else:
-                debug_log(
-                    "planner prefetch had no plan in hand when the router "
-                    "finished — running the planner serially",
-                    "planning",
-                )
-        if _plan_source != "prefetch":
-            # Verbatim the pre-existing serial call, including its own
-            # `planner_timeout_sec` default: a turn that does not get the
-            # speculative plan behaves exactly as it did before this change.
-            try:
-                action_plan = plan_query(
-                    cfg=cfg,
-                    query=redacted,
-                    dialogue_context=_dialogue_ctx,
-                    tools=_planner_tool_catalog,
-                )
-            except Exception as _plan_exc:  # pragma: no cover — defensive
-                debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
-                action_plan = []
+        try:
+            action_plan = plan_query(
+                cfg=cfg,
+                query=redacted,
+                dialogue_context=_dialogue_ctx,
+                tools=_planner_tool_catalog,
+            )
+        except Exception as _plan_exc:  # pragma: no cover — defensive
+            debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")
+            action_plan = []
     if action_plan:
         _plan_preview = " | ".join(s[:50] for s in action_plan)
         print(

@@ -552,15 +552,7 @@ def test_direct_exec_fires_despite_prior_query_tool_carryover(
 def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
     mock_config, db, dialogue_memory
 ):
-    """Router returns only ['stop'] → the planner's plan is not consumed.
-
-    Neither the planner nor the memory extractor is *consulted* here any more:
-    both are now started speculatively before the router, because the skip
-    decision needs the router's verdict. What the fast path still guarantees
-    is that the turn does not *use* either result — it follows the reply-only
-    plan and skips memory enrichment entirely. Both prefetches are daemon
-    threads that swallow their own errors, so the wasted call is not waited on.
-    """
+    """Router returns only ['stop'] → planner skipped for short query."""
     from claire.reply import engine as engine_mod
     from claire.tools.types import ToolExecutionResult
 
@@ -572,27 +564,18 @@ def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
 
     def fake_plan_query(*args, **kwargs):
         plan_query_calls.append(1)
-        # Deliberately NOT the reply-only plan: if the fast path ever consumed
-        # a speculative plan, the ACTION PLAN block below would show this.
-        return ["searchMemory topic='must not be used'", "Reply to the user."]
-
-    system_messages = []
+        return ["Reply to the user."]
 
     def fake_chat(*args, **kwargs):
-        msgs = kwargs.get("messages") or (args[2] if len(args) > 2 else [])
-        for m in msgs:
-            if m.get("role") == "system":
-                system_messages.append(m.get("content", ""))
-                break
         return {"message": {"role": "assistant", "content": "Hi there!"}}
 
-    # The extractor's *result* must not be consumed — the reply-only plan
-    # skips memory enrichment even though the speculative call may fire.
+    # The extractor should NOT be called — the reply-only plan skips
+    # memory enrichment.
     extractor_calls = []
 
     def fake_extractor(*args, **kwargs):
         extractor_calls.append(1)
-        return {"keywords": ["must not be used"]}
+        return {"keywords": []}
 
     with patch.object(engine_mod, "chat_with_messages", side_effect=fake_chat), \
          patch.object(engine_mod, "select_tools", return_value=["stop"]), \
@@ -607,18 +590,13 @@ def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
             dialogue_memory=dialogue_memory,
         )
 
-    # The speculative calls may or may not have been scheduled by now, so their
-    # *count* is not asserted (both prefetches are daemon threads). What the
-    # fast path guarantees is that neither result reaches the turn: it follows
-    # the reply-only plan, so no ACTION PLAN block is injected — and the
-    # planner's fake plan is never used, which is why `plan_query` is called at
-    # most once (the speculative call itself) rather than a second time.
-    assert not any("ACTION PLAN" in c for c in system_messages), (
-        "a skipped turn must not follow a speculative planner's plan"
+    assert len(plan_query_calls) == 0, (
+        f"plan_query should NOT be called when router returns no tools "
+        f"and query is short; was called {len(plan_query_calls)}×"
     )
-    assert len(plan_query_calls) <= 1, (
-        f"a skipped turn must not run a serial planner on top of the "
-        f"speculative one; plan_query called {len(plan_query_calls)}×"
+    assert len(extractor_calls) == 0, (
+        "memory extractor should NOT be called when planner is skipped "
+        "(reply-only plan means no memory enrichment)"
     )
 
 

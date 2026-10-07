@@ -39,12 +39,11 @@ Design principles enforced by the engine:
      - Lifetime: entries persist until (a) the `stop` signal clears the whole cache, (b) the engine detects a new conversation at turn entry (`has_recent_messages()` was False) and clears it before running, or (c) targeted invalidation (warm profile only) on graph mutations. Entries are *not* bounded by `RECENT_WINDOW_SEC` age, so a long active session keeps them warm.
 
 3. Pre-flight Planner
-   - The task-list planner (`plan_query` in `src/claire/reply/planner.py`) runs **first**, before any memory lookup or tool routing. It sees the query, a compact dialogue snippet, and the builtin + MCP tool catalogue (name + truncated first description line).
-   - It is started **speculatively on a background thread** the moment the query and dialogue window are known, so it overlaps the `select_tools` router instead of queueing behind it. Because the router has not run yet, the speculative call is handed the **full** catalogue. The engine then takes that plan **only if it is already in hand when the router returns**; otherwise it runs the planner serially, verbatim, against the router-narrowed catalogue. Nothing is ever waited for, so the reordering cannot add latency to a turn and cannot leave it without a plan the serial path would have produced. See `src/claire/reply/planner_prefetch.py`.
+   - The task-list planner (`plan_query` in `src/claire/reply/planner.py`) runs **first**, before any memory lookup or tool routing. It sees the query, a compact dialogue snippet, and the full builtin + MCP tool catalogue (names + one-line descriptions).
    - The planner emits an ordered list of short sub-tasks (max 5). Two of the tokens are structural for the engine:
      - `searchMemory topic='...'` as a leading step means "answering requires information from prior conversations"; the engine runs memory enrichment. Omitting it means "no memory needed".
-     - Concrete tool steps (e.g. `webSearch query='...'`) name specific tools; the engine uses those names as the allow-list directly. A tool the plan names stays callable even when the router did not pick it — the allow-list is the union.
-   - An empty plan (disabled, LLM timeout, empty response, too short) is the fail-open state — the engine reverts to running the memory extractor and the `select_tools` router as before.
+     - Concrete tool steps (e.g. `webSearch query='...'`) name specific tools; the engine uses those names as the allow-list directly.
+   - An empty plan (disabled, LLM timeout, too short) is the fail-open state — the engine reverts to running the memory extractor and the `select_tools` router as before.
    - A single-step `["Reply to the user."]` plan is a positive "no memory, no tools" decision — the engine skips the memory extractor, the tool router, the diary / graph / digest LLM calls, and the direct-exec path entirely.
    - See `planner.spec.md` for the full prompt contract, helpers, and fail-open invariants.
 
