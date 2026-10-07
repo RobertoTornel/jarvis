@@ -1,4 +1,4 @@
-"""Answer guards for weather grounded through graph, diary or hot memory."""
+"""Answer guards for live time grounded through graph, diary or hot memory."""
 import re
 
 from evals.helpers import assert_not_fallback_reply
@@ -10,10 +10,16 @@ def assert_usable_answer(response: str | None, context: str) -> None:
     assert_not_fallback_reply(response, context)
 
 
-def assert_forecast_reply(response: str | None, forecast: str, context: str) -> None:
-    """Require a supplied temperature as well as a usable weather answer."""
+def assert_time_reply(response: str | None, payload: str, context: str) -> None:
+    """Require the supplied local time as well as a usable answer."""
     assert_usable_answer(response, context)
-    temperatures = re.findall(r'(-?\d+(?:\.\d+)?)°C', forecast)
-    assert temperatures, '🌦️ The evaluation fixture must supply temperatures'
-    assert any(re.search(r'(?<![\d.])' + re.escape(value) + r'(?![\d.])\s*(?:°\s*C|degrees?\b)', response, re.IGNORECASE)
-               for value in temperatures), f'🌦️ {context}: no supplied forecast temperature: {response}'
+    clock_times = re.findall(r'(\d{1,2}):(\d{2})', payload)
+    assert clock_times, '🕐 The evaluation fixture must supply a local time'
+    supplied = set()
+    for hour, minute in clock_times:
+        supplied.add(f'{hour}:{minute}')
+        supplied.add(f'{int(hour)}:{minute}')
+    assert any(
+        re.search(r'(?<![\d:])' + re.escape(value) + r'(?![\d])', response)
+        for value in supplied
+    ), f'🕐 {context}: the reply carries no supplied local time: {response}'

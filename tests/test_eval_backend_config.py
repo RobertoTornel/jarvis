@@ -223,10 +223,10 @@ def test_tool_selection_evals_use_selected_backends(monkeypatch, provider, base,
         response = MagicMock()
         response.__enter__.return_value = response
         text = payload.get('prompt', payload.get('input', ''))
-        vector = [1., 0.] if 'weather' in text.lower() else [0., 1.]
+        vector = [1., 0.] if 'tokyo' in text.lower() else [0., 1.]
         response.json.return_value = {
-            'message': {'content': 'getWeather'},
-            'choices': [{'message': {'content': 'getWeather'}}],
+            'message': {'content': 'getTime'},
+            'choices': [{'message': {'content': 'getTime'}}],
             'embedding': vector, 'data': [{'embedding': vector}],
         }
         return response
@@ -237,16 +237,16 @@ def test_tool_selection_evals_use_selected_backends(monkeypatch, provider, base,
             from evals.test_tool_router_context_aware import _route
         else:
             from evals.test_tool_router_implicit import _route
-        selected = _route("what's the weather like tomorrow", None)
-        assert 'getWeather' in selected and 'stop' in selected
+        selected = _route("what time is it in Tokyo?", None)
+        assert 'getTime' in selected and 'stop' in selected
     elif strategy == 'llm':
         evaluation.TestToolSelectionFilteringLLM().test_llm_selects_relevant_tools(
-            cfg, "what's the weather like tomorrow", ['getWeather'], 5,
+            cfg, "what time is it in Tokyo?", ['getTime'], 5,
         )
     else:
         try:
             evaluation.TestToolSelectionFiltering().test_embedding_selects_relevant_tools(
-                cfg, "what's the weather like tomorrow", ['getWeather'], 5,
+                cfg, "what time is it in Tokyo?", ['getTime'], 5,
             )
         except pytest.skip.Exception:
             pytest.fail('Available embeddings must run independently of the chat model name')
@@ -272,7 +272,7 @@ def test_embedding_eval_skips_only_when_selected_model_is_missing(monkeypatch, n
     cfg = helpers.MockConfig(llm_provider='ollama')
     with pytest.raises(pytest.skip.Exception, match='embedding evaluation model is unavailable'):
         evaluation.TestToolSelectionFiltering().test_embedding_selects_relevant_tools(
-            cfg, 'weather', ['getWeather'], 5,
+            cfg, 'what time is it in Tokyo?', ['getTime'], 5,
         )
 
 
@@ -287,11 +287,11 @@ def test_router_eval_rejects_fallback_even_when_expected_tool_matches(monkeypatc
     with pytest.raises(AssertionError, match='router (returned no model response|response did not select)'):
         if entry == 'filtering':
             evaluation.TestToolSelectionFilteringLLM().test_llm_selects_relevant_tools(
-                helpers.MockConfig(), 'weather', ['getWeather'], 5,
+                helpers.MockConfig(), 'what time is it in Tokyo?', ['getTime'], 5,
             )
         elif entry == 'context':
             from evals.test_tool_router_context_aware import _route
-            _route('weather', None)
+            _route('what time is it in Tokyo?', None)
         else:
             from evals.test_tool_router_implicit import _route
-            _route('weather')
+            _route('what time is it in Tokyo?')

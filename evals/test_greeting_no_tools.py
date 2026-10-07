@@ -284,17 +284,17 @@ class TestGreetingNoToolsLive:
 
     @pytest.mark.eval
     @requires_judge_llm
-    def test_weather_still_triggers_tools_live(
+    def test_time_query_still_triggers_tools_live(
         self,
         mock_config,
         eval_db,
         eval_dialogue_memory
     ):
-        """Live test: weather query should still trigger tools."""
+        """Live test: a question about another city's time still triggers tools."""
         from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
-        query = "what's the weather today"
+        query = "what time is it in Tokyo?"
         mock_config.ollama_base_url = "http://localhost:11434"
         mock_config.ollama_chat_model = JUDGE_MODEL
 
@@ -302,18 +302,18 @@ class TestGreetingNoToolsLive:
 
         with patch('claire.reply.engine.run_tool_with_retries',
                    side_effect=create_mock_tool_run(capture, {
-                       "getWeather": "Weather: 22C, partly cloudy",
+                       "getTime": "Current time in Tokyo, Japan: 02:42 (Asia/Tokyo)",
                    })):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
                 text=query, dialogue_memory=eval_dialogue_memory
             )
 
-        print(f"\n  Live Weather Test ({JUDGE_MODEL}):")
+        print(f"\n  Live Time Test ({JUDGE_MODEL}):")
         print(f"  Query: '{query}'")
         print(f"  Tools called: {capture.tool_names() or 'none'}")
         print(f"  Response: {(response or '')[:100]}...")
 
-        # Weather should trigger tools (getWeather or webSearch)
+        # A time question should trigger tools (getTime or webSearch)
         assert capture.has_any_tool(), \
-            f"Weather query should trigger tools. Response: {response}"
+            f"Time query should trigger tools. Response: {response}"

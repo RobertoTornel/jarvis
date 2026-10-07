@@ -38,22 +38,18 @@ from helpers import (
 # has something concrete to talk about after the evaluator forces the call.
 # =============================================================================
 
-MOCK_WEATHER_PARIS = (
-    "Current weather in Paris, France:\n"
-    "Conditions: Partly cloudy\n"
-    "Temperature: 14.2C\n"
-    "Feels like: 12C\n"
-    "Humidity: 68%\n"
-    "Wind: 10 km/h from the south-west\n"
+MOCK_TIME_PARIS = (
+    "Current time in Paris, France:\n"
+    "Timezone: Europe/Paris\n"
+    "Local time: 18:42\n"
+    "Date: Sunday, 2026-04-20\n"
 )
 
-MOCK_WEATHER_LONDON = (
-    "Current weather in London, United Kingdom:\n"
-    "Conditions: Light rain\n"
-    "Temperature: 9.1C\n"
-    "Feels like: 7C\n"
-    "Humidity: 82%\n"
-    "Wind: 18 km/h from the west\n"
+MOCK_TIME_LONDON = (
+    "Current time in London, United Kingdom:\n"
+    "Timezone: Europe/London\n"
+    "Local time: 17:42\n"
+    "Date: Sunday, 2026-04-20\n"
 )
 
 MOCK_NAV_SUCCESS = '{"status": "ok", "url": "https://youtube.com"}'
@@ -221,7 +217,7 @@ class TestTerminalOnSuccessfulToolUse:
 
     @pytest.mark.eval
     @requires_judge_llm
-    def test_single_weather_call_terminates(
+    def test_single_time_call_terminates(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
         from claire.reply.engine import run_reply_engine
@@ -230,11 +226,11 @@ class TestTerminalOnSuccessfulToolUse:
         capture = ToolCallCapture()
 
         def _respond(name, args):
-            if name == "getWeather":
-                return MOCK_WEATHER_PARIS
+            if name == "getTime":
+                return MOCK_TIME_PARIS
             return "OK"
 
-        router = _make_router_stub(["getWeather", "stop"])
+        router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         with patch("claire.reply.engine.select_tools", side_effect=router), \
@@ -245,13 +241,13 @@ class TestTerminalOnSuccessfulToolUse:
              ):
             reply = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="What's the weather in Paris?",
+                text="What time is it in Paris?",
                 dialogue_memory=eval_dialogue_memory,
             )
 
-        weather_calls = [c for c in capture.calls if c["name"] == "getWeather"]
-        print(f"\n📊 Terminal-on-success — Paris weather:")
-        print(f"   getWeather calls: {len(weather_calls)}")
+        time_calls = [c for c in capture.calls if c["name"] == "getTime"]
+        print(f"\n📊 Terminal-on-success — Paris time:")
+        print(f"   getTime calls: {len(time_calls)}")
         print(f"   all tool calls: {capture.tool_names()}")
         print(f"   reply: {(reply or '')[:200]}...")
 
@@ -260,20 +256,20 @@ class TestTerminalOnSuccessfulToolUse:
         # caveat. Either means the loop did not terminate cleanly on the
         # first grounded tool summary, even when the surrounding content
         # reads correctly.
-        assert_not_fallback_reply(reply, context="single-weather-terminal")
-        assert_not_max_turns_digest(reply, context="single-weather-terminal")
+        assert_not_fallback_reply(reply, context="single-time-terminal")
+        assert_not_max_turns_digest(reply, context="single-time-terminal")
 
-        assert len(weather_calls) == 1, (
-            f"Expected exactly one getWeather call (evaluator should terminate "
-            f"after the first successful summary). Got {len(weather_calls)}: "
+        assert len(time_calls) == 1, (
+            f"Expected exactly one getTime call (evaluator should terminate "
+            f"after the first successful summary). Got {len(time_calls)}: "
             f"{capture.tool_names()}"
         )
         assert reply, "Reply should be non-empty"
         lower = reply.lower()
         assert "paris" in lower, f"Reply should mention Paris. Got: {reply[:200]!r}"
-        weather_terms = ["weather", "cloud", "temperat", "14", "c ", "°c"]
-        assert any(t in lower for t in weather_terms), (
-            f"Reply should reference weather facts from the tool payload. "
+        time_terms = ["18:42", "18,42", "18.42", "6:42", "europe/paris", "cest"]
+        assert any(t in lower for t in time_terms), (
+            f"Reply should reference the time from the tool payload. "
             f"Got: {reply[:200]!r}"
         )
 
@@ -301,12 +297,12 @@ class TestTerminalOnHonestCantDo:
         def _respond(name, args):
             if name == "toolSearchTool":
                 return MOCK_TOOLSEARCH_EMPTY
-            if name == "getWeather":
-                return MOCK_WEATHER_LONDON
+            if name == "getTime":
+                return MOCK_TIME_LONDON
             return "OK"
 
         # No email-capable tool in the allow-list.
-        router = _make_router_stub(["getWeather", "stop"])
+        router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         with patch("claire.reply.engine.select_tools", side_effect=router), \
@@ -364,15 +360,15 @@ class TestNudgeCapEnforcement:
         capture = ToolCallCapture()
 
         def _respond(name, args):
-            if name == "getWeather":
-                return MOCK_WEATHER_LONDON
+            if name == "getTime":
+                return MOCK_TIME_LONDON
             if name == "toolSearchTool":
                 return MOCK_TOOLSEARCH_EMPTY
             return "OK"
 
         # An action-inappropriate tool is pre-seeded; the evaluator may try to
         # nudge toward it, but the cap must stop the ping-pong.
-        router = _make_router_stub(["getWeather", "stop"])
+        router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         with patch("claire.reply.engine.select_tools", side_effect=router), \
@@ -426,11 +422,11 @@ class TestMaxTurnDigestCaveat:
         capture = ToolCallCapture()
 
         def _respond(name, args):
-            if name == "getWeather":
-                return MOCK_WEATHER_LONDON
+            if name == "getTime":
+                return MOCK_TIME_LONDON
             return "OK"
 
-        router = _make_router_stub(["getWeather", "stop"])
+        router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         digest_spy_calls: list[dict] = []
@@ -455,7 +451,7 @@ class TestMaxTurnDigestCaveat:
                     "tool_calls": [
                         {
                             "function": {
-                                "name": "getWeather",
+                                "name": "getTime",
                                 "arguments": {"location": "London"},
                             }
                         }
@@ -651,23 +647,23 @@ class TestComplexMultiTurnMultiTool:
     def test_parallel_comparison_paris_vs_london(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        """Two getWeather calls, different locations, reply mentions both."""
+        """Two getTime calls, different cities, reply mentions both."""
         from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
 
         def _respond(name, args):
-            if name == "getWeather":
+            if name == "getTime":
                 loc = " ".join(
                     str(v) for v in (args or {}).values() if isinstance(v, str)
                 ).lower()
                 if "london" in loc:
-                    return MOCK_WEATHER_LONDON
-                return MOCK_WEATHER_PARIS
+                    return MOCK_TIME_LONDON
+                return MOCK_TIME_PARIS
             return "OK"
 
-        router = _make_router_stub(["getWeather", "stop"])
+        router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
         with patch("claire.reply.engine.select_tools", side_effect=router), \
@@ -678,30 +674,30 @@ class TestComplexMultiTurnMultiTool:
              ):
             reply = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
-                text="Compare the weather in Paris and London right now.",
+                text="Compare the time in Paris and London right now.",
                 dialogue_memory=eval_dialogue_memory,
             )
 
-        weather_calls = [c for c in capture.calls if c["name"] == "getWeather"]
+        time_calls = [c for c in capture.calls if c["name"] == "getTime"]
         locs = {
             " ".join(
                 str(v) for v in (c["args"] or {}).values() if isinstance(v, str)
             ).lower()
-            for c in weather_calls
+            for c in time_calls
         }
         print(f"\n📊 Parallel comparison — Paris vs London:")
-        print(f"   getWeather calls: {len(weather_calls)}")
+        print(f"   getTime calls: {len(time_calls)}")
         print(f"   distinct location args: {locs}")
         print(f"   reply: {(reply or '')[:240]}...")
 
-        assert len(weather_calls) >= 2, (
-            f"Expected at least two getWeather calls (one per city). Got "
-            f"{len(weather_calls)}: {[c['args'] for c in weather_calls]}"
+        assert len(time_calls) >= 2, (
+            f"Expected at least two getTime calls (one per city). Got "
+            f"{len(time_calls)}: {[c['args'] for c in time_calls]}"
         )
         has_paris = any("paris" in loc for loc in locs)
         has_london = any("london" in loc for loc in locs)
         assert has_paris and has_london, (
-            f"getWeather must have been called for BOTH Paris and London. "
+            f"getTime must have been called for BOTH Paris and London. "
             f"Got location args: {locs}"
         )
         if reply:

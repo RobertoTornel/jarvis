@@ -1,4 +1,4 @@
-"""Warm-profile location facts ground weather tool arguments and answers.
+"""Warm-profile location facts ground time tool arguments and answers.
 
 GeoIP is disabled. The User branch supplies Edinburgh without an explicit
 memory-search step. Model inference uses the selected evaluation transport.
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from evals.memory_tool_grounding import assert_forecast_reply
+from evals.memory_tool_grounding import assert_time_reply
 
 from conftest import requires_judge_llm
 from helpers import (
@@ -18,11 +18,11 @@ from helpers import (
 )
 
 
-_EDINBURGH_FORECAST = (
-    "Weather for Edinburgh, UK:\n"
-    "Today: 11°C, partly cloudy. High 13°C, low 7°C.\n"
-    "Tomorrow: 12°C, light rain, high 14°C, low 8°C."
-)
+_EDINBURGH_TIME = """Current time in Edinburgh, United Kingdom:
+Timezone: Europe/London
+Local time: 11:05
+Date: Sunday, 2026-04-26
+"""
 
 
 def _make_runner(capture: ToolCallCapture):
@@ -30,29 +30,29 @@ def _make_runner(capture: ToolCallCapture):
 
     def _runner(db, cfg, tool_name, tool_args, **kwargs):
         capture.record(tool_name, tool_args or {})
-        if tool_name == "getWeather":
+        if tool_name == "getTime":
             location = ((tool_args or {}).get("location") or "").strip()
             if not location:
                 return ToolExecutionResult(
-                    success=False,
+                    success=True,
                     reply_text=(
-                        "I couldn't auto-detect your location. Please "
-                        "tell me which city to check the weather for."
+                        "Current time (your location):\n"
+                        "Timezone: Europe/London\n"
+                        "Local time: 11:05\n"
                     ),
                 )
             if "edinburgh" not in location.casefold():
                 return ToolExecutionResult(
                     success=False,
-                    reply_text="This fixture has no weather for that location.",
+                    reply_text="This fixture has no time for that location.",
                 )
             return ToolExecutionResult(
                 success=True,
-                reply_text=_EDINBURGH_FORECAST,
+                reply_text=_EDINBURGH_TIME,
             )
         return ToolExecutionResult(success=True, reply_text="OK")
 
     return _runner
-
 
 @pytest.mark.eval
 @requires_judge_llm
@@ -62,7 +62,7 @@ class TestGraphSuppliesMissingToolArg:
     model can supply it as the location argument without an extra
     memory search."""
 
-    def test_warm_profile_user_fact_grounds_get_weather_call(
+    def test_warm_profile_user_fact_grounds_time_call(
         self, eval_db, eval_dialogue_memory,
     ):
         from claire.reply.engine import run_reply_engine
@@ -94,29 +94,30 @@ class TestGraphSuppliesMissingToolArg:
         ):
             response = run_reply_engine(
                 db=eval_db, cfg=cfg, tts=None,
-                text="how's the weather, Claire?",
+                text="what time is it, Claire?",
                 dialogue_memory=eval_dialogue_memory,
             )
 
-        print(f"\n  🧠 Graph Supplies Missing Tool Arg ({JUDGE_MODEL}):")
+        print(f"\n  🧠 Warm Profile Supplies Missing Tool Arg ({JUDGE_MODEL}):")
         print(f"  🛠️ Tools called: {capture.tool_names()}")
         for c in capture.calls:
             print(f"    🔧 {c['name']}({c['args']})")
         print(f"  💬 Response: {(response or '')[:300]}")
 
-        assert_forecast_reply(response, _EDINBURGH_FORECAST, "warm-profile")
+        assert_time_reply(response, _EDINBURGH_TIME, "warm-profile")
 
-        weather_calls = [c for c in capture.calls if c["name"] == "getWeather"]
+        # The reply must actually use the warm-profile location, both at
+        # the tool call layer and in the user-facing reply.
+        time_calls = [c for c in capture.calls if c["name"] == "getTime"]
         edinburgh_calls = [
-            c for c in weather_calls
+            c for c in time_calls
             if "edinburgh" in (c["args"].get("location") or "").lower()
         ]
         assert edinburgh_calls, (
-            "getWeather was not invoked with location='Edinburgh' even "
-            "though the warm profile names Edinburgh as the user's home. "
-            "The chat model must use always-loaded user facts as tool "
-            "arguments without an explicit prompt to do so. "
-            f"All getWeather calls: {[c['args'] for c in weather_calls]}. "
+            "getTime was not invoked with location='Edinburgh' even "
+            "though the warm profile states the user lives there. The "
+            "warm-profile → tool argument grounding path is broken. "
+            f"All getTime calls: {[c['args'] for c in time_calls]}. "
             f"Tools observed: {capture.tool_names()}. "
             f"Response: {(response or '')[:400]}"
         )
@@ -124,11 +125,13 @@ class TestGraphSuppliesMissingToolArg:
         response_lower = (response or "").lower()
         assert "edinburgh" in response_lower, (
             "Reply does not mention Edinburgh despite the warm profile "
-            f"naming it as the user's location. Response: {(response or '')[:400]}"
+            f"stating the user lives there. Response: {(response or '')[:400]}"
         )
 
+        # Hackney is the test fixture's geoip default; geoip is disabled
+        # here, so any reply mentioning it leaked a hardcoded default.
         assert "hackney" not in response_lower, (
-            "Reply mentions Hackney — the warm profile clearly states "
-            "Edinburgh, and geoip is disabled in this test. The model "
-            f"leaked a hardcoded default. Response: {(response or '')[:400]}"
+            "Reply mentions Hackney — the warm profile states Edinburgh "
+            "and geoip is disabled in this test. The model leaked a "
+            f"hardcoded default. Response: {(response or '')[:400]}"
         )

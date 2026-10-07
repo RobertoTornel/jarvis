@@ -7,15 +7,15 @@ from claire.reply.enrichment import digest_loop_for_max_turns
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 CASES = [
-    ('Check the current London weather and tomorrow’s forecast.', 'getWeather',
-     '{"location":"London","temperature_c":12,"condition":"rain","period":"current"}',
-     ('london', '12'), ('could not', "couldn't", 'not fully', 'unable', 'not complete', 'ran out')),
+    ('Check the current Tokyo time and date.', 'getTime',
+     '{"location":"Tokyo","local_time":"02:42","local_date":"2026-04-21","timezone":"Asia/Tokyo"}',
+     ('tokyo', '2026-04-21'), ('could not', "couldn't", 'not fully', 'unable', 'not complete', 'ran out')),
     ('Find dinner ideas matching my diet and check nearby restaurant opening times.', 'searchMemory',
      '{"diet":"vegetarian","food_preferences":["ramen","Thai curry"]}',
      ('vegetarian', 'ramen'), ('could not', "couldn't", 'not fully', 'unable', 'not complete', 'ran out')),
-    ('Londra’da hava nasıl ve yarının tahmini ne?', 'getWeather',
-     '{"location":"London","temperature_c":12,"condition":"rain","period":"current"}',
-     ('12',), ('bitiremed', 'tamamlayamad', 'getiremed', 'tamamlanamad', 'sağlayamad')),
+    ("Tokyo'da saat kaç?", 'getTime',
+     '{"location":"Tokyo","local_time":"02:42","local_date":"2026-04-21","timezone":"Asia/Tokyo"}',
+     ('2026-04-21',), ('bitiremed', 'tamamlayamad', 'getiremed', 'tamamlanamad', 'sağlayamad')),
 ]
 
 

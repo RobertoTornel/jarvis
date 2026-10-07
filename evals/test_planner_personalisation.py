@@ -22,7 +22,7 @@ from evals.helpers import planner_config
 
 _TOOL_CATALOG = [
     ("webSearch", "Search the web for current facts and events."),
-    ("getWeather", "Current weather and forecast for a location."),
+    ("getTime", "Current time and date for a location."),
     ("stop", "End the turn and reply to the user."),
 ]
 
