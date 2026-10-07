@@ -44,7 +44,7 @@ The phone bridge is started by the daemon itself (`daemon.py:1581`), which is wh
 | `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:77) and what `start.sh` spawns (`-m claire`). |
 | `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py:2515`). |
 | `python -m claire.daemon` | `src/claire/daemon.py:1786`–`:1789` | Reads `--smoke-test` straight from `sys.argv`. |
-| `python -m claire.panel.server` | `src/claire/panel/server.py:4105` (`main`) | The web panel; not part of the unit. |
+| `python -m claire.panel.server` | `src/claire/panel/server.py:4114` (`main`) | The web panel; not part of the unit. |
 | `python -m claire.platform.service --self-check` | `src/claire/platform/service.py:1249` (`main`), `--self-check` at `:1217` | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
 
 `claire.cli` accepts exactly `--smoke-test` (`cli.py:19`–`:23`) and `--version`
@@ -289,7 +289,7 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 | TTS unavailable at boot | `_initialize_tts_engine` returns `None` on an unknown engine, a missing voice model or a missing key; the daemon substitutes `_UnavailableTTS` and keeps running (`daemon.py:1559`–`:1567`, `_UnavailableTTS` at `:52`, `_initialize_tts_engine` at `:87`). |
 | Voice recogniser fails to load | The listener runs in its own thread; the daemon still boots and prints the failure thread's guidance (`daemon.py:1571`–`:1576`; the PortAudio error text is at `listener.py:163`–`:167`). |
 | MCP server fails to start | Discovery catches per server, prints the error beside the server name, and continues (`daemon.py:1444`–`:1456`); the whole preflight is wrapped again so nothing aborts boot. |
-| Port in use (panel) | `create_server` binds without catching `OSError` (`src/claire/panel/server.py:4067`–`:4076`), so a taken port makes the panel exit non-zero with a traceback in `panel.log`. `start.sh` normally prevents this: it checks the port first and declines to start a second panel (`:447`–`:451`), and if the spawn still fails it waits `CLAIRE_START_WAIT` (default 60 s), tails the log and returns exit code `4` (`:466`–`:473`). |
+| Port in use (panel) | `create_server` binds without catching `OSError` (`src/claire/panel/server.py:4076`–`:4086`), so a taken port makes the panel exit non-zero with a traceback in `panel.log`. `start.sh` normally prevents this: it checks the port first and declines to start a second panel (`:447`–`:451`), and if the spawn still fails it waits `CLAIRE_START_WAIT` (default 60 s), tails the log and returns exit code `4` (`:466`–`:473`). |
 | Daemon exits immediately (direct mode) | `start_daemon` tails the last 25 lines of `daemon.log` and returns exit code `4` (`start.sh:426`–`:430`). |
 | Daemon never becomes active under systemd | After `CLAIRE_START_WAIT` (60 s) it prints `systemctl --user status` output and fails (`start.sh:404`–`:409`). |
 | Unit copied without rendering | `ExecStart=` contains the literal `@CLAIRE_REPO_ROOT@`, so systemd fails to exec it; the unit says so explicitly (`claire.service:10`–`:12`) and `--install-service` refuses to install an unrendered template (`start.sh:780`–`:784`). |
