@@ -1,9 +1,10 @@
-"""A supplied location continues the previous time tool call.
+"""A supplied location continues a stalled time request.
 
-The first turn asks for Tokyo's time and the second supplies London. Both
-turns must return usable replies grounded in the tool's local time, and the
-follow-up must re-invoke getTime with the newly supplied place. An unrelated
-film search result cannot substitute for time evidence.
+The first turn names a place getTime cannot resolve and the second supplies
+London. Both turns must return usable replies, the follow-up must re-invoke
+getTime with the location the user supplied, and the final answer must use
+the tool's local time. An unrelated film search result cannot substitute for
+time evidence.
 """
 
 from unittest.mock import patch
@@ -20,12 +21,6 @@ from helpers import (
 )
 
 
-_TOKYO_TIME = """Current time in Tokyo, Japan:
-Timezone: Asia/Tokyo
-Local time: 02:42
-Date: Monday, 2026-04-21
-"""
-
 _LONDON_TIME = """Current time in London, United Kingdom:
 Timezone: Europe/London
 Local time: 17:42
@@ -39,11 +34,13 @@ def _make_get_time_runner(capture: ToolCallCapture):
 
     Empty args → ``success=True`` with the user's own local time, matching
     the real getTime behaviour (``location`` is optional and auto-derives).
-    ``location='Tokyo'`` / ``location='London'`` → ``success=True`` plus the
-    canned local time. Other locations fail. If the model misroutes to
-    webSearch we want to make damn sure we don't accidentally satisfy the
-    assertion via a confabulated success — return something the model cannot
-    honestly turn into London's local time.
+    ``location='London'`` → ``success=True`` plus the canned local time.
+    Any other location fails the way the real tool fails on an unresolvable
+    place, which stamps ``tool_failed=True`` on the recorded tool turn so
+    the engine's carry-over guard widens the next turn's allow-list.
+    If the model misroutes to webSearch we want to make damn sure we don't
+    accidentally satisfy the assertion via a confabulated success — return
+    something the model cannot honestly turn into London's local time.
     """
     from claire.tools.types import ToolExecutionResult
 
@@ -56,14 +53,9 @@ def _make_get_time_runner(capture: ToolCallCapture):
                     success=True,
                     reply_text=(
                         "Current time (your location):\n"
-                        "Timezone: Europe/London\n"
-                        "Local time: 17:42\n"
+                        "Timezone: UTC\n"
+                        "Local time: 20:42\n"
                     ),
-                )
-            if "tokyo" in location.casefold():
-                return ToolExecutionResult(
-                    success=True,
-                    reply_text=_TOKYO_TIME,
                 )
             if "london" in location.casefold():
                 return ToolExecutionResult(
@@ -72,7 +64,10 @@ def _make_get_time_runner(capture: ToolCallCapture):
                 )
             return ToolExecutionResult(
                 success=False,
-                reply_text="This fixture has no time for that location.",
+                reply_text=(
+                    f"Could not find location '{location}'. Try a different "
+                    "city name or spelling."
+                ),
             )
         if tool_name == "webSearch":
             return ToolExecutionResult(
@@ -111,7 +106,7 @@ class TestFollowupSuppliesMissingToolArg:
         ):
             turn1 = run_reply_engine(
                 db=eval_db, cfg=cfg, tts=None,
-                text="what time is it in Tokyo Claire?",
+                text="what time is it in Kazbegi Claire?",
                 dialogue_memory=eval_dialogue_memory,
             )
             turn2 = run_reply_engine(

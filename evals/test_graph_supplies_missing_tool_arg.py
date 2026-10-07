@@ -37,14 +37,17 @@ def _make_runner(capture: ToolCallCapture):
                     success=True,
                     reply_text=(
                         "Current time (your location):\n"
-                        "Timezone: Europe/London\n"
-                        "Local time: 11:05\n"
+                        "Timezone: UTC\n"
+                        "Local time: 10:05\n"
                     ),
                 )
             if "edinburgh" not in location.casefold():
                 return ToolExecutionResult(
                     success=False,
-                    reply_text="This fixture has no time for that location.",
+                    reply_text=(
+                        f"Could not find location '{location}'. Try a "
+                        "different city name or spelling."
+                    ),
                 )
             return ToolExecutionResult(
                 success=True,
@@ -94,7 +97,7 @@ class TestGraphSuppliesMissingToolArg:
         ):
             response = run_reply_engine(
                 db=eval_db, cfg=cfg, tts=None,
-                text="what time is it, Claire?",
+                text="what time is it where I live, Claire?",
                 dialogue_memory=eval_dialogue_memory,
             )
 
