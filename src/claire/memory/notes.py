@@ -21,7 +21,14 @@ honest.
 Nothing here touches the conversation history or the LLM: a note costs tokens
 only when it is actually read.  Memory content is Claire's own instructions to
 herself and lives OUTSIDE the repository, in the user's data directory
-(``~/.local/share/claire/vault`` unless ``CLAIRE_VAULT_DIR`` says otherwise).
+(``~/.local/share/claire/vault`` by default).
+
+The vault location is configurable, and resolution order is deliberate: an
+explicit *vault_dir* argument wins, then ``$CLAIRE_VAULT_DIR``, then the
+``vault_dir`` key in Claire's ``config.json``, then the built-in default.  The
+config key makes the vault movable into an owner's own Obsidian setup without
+touching the environment; ``docs/OBSIDIAN.md`` covers the layout and
+:mod:`claire.memory.obsidian` owns vault-shaped helpers.
 
 Every failure is NAMED: there is no code path that returns a silent empty
 result for a missing file or directory.  See ``docs/MEMORY.md`` for the owner's
@@ -31,8 +38,10 @@ guide.
 from __future__ import annotations
 
 import datetime as _datetime
+import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -52,17 +61,21 @@ __all__ = [
     "NotesDirectoryError",
     "RouterNotFoundError",
     "create_note",
+    "delete_note",
+    "ensure_notes_dir",
     "extract_title",
     "list_notes",
     "normalize_note_name",
     "parse_frontmatter",
     "read_note",
+    "render_frontmatter",
     "resolve_notes_dir",
     "resolve_router_path",
     "resolve_vault_dir",
     "search_notes",
     "strip_frontmatter",
     "unreferenced_notes",
+    "update_note",
 ]
 
 #: Environment variable that overrides where the vault lives.
@@ -120,17 +133,85 @@ class RouterNotFoundError(NotesError, FileNotFoundError):
 def resolve_vault_dir(vault_dir: Optional[_PATHLIKE] = None) -> Path:
     """Return the vault directory, expanding ``~``.
 
-    Resolution order: explicit *vault_dir*, then ``$CLAIRE_VAULT_DIR``, then
-    ``~/.local/share/claire/vault`` (the same data root Claire's SQLite
-    database uses).  The path is returned even if it does not exist yet —
+    Resolution order: explicit *vault_dir*, then ``$CLAIRE_VAULT_DIR``, then the
+    ``vault_dir`` key in Claire's config file, then
+    ``~/.local/share/claire/vault`` (the same data root Claire's SQLite database
+    uses).  The path is returned even if it does not exist yet —
     ``create_note`` creates it on demand.
+
+    An environment variable outranks the config file on purpose: it is the
+    per-run override a test or a one-off ``CLAIRE_VAULT_DIR=... python ...``
+    uses, and nothing on disk should be able to defeat it.
     """
     if vault_dir is not None:
         return Path(vault_dir).expanduser()
     env = os.environ.get(VAULT_ENV_VAR)
     if env:
         return Path(env).expanduser()
+    configured = _configured_vault_dir()
+    if configured is not None:
+        return configured
     return Path.home() / ".local" / "share" / "claire" / VAULT_DIRNAME
+
+
+def _config_file_path() -> Optional[Path]:
+    """Where Claire's JSON config lives, or ``None`` if that cannot be told.
+
+    ``claire.config`` is imported lazily: this module is on the reply hot path
+    and its "dependency-free" promise should not become a heavy import at
+    module load.  The environment variable and default path are the same pair
+    ``claire.config`` itself uses, so the panel, the daemon and this module
+    cannot disagree about which file is authoritative.
+    """
+    try:
+        from claire.config import default_config_path
+    except Exception:  # noqa: BLE001 - a missing config module is not fatal here
+        return None
+    try:
+        override = os.environ.get("CLAIRE_CONFIG_PATH")
+        return Path(override).expanduser() if override else Path(default_config_path())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@lru_cache(maxsize=8)
+def _configured_vault_dir_at(path_text: str, mtime_ns: int, size: int) -> Optional[str]:
+    """Read ``vault_dir`` from *path_text*, cached on the file's identity.
+
+    The ``(mtime_ns, size)`` cache key is why this is a stat — not a JSON parse —
+    on every reply, and why editing the config file takes effect on the next
+    call with no restart.  A malformed or unreadable config yields ``None``
+    rather than raising: an unreadable config must not make memory unreadable.
+    """
+    try:
+        with open(path_text, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    value = loaded.get("vault_dir")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _configured_vault_dir() -> Optional[Path]:
+    """The ``vault_dir`` config key as an expanded path, or ``None`` for no opinion."""
+    path = _config_file_path()
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    value = _configured_vault_dir_at(str(path), stat.st_mtime_ns, stat.st_size)
+    if not value:
+        return None
+    try:
+        return Path(value).expanduser()
+    except Exception:  # noqa: BLE001 - an unusable path is "no opinion"
+        return None
 
 
 def resolve_notes_dir(
@@ -737,4 +818,144 @@ def create_note(
             f"Pass overwrite=True to replace it."
         ) from exc
 
+    _restrict_to_owner(path)
     return _info_for(path)
+
+
+def _restrict_to_owner(path: Path) -> None:
+    """Make a vault file readable only by its owner (mode 0600).
+
+    The vault usually inherits a private umask, but "usually" is not a
+    guarantee: memory is the owner's own facts, so the mode is set explicitly
+    rather than assumed.  A filesystem that cannot chmod is not an error — the
+    write already happened and the caller must still get its note.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:  # pragma: no cover - filesystem without chmod
+        pass
+
+
+def ensure_notes_dir(
+    notes_dir: Optional[_PATHLIKE] = None,
+    vault_dir: Optional[_PATHLIKE] = None,
+) -> Path:
+    """Create the notes directory (and the vault around it) if it is missing.
+
+    Returns the resolved directory.  This is the one place that is allowed to
+    create both directories, so "why does my vault have no ``notes/``?" has a
+    single answer; the panel calls it before its first write, and a fresh
+    install gets a well-formed vault instead of an error naming a directory
+    that does not exist.
+    """
+    resolved = resolve_notes_dir(notes_dir, vault_dir)
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def _write_note_document(path: Path, document: str) -> None:
+    """Replace *path*'s text atomically, at mode 0600.
+
+    Written to a sibling temporary file and ``os.replace``\\ d into place: a
+    crash mid-write leaves the previous note intact rather than a half-written
+    one, which matters because the file is read back as memory.
+    """
+    directory = path.parent
+    handle_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.stem}.", suffix=".tmp", dir=str(directory)
+    )
+    try:
+        with os.fdopen(handle_fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(document)
+        _restrict_to_owner(Path(temp_name))
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:  # pragma: no cover - already gone
+            pass
+        raise
+    _restrict_to_owner(path)
+
+
+def update_note(
+    name: str,
+    body: str = "",
+    *,
+    title: Optional[str] = None,
+    notes_dir: Optional[_PATHLIKE] = None,
+    vault_dir: Optional[_PATHLIKE] = None,
+    extra_frontmatter: Optional[Dict[str, object]] = None,
+    today: Optional[str] = None,
+) -> NoteInfo:
+    """Replace an existing note's body, preserving its identity in frontmatter.
+
+    :func:`create_note` writes a *new* note; this is its counterpart for an
+    edit, and it is the single path the panel uses so the browser and Claire's
+    own parser cannot disagree about the format.
+
+    Existing frontmatter keys survive (``created``, ``tags`` and anything else
+    the owner or a previous version wrote); ``title`` is replaced when given and
+    kept otherwise; ``updated`` is always stamped.  Raise
+    :class:`NoteNotFoundError` for a note that does not exist — an edit is never
+    a silent create, because that is how a typo turns into a second note.
+
+    If *body* begins with its own ``---`` frontmatter block it is written
+    verbatim, exactly as :func:`create_note` does.
+    """
+    resolved = _require_notes_dir(resolve_notes_dir(notes_dir, vault_dir))
+    path = _note_path(name, resolved)
+    if not path.exists() or not path.is_file():
+        raise NoteNotFoundError(
+            f"Note not found: {path.stem!r} in notes directory {resolved} "
+            f"(looked for {path}). Use create_note() to add it, or list_notes() "
+            f"to see what is there."
+        )
+
+    existing_text = _read_text(path)
+    existing_meta, _ = parse_frontmatter(existing_text)
+    text_body = "" if body is None else str(body)
+
+    if text_body.lstrip().startswith(_FENCE):
+        document = text_body
+    else:
+        meta: Dict[str, object] = {str(key): value for key, value in existing_meta.items()}
+        meta["title"] = title or str(existing_meta.get("title") or _humanise(path.stem))
+        meta.setdefault("created", today or _datetime.date.today().isoformat())
+        meta["updated"] = today or _datetime.date.today().isoformat()
+        for key, value in (extra_frontmatter or {}).items():
+            meta[str(key).lower()] = value
+        document = render_frontmatter(meta)
+        if text_body:
+            separator = "" if text_body.startswith("\n") else "\n"
+            document += separator + text_body
+        if not document.endswith("\n"):
+            document += "\n"
+
+    _write_note_document(path, document)
+    return _info_for(path)
+
+
+def delete_note(
+    name: str,
+    *,
+    notes_dir: Optional[_PATHLIKE] = None,
+    vault_dir: Optional[_PATHLIKE] = None,
+) -> NoteInfo:
+    """Delete one note and return what was removed.
+
+    Raises :class:`NoteNotFoundError` when there is no such note, so a delete
+    that removes nothing is never reported as success.  There is no undo and no
+    trash directory: the file is the memory, and the owner asked for it gone.
+    """
+    resolved = _require_notes_dir(resolve_notes_dir(notes_dir, vault_dir))
+    path = _note_path(name, resolved)
+    if not path.exists() or not path.is_file():
+        raise NoteNotFoundError(
+            f"Note not found: {path.stem!r} in notes directory {resolved} "
+            f"(looked for {path}). Nothing was deleted."
+        )
+    info = _info_for(path)
+    path.unlink()
+    return info
+

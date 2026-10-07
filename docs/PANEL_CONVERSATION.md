@@ -86,3 +86,15 @@ Each was reproduced before it was fixed, and each has a test that fails without 
 - **`sk-proj-...` keys are not matched** by the scrubber's `\bsk-[A-Za-z0-9]{32,}\b`, because the
   second dash breaks the pattern. Noted here rather than fixed: `src/claire/utils/redact.py` is
   outside this change's scope.
+
+## The memories browser
+
+The panel's other page is `/memory`, linked from the index card and the footer. It shows the
+markdown memory vault read/write: the router (`CLAIRE.md`) and every note, notes the router never
+mentions, one query that searches both the notes and the same `conversation_summaries` table the
+diary above reads, and a form to create, edit and delete a note on the page. It is a browser,
+not a second store: it lists, reads, searches and writes through `claire.memory.notes` and
+`claire.memory.obsidian`, so the file written here is exactly the file Claire's own parser reads
+back. **Memory is searchable here but never leaves the machine**, and it lives outside the
+repository. The vault layout, the Obsidian conventions and where the folder lives are in
+[OBSIDIAN.md](OBSIDIAN.md).

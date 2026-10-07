@@ -70,11 +70,29 @@ def _default_db_path() -> str:
     return str(base / "claire.db")
 
 
+def _default_vault_dir() -> str:
+    """The markdown memory vault's default location, as a portable ``~`` path.
+
+    Deliberately *not* expanded here, unlike ``_default_db_path()``: this value
+    is also what ``examples/config.json`` ships, and a real absolute home
+    directory in an example file is wrong on every other machine.  Consumers
+    expand it — ``load_settings()`` through ``_expand_path()`` and
+    ``claire.memory.notes.resolve_vault_dir()`` through ``Path.expanduser()``.
+    No directory is created as a side effect of asking for the default.
+    """
+    return str(Path("~") / ".local" / "share" / "claire" / "vault")
+
+
 @dataclass(frozen=True)
 class Settings:
     # Database & Storage
     db_path: str
     sqlite_vss_path: str | None
+    # The markdown memory vault (the always-loaded router plus its notes).
+    # Configurable so the vault can live inside the owner's own Obsidian setup;
+    # ``CLAIRE_VAULT_DIR`` still overrides it for a single run.  See
+    # ``claire.memory.notes.resolve_vault_dir`` and docs/OBSIDIAN.md.
+    vault_dir: str
 
     # LLM & AI Models
     # Provider-aware fields (see src/claire/llm/llm.spec.md). The
@@ -528,6 +546,9 @@ def get_default_config() -> Dict[str, Any]:
         # Database & Storage
         "db_path": _default_db_path(),
         "sqlite_vss_path": None,
+        # Markdown memory vault. Portable "~/..." form on purpose: this value
+        # is shipped in examples/config.json; load_settings() expands it.
+        "vault_dir": _default_vault_dir(),
 
         # LLM & AI Models
         # Provider-aware fields. Fresh installs default to OmniRouter
@@ -837,6 +858,11 @@ def load_settings() -> Settings:
     # Normalize/convert fields
     db_path = _expand_path(merged.get("db_path")) or _default_db_path()
     sqlite_vss_path = _expand_path(merged.get("sqlite_vss_path"))
+    # The vault holds the owner's markdown memory; "~" must be expanded before
+    # anything stats or creates it (the same trap as db_path in #467).
+    vault_dir = (
+        _expand_path(merged.get("vault_dir")) or _expand_path(_default_vault_dir())
+    )
     allowlist_bundles = _ensure_list(merged.get("allowlist_bundles"))
 
     ollama_base_url = str(merged.get("ollama_base_url"))
@@ -1100,6 +1126,7 @@ def load_settings() -> Settings:
         # Database & Storage
         db_path=db_path,
         sqlite_vss_path=sqlite_vss_path,
+        vault_dir=vault_dir,
 
         # LLM & AI Models — provider-aware
         llm_provider=llm_provider,

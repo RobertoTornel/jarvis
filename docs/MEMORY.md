@@ -41,7 +41,13 @@ To move the vault somewhere else, set the environment variable before Claire sta
 export CLAIRE_VAULT_DIR="$HOME/Documents/claire-vault"
 ```
 
-An explicit directory passed to the functions always wins over the environment variable, which wins over the default.
+…or, to make it stick without an exported variable, set the config key in `config.json`:
+
+```json
+{ "vault_dir": "~/Documents/claire-vault" }
+```
+
+An explicit directory passed to the functions always wins over the environment variable, which wins over the config key, which wins over the default. [OBSIDIAN.md](OBSIDIAN.md) covers this from the point of view of pointing Obsidian at the folder.
 
 ## `CLAIRE.md` is re-read on every single request
 
@@ -135,5 +141,6 @@ It is read-only and side-effect free.
 
 ## Related
 
-* [CONFIGURATION.md](CONFIGURATION.md) — where Claire's settings and other data directories live.
+* [OBSIDIAN.md](OBSIDIAN.md) — the vault as an Obsidian vault: layout, frontmatter and wiki-link conventions, how to open it, and how to move it.
+* [CONFIGURATION.md](CONFIGURATION.md) — where Claire's settings and other data directories live, including the `vault_dir` key.
 * [CLOUD_POLICY.md](CLOUD_POLICY.md) — what leaves this machine (memory content stays local unless a prompt carries it out).

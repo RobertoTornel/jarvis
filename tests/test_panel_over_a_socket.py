@@ -64,19 +64,23 @@ class _StubReport:
     checks = ()
 
 
-def chat_state(chat_call):
+def chat_state(chat_call, vault_dir=None):
     """A real state with the model call injected: the real recording path runs.
 
     ``RealPanelState.chat_reply`` is what records the owner's turn and the failure
     note, so using the real class here is the point - only the model call is
     replaced.  The self-check is stubbed because it probes real hardware and
     network endpoints, which a socket test must not do.
+
+    ``vault_dir`` redirects the markdown memory vault, so a test that renders the
+    memories browser or writes a note never touches the owner's own notes.
     """
     from types import SimpleNamespace
 
     return RealPanelState(
         config_path="/nonexistent/config.json",
         diary_path="/nonexistent/claire.db",
+        vault_dir=vault_dir,
         self_check_factory=lambda: SimpleNamespace(run=lambda: _StubReport()),
         chat_call=chat_call,
     )
@@ -388,19 +392,51 @@ def test_a_head_to_the_panel_sends_no_body_over_a_socket():
     assert body == b"", f"HEAD sent {len(body)} bytes of body"
 
 
-def test_every_declared_route_answers_over_a_socket():
-    """Nothing is advertised that the live server cannot actually serve."""
-    from claire.panel.server import GET_ROUTES, POST_ROUTES, ROUTE_SELECT
+def test_every_declared_route_answers_over_a_socket(tmp_path):
+    """Nothing is advertised that the live server cannot actually serve.
 
-    with _LivePanel(state=chat_state(_reply())) as panel:
+    Every route in ``GET_ROUTES`` and ``POST_ROUTES`` is requested over the
+    socket and the set that answered is compared with the set that is declared:
+    a route added to a constant but never wired into ``dispatch`` fails here
+    rather than 404ing for the owner.
+    """
+    from claire.panel.server import (
+        GET_ROUTES,
+        POST_ROUTES,
+        ROUTE_MEMORY_DELETE,
+        ROUTE_MEMORY_SAVE,
+        ROUTE_SELECT,
+    )
+
+    covered = set()
+
+    with _LivePanel(state=chat_state(_reply(), vault_dir=tmp_path / "vault")) as panel:
         for route in GET_ROUTES:
             status, _headers, body = panel._request("GET", route)
             assert status in (200, 204), f"GET {route} -> {status}"
             if status == 200:
                 assert body, f"GET {route} returned an empty body"
-        for route in POST_ROUTES:
-            assert route in (ROUTE_SELECT, ROUTE_CHAT)
+            covered.add(("GET", route))
         assert panel.post(ROUTE_CHAT, {"message": "hi"})[0] == 303
+        covered.add(("POST", ROUTE_CHAT))
+
+    # The memory writes go to a throwaway vault, so a socket test never touches
+    # the owner's own notes.
+    vault_state = RealPanelState(
+        vault_dir=tmp_path / "vault",
+        config_path=tmp_path / "config.json",
+        diary_path=tmp_path / "nonexistent.db",
+    )
+    with _LivePanel(state=vault_state) as panel:
+        status, _headers, _body = panel.post(
+            ROUTE_MEMORY_SAVE,
+            {"mode": "create", "name": "socket-note", "body": "written over a socket"},
+        )
+        assert status == 303, f"POST {ROUTE_MEMORY_SAVE} -> {status}"
+        covered.add(("POST", ROUTE_MEMORY_SAVE))
+        status, _headers, _body = panel.post(ROUTE_MEMORY_DELETE, {"name": "socket-note"})
+        assert status == 303, f"POST {ROUTE_MEMORY_DELETE} -> {status}"
+        covered.add(("POST", ROUTE_MEMORY_DELETE))
 
     # /select writes config, so it is swept on the fake that records the write
     # rather than against a path that cannot exist.
@@ -409,6 +445,12 @@ def test_every_declared_route_answers_over_a_socket():
             ROUTE_SELECT, {"provider": "ollama", "model": "gemma4:e2b"}
         )
         assert status == 303, f"POST {ROUTE_SELECT} -> {status}"
+        covered.add(("POST", ROUTE_SELECT))
+
+    declared = {("GET", route) for route in GET_ROUTES} | {
+        ("POST", route) for route in POST_ROUTES
+    }
+    assert declared <= covered, f"declared but never exercised: {sorted(declared - covered)}"
 
 
 def test_a_directory_traversal_target_over_a_socket_reads_nothing():

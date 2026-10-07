@@ -185,13 +185,30 @@ ROUTE_HEALTH = "/healthz"
 ROUTE_FAVICON = "/favicon.ico"
 ROUTE_SELECT = "/select"
 ROUTE_CHAT = "/chat"
+ROUTE_MEMORY = "/memory"
+ROUTE_MEMORY_SAVE = "/memory/save"
+ROUTE_MEMORY_DELETE = "/memory/delete"
 
 #: Every path that serves a page.  Tests iterate this; nothing else is served.
-GET_ROUTES: tuple[str, ...] = (ROUTE_INDEX, ROUTE_SELF_CHECK, ROUTE_HEALTH, ROUTE_FAVICON)
+#: ``ROUTE_MEMORY`` takes query parameters (``?q=``, ``?note=``) and is
+#: therefore dispatched by name rather than through ``GET_VIEWS``, exactly like
+#: ``ROUTE_INDEX``.
+GET_ROUTES: tuple[str, ...] = (
+    ROUTE_INDEX,
+    ROUTE_SELF_CHECK,
+    ROUTE_HEALTH,
+    ROUTE_FAVICON,
+    ROUTE_MEMORY,
+)
 
 #: Every path that accepts a form POST.  A GET to one of these is a 405, not a
 #: silent no-op, so a link that should have been a form is caught immediately.
-POST_ROUTES: tuple[str, ...] = (ROUTE_SELECT, ROUTE_CHAT)
+POST_ROUTES: tuple[str, ...] = (
+    ROUTE_SELECT,
+    ROUTE_CHAT,
+    ROUTE_MEMORY_SAVE,
+    ROUTE_MEMORY_DELETE,
+)
 
 #: The longest message the chat box will forward to the model.  Bounded so a
 #: pasted file cannot be pushed into the prompt (or the backend's timeout) by
@@ -216,6 +233,26 @@ PANEL_CHAT_SYSTEM_PROMPT = (
 
 #: How many daily diary summaries the conversation section shows.
 DIARY_LIMIT = 7
+
+#: How many notes the memories browser lists on one page.  Large enough to see a
+#: real vault at a glance, small enough that the page stays a page; the search
+#: box is the answer for anything past it.
+MEMORY_NOTE_LIMIT = 200
+
+#: How many hits a memory search returns, per store.  Both stores are searched
+#: with their own existing index (note search, then the summaries FTS table).
+MEMORY_SEARCH_LIMIT = 25
+
+#: How many characters of a note body the browser renders.  A note is meant to
+#: be small, but the cap stops one pathological file from rendering a megabyte
+#: of HTML, and the truncation is stated on the page.
+MEMORY_BODY_CHARS = 20000
+
+#: The largest note body the browser will write back.  Notes are short by
+#: design, and the cap is deliberately well under ``MAX_BODY_BYTES`` so a note
+#: that is too big is refused with a *note-shaped* explanation rather than the
+#: generic "body too large" error for any form.
+MEMORY_WRITE_MAX_CHARS = 32 * 1024
 
 #: Where Claire appends one JSON object per completed action.
 ACTION_LOG_ENV_VAR = "CLAIRE_ACTION_LOG"
@@ -742,6 +779,104 @@ class DiaryStatus:
     note: str = ""
 
 
+# --------------------------------------------------------------------------- #
+# The memories browser (notes + the router + the SQLite diary)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class NoteSummary:
+    """One note as the list shows it: name, title, size, path."""
+
+    name: str
+    title: str
+    path: str
+    size_bytes: int
+    #: True when the router body never mentions this note.  Reported, never
+    #: hidden: an orphaned note is memory Claire will not read.
+    unreferenced: bool = False
+
+
+@dataclass(frozen=True)
+class NoteHit:
+    """One ranked note search hit: which note, which line, and that line."""
+
+    name: str
+    title: str
+    line_no: int
+    line: str
+    score: float
+
+
+@dataclass(frozen=True)
+class MemoryNotesStatus:
+    """The markdown half of memory: the vault, its router and its notes.
+
+    A missing notes directory is a *named* problem with a fix, not an empty
+    list: "there are no notes" and "the vault has no ``notes/`` directory yet"
+    are different states and the page must not conflate them.
+    """
+
+    vault_dir: str = ""
+    notes_dir: str = ""
+    router_path: str = ""
+    obsidian_marked: bool = False
+    notes: tuple[NoteSummary, ...] = ()
+    total_bytes: int = 0
+    unreferenced: tuple[str, ...] = ()
+    problems: tuple[str, ...] = ()
+    error: str | None = None
+    fix: str | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryNoteView:
+    """One note, opened readably: frontmatter, body and the links it makes.
+
+    ``text`` is the **body without frontmatter**, in full: the page truncates
+    its own rendering at :data:`MEMORY_BODY_CHARS`, but the edit box must carry
+    the whole thing so saving can never silently drop the tail.
+    """
+
+    name: str = ""
+    title: str = ""
+    path: str = ""
+    text: str = ""
+    frontmatter: tuple[tuple[str, str], ...] = ()
+    links: tuple[tuple[str, bool], ...] = ()
+    problems: tuple[str, ...] = ()
+    error: str | None = None
+    fix: str | None = None
+
+
+@dataclass(frozen=True)
+class MemorySearchStatus:
+    """One query across both memory stores, with each store's own misses named.
+
+    ``error`` is only set when *nothing* could be searched.  A vault that
+    cannot be read while the diary can still reports the note-side error and
+    the diary hits it did find, because half an answer beats a blank page.
+    """
+
+    query: str = ""
+    note_hits: tuple[NoteHit, ...] = ()
+    diary_hits: tuple[DiaryEntry, ...] = ()
+    note_error: str | None = None
+    note_fix: str | None = None
+    diary_error: str | None = None
+    diary_fix: str | None = None
+    note: str = ""
+    #: Why the diary side has no hits, when that is *not* an error (no database
+    #: yet).  A named absence, so "nothing matched" and "nothing to search" are
+    #: not the same sentence.
+    diary_note: str = ""
+
+    @property
+    def hit_count(self) -> int:
+        return len(self.note_hits) + len(self.diary_hits)
+
+
 @dataclass(frozen=True)
 class ChatResult:
     """One successful chat completion, with the route that produced it."""
@@ -1228,6 +1363,50 @@ class PanelState:
             )
         )
 
+    # -- memories --------------------------------------------------------- #
+    #
+    # A state that cannot answer these says so in a note, exactly as ``diary``
+    # does: the memories page must distinguish "no vault here" from "no notes in
+    # the vault", and a partial fake must not make the page claim either.
+
+    def memory_notes(self) -> MemoryNotesStatus:
+        """The markdown vault's router and notes, or a named reason there are none."""
+        return MemoryNotesStatus(
+            note=(
+                "This state does not read a memory vault, so the notes are not "
+                "available here."
+            )
+        )
+
+    def memory_note(self, name: str) -> MemoryNoteView:
+        """One note by name, or a named reason it cannot be opened."""
+        raise PanelStateError("memory_note")
+
+    def memory_search(self, query: str) -> MemorySearchStatus:
+        """One query across the notes and the persisted diary."""
+        return MemorySearchStatus(
+            query=str(query or ""),
+            note=(
+                "This state does not read a memory vault or database, so there "
+                "is nothing to search."
+            ),
+        )
+
+    def save_note(
+        self,
+        name: str,
+        body: str,
+        *,
+        title: str = "",
+        create: bool = True,
+    ) -> NoteSummary:
+        """Write one note through the same code path Claire reads. Raises to refuse."""
+        raise PanelStateError("save_note")
+
+    def delete_note(self, name: str) -> NoteSummary:
+        """Delete one note. Raises to refuse, and never reports a no-op as success."""
+        raise PanelStateError("delete_note")
+
     # -- chat ------------------------------------------------------------- #
 
     def chat_reply(self, message: str, *, timeout_sec: float = CHAT_TIMEOUT_SECONDS) -> ChatResult:
@@ -1245,6 +1424,83 @@ class PanelState:
     def select_model(self, provider: str, model: str) -> WriteResult:
         """Persist a provider/model selection. Raises to refuse."""
         raise PanelStateError("select_model")
+
+
+# --------------------------------------------------------------------------- #
+# The read-only SQLite memory seam
+# --------------------------------------------------------------------------- #
+#
+# These helpers are the panel's *only* access to the persisted memory database,
+# and they are shared by the diary and the memories search so both read it the
+# same way: ``mode=ro`` (a page view must never create or migrate the owner's
+# memory) and the memory layer's own FTS index for keyword search.  No
+# embeddings, no LLM, no write, and no second keyword algorithm.
+
+_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _open_memory_db(path: Path) -> "sqlite3.Connection":
+    """Open *path* read-only. Raises ``sqlite3.Error``; never creates the file."""
+    uri = "file:" + quote(str(path)) + "?mode=ro"
+    return sqlite3.connect(uri, uri=True, timeout=2.0)
+
+
+def _diary_entries(rows: Any) -> tuple[DiaryEntry, ...]:
+    """Map ``conversation_summaries`` rows to :class:`DiaryEntry`."""
+    return tuple(
+        DiaryEntry(
+            date=str(row["date_utc"] or ""),
+            recorded_at=str(row["ts_utc"] or ""),
+            summary=str(row["summary"] or ""),
+            topics=str(row["topics"] or ""),
+            source_app=str(row["source_app"] or ""),
+        )
+        for row in rows
+    )
+
+
+def _fts_summary_rows(
+    connection: "sqlite3.Connection", query: str, limit: int
+) -> Any | None:
+    """Search the summaries FTS index; ``None`` means "fall back to LIKE".
+
+    ``None`` is returned for the two *expected* absences — no FTS table, or a
+    query FTS5 will not accept — while a genuine database error propagates so
+    the caller can name it.  The MATCH expression is built from Unicode word
+    tokens, quoted per token, so punctuation in a query cannot become FTS
+    syntax (and no language-specific word list is involved anywhere).
+    """
+    tokens = _TOKEN_RE.findall(query or "")
+    if not tokens:
+        return None
+    match = " OR ".join(f'"{token}"' for token in tokens)
+    try:
+        return connection.execute(
+            "SELECT s.date_utc, s.ts_utc, s.summary, s.topics, s.source_app "
+            "FROM summaries_fts JOIN conversation_summaries s "
+            "ON s.id = summaries_fts.rowid "
+            "WHERE summaries_fts MATCH ? ORDER BY bm25(summaries_fts) LIMIT ?",
+            (match, limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+
+
+def _like_summary_rows(
+    connection: "sqlite3.Connection", query: str, limit: int
+) -> Any:
+    """Substring fallback over summaries and topics, with LIKE wildcards escaped."""
+    escaped = (
+        str(query).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    like = f"%{escaped}%"
+    return connection.execute(
+        "SELECT date_utc, ts_utc, summary, topics, source_app "
+        "FROM conversation_summaries "
+        "WHERE summary LIKE ? ESCAPE '\\' OR topics LIKE ? ESCAPE '\\' "
+        "ORDER BY date_utc DESC, id DESC LIMIT ?",
+        (like, like, limit),
+    ).fetchall()
 
 
 class RealPanelState(PanelState):
@@ -1274,6 +1530,7 @@ class RealPanelState(PanelState):
         schedule_path: "str | os.PathLike[str] | None" = None,
         action_log_path: "str | os.PathLike[str] | None" = None,
         diary_path: "str | os.PathLike[str] | None" = None,
+        vault_dir: "str | os.PathLike[str] | None" = None,
         transcript: TranscriptBuffer | None = None,
         chat_call: Callable[..., ChatResult] | None = None,
         environ: Mapping[str, str] | None = None,
@@ -1286,6 +1543,10 @@ class RealPanelState(PanelState):
         self._schedule_path = schedule_path
         self._action_log_path = action_log_path
         self._diary_path = diary_path
+        #: Explicit vault override.  ``None`` means "resolve it exactly the way
+        #: Claire does" — environment first, then the config key — so the panel
+        #: and the daemon cannot end up looking at different vaults.
+        self._vault_dir = vault_dir
         self._environ = environ
         self._now = now or _date.today
         self._self_check_factory = self_check_factory
@@ -1435,14 +1696,30 @@ class RealPanelState(PanelState):
             )
         return tuple(statuses)
 
+    def _router_file(self) -> Path | None:
+        """The router file to read: an explicit path, else the vault's, else None.
+
+        ``None`` hands resolution to ``claire.memory.router`` — the environment
+        then config order Claire uses — so an injected vault keeps the router
+        card and the memories browser looking at one file.
+        """
+        if self._router_path is not None:
+            return Path(self._router_path)
+        if self._vault_dir is not None:
+            from claire.memory.notes import resolve_router_path
+
+            return resolve_router_path(self._vault_dir)
+        return None
+
     def router_status(self) -> RouterStatus:
         from claire.memory import notes as notes_module
         from claire.memory import router as router_module
 
+        explicit_router = self._router_file()
         try:
-            router = router_module.load_router(self._router_path, create=False)
+            router = router_module.load_router(explicit_router, create=False)
         except (router_module.RouterError, notes_module.NotesError) as exc:
-            path = str(getattr(exc, "path", "") or self._router_path or "")
+            path = str(getattr(exc, "path", "") or explicit_router or "")
             return RouterStatus(
                 path=path,
                 error=f"{type(exc).__name__}: {exc}",
@@ -1613,9 +1890,8 @@ class RealPanelState(PanelState):
                     "writes to memory; this panel never creates it."
                 ),
             )
-        uri = "file:" + quote(str(path)) + "?mode=ro"
         try:
-            connection = sqlite3.connect(uri, uri=True, timeout=2.0)
+            connection = _open_memory_db(path)
         except sqlite3.Error as exc:
             return DiaryStatus(
                 path=str(path),
@@ -1645,17 +1921,312 @@ class RealPanelState(PanelState):
                 )
         finally:
             connection.close()
-        entries = tuple(
-            DiaryEntry(
-                date=str(row["date_utc"] or ""),
-                recorded_at=str(row["ts_utc"] or ""),
-                summary=str(row["summary"] or ""),
-                topics=str(row["topics"] or ""),
-                source_app=str(row["source_app"] or ""),
+        return DiaryStatus(path=str(path), exists=True, entries=_diary_entries(rows))
+
+    # -- memories ---------------------------------------------------------- #
+
+    def vault_path(self) -> Path:
+        """The markdown vault the memories browser reads and writes.
+
+        An injected *vault_dir* wins; otherwise this is
+        ``claire.memory.notes.resolve_vault_dir()`` — the environment variable
+        and config key in the same order the daemon uses.  Nothing here invents
+        a second resolution rule, so the panel and Claire look at one vault.
+        """
+        from claire.memory import notes as notes_module
+
+        if self._vault_dir is not None:
+            return notes_module.resolve_vault_dir(self._vault_dir)
+        return notes_module.resolve_vault_dir()
+
+    def memory_notes(self) -> MemoryNotesStatus:
+        """List the router and every note, and name what is wrong with the vault.
+
+        Uses :func:`claire.memory.notes.list_notes` and
+        :func:`claire.memory.notes.unreferenced_notes` — the same readers Claire
+        uses — so the page cannot show a different vault from the one she reads.
+        """
+        from claire.memory import notes as notes_module
+        from claire.memory import obsidian as obsidian_module
+
+        vault = self.vault_path()
+        layout = obsidian_module.describe_vault(vault)
+        try:
+            infos = notes_module.list_notes(vault_dir=vault)
+        except notes_module.NotesDirectoryError as exc:
+            return MemoryNotesStatus(
+                vault_dir=str(layout.vault_dir),
+                notes_dir=str(layout.notes_dir),
+                router_path=str(layout.router_path),
+                obsidian_marked=layout.obsidian_dir_exists,
+                error=f"{type(exc).__name__}: {exc}",
+                fix=(
+                    "Create the notes directory (and the vault around it) with "
+                    "`python -c \"from claire.memory.obsidian import ensure_vault; "
+                    "ensure_vault()\"` — or add the first note from this page, "
+                    "which creates it on demand."
+                ),
             )
-            for row in rows
+
+        router_text = ""
+        router_error = ""
+        router_fix = ""
+        try:
+            router_text = layout.router_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            router_error = f"{type(exc).__name__}: {exc}"
+            router_fix = (
+                f"CLAIRE.md is missing at {layout.router_path}, so no note can be "
+                "called referenced. Create it with "
+                "`python -c \"from claire.memory.router import ensure_router; "
+                "ensure_router()\"`."
+            )
+
+        orphaned: tuple[str, ...] = ()
+        if not router_error:
+            try:
+                orphaned = tuple(
+                    info.name
+                    for info in notes_module.unreferenced_notes(
+                        router_text, notes_dir=layout.notes_dir, vault_dir=vault
+                    )
+                )
+            except notes_module.NotesError:  # pragma: no cover - listing succeeded above
+                orphaned = ()
+
+        unreferenced_names = {name.casefold() for name in orphaned}
+        summaries = tuple(
+            NoteSummary(
+                name=info.name,
+                title=info.title,
+                path=str(info.path),
+                size_bytes=int(info.size_bytes),
+                unreferenced=info.name.casefold() in unreferenced_names,
+            )
+            for info in infos[:MEMORY_NOTE_LIMIT]
         )
-        return DiaryStatus(path=str(path), exists=True, entries=entries)
+        note = ""
+        if len(infos) > MEMORY_NOTE_LIMIT:
+            note = (
+                f"{len(infos)} notes in the vault; the page lists the first "
+                f"{MEMORY_NOTE_LIMIT} by name. Use the search box for the rest."
+            )
+        if orphaned:
+            orphan_line = (
+                f"{len(orphaned)} note(s) are never mentioned by CLAIRE.md, so "
+                "Claire will not read them: " + ", ".join(orphaned[:12]) + "."
+            )
+            note = (note + " " + orphan_line).strip()
+
+        return MemoryNotesStatus(
+            vault_dir=str(layout.vault_dir),
+            notes_dir=str(layout.notes_dir),
+            router_path=str(layout.router_path),
+            obsidian_marked=layout.obsidian_dir_exists,
+            notes=summaries,
+            total_bytes=sum(int(info.size_bytes) for info in infos),
+            unreferenced=orphaned,
+            error=router_error or "",
+            fix=router_fix or "",
+            note=note,
+        )
+
+    def memory_note(self, name: str) -> MemoryNoteView:
+        """Open one note by name, with its frontmatter and resolvable links."""
+        from claire.memory import notes as notes_module
+        from claire.memory import obsidian as obsidian_module
+
+        vault = self.vault_path()
+        try:
+            note = notes_module.read_note(name, vault_dir=vault)
+        except notes_module.NotesError as exc:
+            # The name itself may be the problem, so it is never normalised
+            # again here: re-raising the note layer's own refusal is the answer.
+            return MemoryNoteView(
+                name=str(name or ""),
+                error=f"{type(exc).__name__}: {exc}",
+                fix=(
+                    "Pick a note from the list, or create it from the "
+                    "'New note' form on this page."
+                ),
+            )
+
+        known = tuple(info.name for info in notes_module.list_notes(vault_dir=vault))
+        links = tuple(
+            (target, obsidian_module.resolve_wiki_link(target, known) is not None)
+            for target in obsidian_module.extract_wiki_links(note.text)
+        )
+        problems = tuple(obsidian_module.validate_note_document(note.text))
+        return MemoryNoteView(
+            name=note.name,
+            title=note.title,
+            path=str(note.path),
+            # The body, not the whole file: the frontmatter is shown as its own
+            # table and re-rendered by ``update_note`` from the stored keys, so
+            # editing the Title field actually changes the title.
+            text=note.body,
+            frontmatter=tuple(
+                (str(key), str(value)) for key, value in (note.frontmatter or {}).items()
+            ),
+            links=links,
+            problems=problems,
+            fix=(
+                ""
+                if not problems
+                else "Rewrite the frontmatter as flat 'key: value' pairs between "
+                "two '---' lines so Obsidian shows a Properties table."
+            ),
+        )
+
+    def memory_search(self, query: str) -> MemorySearchStatus:
+        """Search the notes and the persisted diary, reusing each store's own index.
+
+        Notes go through :func:`claire.memory.notes.search_notes` — the one note
+        search that exists.  The diary is the SQLite FTS table the memory layer
+        already maintains (``summaries_fts``), queried read-only; there is no
+        second keyword algorithm here, and no embeddings or LLM are loaded to
+        answer a page request.
+        """
+        from claire.memory import notes as notes_module
+
+        text = str(query or "").strip()
+        if not text:
+            raise PanelBadRequest(
+                "the memory search carried no query.",
+                fix="Type a word into the search box and submit it.",
+            )
+        if len(text) > 200:
+            raise PanelBadRequest(
+                f"the search query is {len(text)} characters; the box forwards at "
+                f"most 200.",
+                fix="Shorten the query to 200 characters or fewer.",
+            )
+
+        vault = self.vault_path()
+        note_hits: tuple[NoteHit, ...] = ()
+        note_error = ""
+        note_fix = ""
+        try:
+            note_hits = tuple(
+                NoteHit(
+                    name=match.name,
+                    title=match.title,
+                    line_no=int(match.line_no),
+                    line=str(match.line),
+                    score=float(match.score),
+                )
+                for match in notes_module.search_notes(
+                    text, vault_dir=vault, limit=MEMORY_SEARCH_LIMIT
+                )
+            )
+        except notes_module.NotesDirectoryError as exc:
+            note_error = f"{type(exc).__name__}: {exc}"
+            note_fix = (
+                "The vault has no notes directory yet, so only the diary below "
+                "was searched. Add a note from this page to create it."
+            )
+
+        diary_hits, diary_error, diary_fix = self._search_diary(text)
+        diary_note = ""
+        if not diary_hits and not diary_error:
+            diary_note = (
+                "No persisted summary matched this query. "
+                + ("The memory database does not exist yet, so there is nothing "
+                   "to search." if not self.diary_path().exists() else
+                   "Try a word from a summary, or browse the diary below.")
+            )
+        return MemorySearchStatus(
+            query=text,
+            note_hits=note_hits,
+            diary_hits=diary_hits,
+            note_error=note_error,
+            note_fix=note_fix,
+            diary_error=diary_error,
+            diary_fix=diary_fix,
+            diary_note=diary_note,
+        )
+
+    def _search_diary(self, query: str) -> tuple[tuple[DiaryEntry, ...], str, str]:
+        """Search the persisted summaries read-only; return hits, error and fix."""
+        path = self.diary_path()
+        if not path.exists():
+            return (
+                (),
+                "",
+                "",
+            )
+        try:
+            connection = _open_memory_db(path)
+        except sqlite3.Error as exc:
+            return ((), f"{type(exc).__name__}: {_scrub(exc)}", f"Check that {path} is readable.")
+        try:
+            connection.row_factory = sqlite3.Row
+            rows = _fts_summary_rows(connection, query, MEMORY_SEARCH_LIMIT)
+            if rows is None:
+                rows = _like_summary_rows(connection, query, MEMORY_SEARCH_LIMIT)
+        except sqlite3.Error as exc:
+            return (
+                (),
+                f"{type(exc).__name__}: {_scrub(exc)}",
+                "The memory database has no readable conversation_summaries table; "
+                "run the daemon once so the memory layer can create it.",
+            )
+        finally:
+            connection.close()
+        return (_diary_entries(rows), "", "")
+
+    def save_note(
+        self,
+        name: str,
+        body: str,
+        *,
+        title: str = "",
+        create: bool = True,
+    ) -> NoteSummary:
+        """Write one note through :mod:`claire.memory.notes`, then re-read it.
+
+        The panel never formats frontmatter itself: ``create_note`` and
+        ``update_note`` do, so what the browser writes is exactly what Claire's
+        parser reads back.  The file is re-read after the write so the page shows
+        the stored document rather than the submitted one.
+        """
+        from claire.memory import notes as notes_module
+        from claire.memory import obsidian as obsidian_module
+
+        vault = self.vault_path()
+        if create:
+            obsidian_module.ensure_vault(vault)
+            info = notes_module.create_note(
+                name,
+                body,
+                title=title or None,
+                vault_dir=vault,
+            )
+        else:
+            info = notes_module.update_note(
+                name,
+                body,
+                title=title or None,
+                vault_dir=vault,
+            )
+        return NoteSummary(
+            name=info.name,
+            title=info.title,
+            path=str(info.path),
+            size_bytes=int(info.size_bytes),
+        )
+
+    def delete_note(self, name: str) -> NoteSummary:
+        """Delete one note through :mod:`claire.memory.notes`."""
+        from claire.memory import notes as notes_module
+
+        info = notes_module.delete_note(name, vault_dir=self.vault_path())
+        return NoteSummary(
+            name=info.name,
+            title=info.title,
+            path=str(info.path),
+            size_bytes=int(info.size_bytes),
+        )
 
     # -- conversation ------------------------------------------------------ #
 
@@ -1997,6 +2568,28 @@ form.chat .row { display: flex; align-items: center; justify-content: space-betw
 .diary .meta { font-size: .76rem; color: var(--ink-faint); display: flex; gap: .5rem;
                flex-wrap: wrap; }
 .diary p { margin: .15rem 0 0; }
+
+/* ---- memories browser -------------------------------------------------- */
+form.memory { margin: .9rem 0 0; }
+form.memory .field { display: block; font-size: .82rem; color: var(--ink-soft);
+                     margin: .55rem 0 .2rem; }
+form.memory input[type="text"], form.memory input:not([type]),
+form.memory input[name="name"], form.memory input[name="title"],
+form.memory input[name="q"] {
+  width: 100%; box-sizing: border-box; padding: .5rem .6rem;
+  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--card-2); color: var(--ink); font: inherit; }
+form.memory textarea { width: 100%; box-sizing: border-box; padding: .55rem .6rem;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card-2);
+  color: var(--ink); font: inherit; resize: vertical; }
+form.memory .row { display: flex; align-items: center; gap: .7rem;
+                   flex-wrap: wrap; margin-top: .7rem; }
+form.memory.danger { border-top: 1px dashed var(--line); padding-top: .7rem;
+                     margin-top: 1rem; }
+form.memory.danger button { background: transparent; border: 1px solid var(--bad);
+                            color: var(--bad); }
+pre.note-body { max-height: 30rem; overflow: auto; white-space: pre-wrap;
+                word-break: break-word; }
 
 /* ---- footer ------------------------------------------------------------ */
 footer { max-width: 1180px; margin: 1.25rem auto 0; padding-top: .8rem;
@@ -2484,6 +3077,455 @@ def _chat_section(state: PanelState) -> str:
     return _section("Chat", inner, anchor="chat", wide=True)
 
 
+def _note_link(name: str) -> str:
+    """A link that opens one note in the memories browser."""
+    return f"{ROUTE_MEMORY}?note={quote(str(name), safe='')}"
+
+
+def _memory_section(state: PanelState) -> str:
+    """The index-page card: how much memory is in the vault, and how to browse it."""
+
+    def build() -> str:
+        status = state.memory_notes()
+        if status.error:
+            # The one case where the owner most needs the browser is the one where
+            # there is nothing to list yet, so the card still offers it: the first
+            # note written from the page creates the directory.
+            return "\n".join(
+                [
+                    _problem(status.error, status.fix),
+                    f'<p class="hint">The browser still opens: '
+                    f'<a href="{ROUTE_MEMORY}">read, search and write memory</a>.</p>',
+                ]
+            )
+        count = len(status.notes)
+        parts = [
+            '<p class="hint">The markdown half of memory: the always-loaded '
+            "router plus one file per note. It lives outside the repository.</p>",
+            '<p class="mono">'
+            f"vault: {_esc(status.vault_dir)}<br>"
+            f"notes: {_esc(status.notes_dir)}<br>"
+            f"router: {_esc(status.router_path)}</p>",
+        ]
+        if status.note:
+            parts.append(f'<p class="warn">{_esc(status.note)}</p>')
+        if status.notes:
+            rows = []
+            for summary in status.notes[:8]:
+                flag = (
+                    '<span class="warn"> not in CLAIRE.md</span>'
+                    if summary.unreferenced
+                    else ""
+                )
+                rows.append(
+                    "<tr>"
+                    f'<td><a href="{_esc(_note_link(summary.name))}">'
+                    f"{_esc(summary.name)}</a></td>"
+                    f"<td>{_esc(summary.title)}{flag}</td>"
+                    f'<td class="mono">{summary.size_bytes} B</td>'
+                    "</tr>"
+                )
+            more = (
+                f'<p class="hint">and {count - 8} more.</p>' if count > 8 else ""
+            )
+            parts.append(
+                "<table><thead><tr><th>Note</th><th>Title</th><th>Size</th>"
+                f"</tr></thead><tbody>{''.join(rows)}</tbody></table>{more}"
+            )
+        else:
+            parts.append(
+                '<p class="empty">No notes yet. The router holds the pointers; '
+                "the detail belongs in notes.</p>"
+            )
+        mark = (
+            '<span class="ok">marked as an Obsidian vault</span>'
+            if status.obsidian_marked
+            else '<span class="muted">not yet opened by Obsidian</span>'
+        )
+        parts.append(
+            f'<p class="hint">{count} note(s), {status.total_bytes} bytes of detail '
+            f"&middot; {mark} &middot; "
+            f'<a href="{ROUTE_MEMORY}">open the memories browser</a></p>'
+        )
+        return "\n".join(parts)
+
+    return _section("Memories", _guard("memories", build), anchor="memories")
+
+
+def _memory_notes_table(status: MemoryNotesStatus, selected: str = "") -> str:
+    """The vault listing: every note, with size, title and orphan marker."""
+    if status.error:
+        return _problem(status.error, status.fix)
+    if not status.notes:
+        return (
+            '<p class="empty">No notes yet. CLAIRE.md holds the pointers; write '
+            "the first note with the form below.</p>"
+        )
+    rows = []
+    for summary in status.notes:
+        marker = (
+            '<span class="warn" title="CLAIRE.md never mentions this note">'
+            " orphan</span>"
+            if summary.unreferenced
+            else ""
+        )
+        current = ' <span class="pill">open</span>' if summary.name == selected else ""
+        rows.append(
+            "<tr>"
+            f'<td><a href="{_esc(_note_link(summary.name))}">'
+            f"{_esc(summary.name)}</a>{current}</td>"
+            f"<td>{_esc(summary.title)}{marker}</td>"
+            f'<td class="mono">{summary.size_bytes} B</td>'
+            "</tr>"
+        )
+    table = (
+        "<table><thead><tr><th>Note</th><th>Title</th><th>Size</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+    if status.note:
+        table += f'<p class="warn">{_esc(status.note)}</p>'
+    return table
+
+
+def _memory_note_html(view: MemoryNoteView) -> str:
+    """One open note: frontmatter, links, body, and any format problems."""
+    if view.error:
+        return _problem(view.error, view.fix)
+
+    parts: list[str] = [
+        f'<p class="mono">{_esc(view.path)}</p>',
+    ]
+    if view.frontmatter:
+        rows = "".join(
+            f"<tr><td>{_esc(key)}</td><td>{_esc(value)}</td></tr>"
+            for key, value in view.frontmatter
+        )
+        parts.append(
+            "<table><thead><tr><th>Frontmatter</th><th>Value</th></tr></thead>"
+            f"<tbody>{rows}</tbody></table>"
+        )
+    else:
+        parts.append(
+            '<p class="muted">No frontmatter. Add a title in the editor below so '
+            "Obsidian shows this note's properties.</p>"
+        )
+    if view.problems:
+        parts.append(_problem("; ".join(view.problems), view.fix))
+    if view.links:
+        rendered = []
+        for target, resolved in view.links:
+            if resolved:
+                rendered.append(
+                    f'<a href="{_esc(_note_link(target))}">[[{_esc(target)}]]</a>'
+                )
+            else:
+                rendered.append(
+                    f'<span class="warn" title="no note with this name">'
+                    f"[[{_esc(target)}]]</span>"
+                )
+        parts.append('<p class="hint">Links: ' + ", ".join(rendered) + "</p>")
+    shown = view.text
+    if len(shown) > MEMORY_BODY_CHARS:
+        parts.append(
+            f'<p class="warn">Showing the first {MEMORY_BODY_CHARS} characters; the '
+            "edit box below holds the whole body.</p>"
+        )
+        shown = shown[:MEMORY_BODY_CHARS]
+    parts.append(f'<pre class="mono note-body">{_esc(shown)}</pre>')
+    return "\n".join(parts)
+
+
+def _memory_editor_html(view: MemoryNoteView) -> str:
+    """The edit form for one note, posting to the same writer Claire uses."""
+    return (
+        f'<form class="memory" method="post" action="{ROUTE_MEMORY_SAVE}">\n'
+        '<input type="hidden" name="mode" value="edit">\n'
+        f'<input type="hidden" name="original" value="{_esc(view.name)}">\n'
+        '<label class="field" for="edit-title">Title</label>\n'
+        f'<input id="edit-title" name="title" maxlength="200" value="'
+        f'{_esc(view.title)}">\n'
+        '<label class="field" for="edit-body">Body (markdown; [[wiki links]] '
+        "work as they do in Obsidian)</label>\n"
+        f'<textarea id="edit-body" name="body" rows="12" '
+        f'maxlength="{MEMORY_WRITE_MAX_CHARS}">{_esc(view.text)}</textarea>\n'
+        '<div class="row"><button type="submit">Save note</button>\n'
+        f'<span class="mono">{_esc(view.name)}.md</span></div>\n'
+        "</form>\n"
+        f'<form class="memory danger" method="post" action="{ROUTE_MEMORY_DELETE}">\n'
+        f'<input type="hidden" name="name" value="{_esc(view.name)}">\n'
+        '<div class="row"><button type="submit">Delete this note</button>\n'
+        "<span class=\"hint\">There is no undo and no trash: the file is removed "
+        "from the vault.</span></div>\n"
+        "</form>"
+    )
+
+
+def _memory_new_note_html() -> str:
+    """The create form: a name (the filename, hence the link target) and a body."""
+    return (
+        f'<form class="memory" method="post" action="{ROUTE_MEMORY_SAVE}">\n'
+        '<input type="hidden" name="mode" value="create">\n'
+        '<label class="field" for="new-name">Note name (the filename; '
+        "[[this name]] is how it is linked)</label>\n"
+        '<input id="new-name" name="name" maxlength="120" '
+        'placeholder="dentist" required>\n'
+        '<label class="field" for="new-title">Title (optional; defaults to the '
+        "name)</label>\n"
+        '<input id="new-title" name="title" maxlength="200">\n'
+        '<label class="field" for="new-body">Body</label>\n'
+        f'<textarea id="new-body" name="body" rows="8" '
+        f'maxlength="{MEMORY_WRITE_MAX_CHARS}" '
+        'placeholder="Dr. Ruiz, Wednesday 16:00, Calle Mayor 4."></textarea>\n'
+        '<div class="row"><button type="submit">Create note</button>\n'
+        '<span class="hint">Saved as markdown with title/created/updated '
+        "frontmatter, at mode 0600, outside the repository.</span></div>\n"
+        "</form>"
+    )
+
+
+def _memory_search_html(status: MemorySearchStatus) -> str:
+    """The search results: note hits first, then persisted summaries."""
+    parts: list[str] = []
+    if status.note_error:
+        parts.append(_problem(status.note_error, status.note_fix))
+    elif status.note_hits:
+        items = []
+        for hit in status.note_hits:
+            items.append(
+                "<li>"
+                f'<div class="meta"><a href="{_esc(_note_link(hit.name))}">'
+                f"{_esc(hit.name)}</a> &middot; {_esc(hit.title)} "
+                f'<span class="mono">line {hit.line_no}</span></div>'
+                f"<p class=\"mono\">{_esc(hit.line)}</p>"
+                "</li>"
+            )
+        parts.append(
+            f'<p class="hint">{len(status.note_hits)} note hit(s) for '
+            f"&ldquo;{_esc(status.query)}&rdquo;.</p>"
+            f'<ul class="diary">{"".join(items)}</ul>'
+        )
+    else:
+        parts.append(
+            f'<p class="empty">No note matched &ldquo;{_esc(status.query)}'
+            "&rdquo;.</p>"
+        )
+
+    if status.diary_error:
+        parts.append(_problem(status.diary_error, status.diary_fix))
+    elif status.diary_hits:
+        items = []
+        for entry in status.diary_hits:
+            topics = (
+                f'<span>topics: {_esc(entry.topics)}</span>' if entry.topics else ""
+            )
+            items.append(
+                "<li>"
+                f'<div class="meta"><span class="mono">{_esc(entry.date)}</span>'
+                f"{topics}</div>"
+                f"<p>{_esc(entry.summary)}</p>"
+                "</li>"
+            )
+        parts.append(
+            f'<p class="hint">{len(status.diary_hits)} persisted summary hit(s).</p>'
+            f'<ul class="diary">{"".join(items)}</ul>'
+        )
+    elif status.diary_note:
+        parts.append(f'<p class="muted">{_esc(status.diary_note)}</p>')
+    return "\n".join(parts)
+
+
+def render_memory(
+    state: PanelState,
+    *,
+    query: str = "",
+    note: str = "",
+    changed: bool = False,
+    bind_host: str = DEFAULT_BIND_HOST,
+    bind_port: int = DEFAULT_PORT,
+) -> PanelResponse:
+    """The memories browser: the router, the notes, and the persisted diary.
+
+    One page, server-rendered and read-only except for the note forms.  Search
+    and the open note live in the query string (``?q=``, ``?note=``) so every
+    view is a link the owner can bookmark, and no path from a request is ever
+    used to open a file: a note is addressed by *name*, through
+    :mod:`claire.memory.notes`, which refuses anything that is not one filename
+    inside the notes directory.
+    """
+    cards: list[str] = [
+        _masthead(bind_host, bind_port),
+        "<main>",
+    ]
+
+    def vault_card() -> str:
+        info = state.memory_notes()
+        parts = [
+            '<p class="hint">Memory is a markdown vault: <span class="mono">'
+            "CLAIRE.md</span> is the always-loaded router and holds one-line "
+            "pointers; each note under <span class=\"mono\">notes/</span> holds "
+            "the detail. Point Obsidian (or any markdown tool) at the vault "
+            "directory to read the same files.</p>",
+            '<p class="mono">'
+            f"vault: {_esc(info.vault_dir)}<br>"
+            f"notes: {_esc(info.notes_dir)}<br>"
+            f"router: {_esc(info.router_path)}</p>",
+            '<p class="hint">'
+            + (
+                '<span class="ok">Obsidian has opened this folder as a vault</span>'
+                if info.obsidian_marked
+                else '<span class="muted">No .obsidian/ folder yet; opening this '
+                "folder in Obsidian creates one.</span>"
+            )
+            + "</p>",
+            '<form class="memory search" method="get" action="'
+            + ROUTE_MEMORY
+            + '">\n'
+            '<label class="field" for="q">Search notes and the persisted '
+            "diary</label>\n"
+            f'<input id="q" name="q" value="{_esc(query)}" maxlength="200" '
+            'placeholder="dentist">\n'
+            '<div class="row"><button type="submit">Search</button>'
+            + (
+                f' <a href="{ROUTE_MEMORY}">clear</a>'
+                if query
+                else ""
+            )
+            + "</div>\n</form>",
+            "<h3>Router (CLAIRE.md)</h3>",
+            _guard("memory router text", lambda: _router_body_html(state)),
+            "<h3>Notes</h3>",
+            _memory_notes_table(info, selected=note),
+        ]
+        if changed:
+            parts.insert(0, '<p class="ok">The vault was written.</p>')
+        return "\n".join(parts)
+
+    cards.append(_section("Memory vault", _guard("memory vault", vault_card), wide=True))
+
+    if query:
+        cards.append(
+            _section(
+                f"Search results for \u201c{query}\u201d",
+                _guard("memory search", lambda: _memory_search_html(state.memory_search(query))),
+                anchor="search",
+                wide=True,
+            )
+        )
+
+    if note:
+        view = _memory_note_view(state, note)
+        cards.append(
+            _section(
+                f"Note: {view.name or note}",
+                _guard("note", lambda: _memory_note_html(view)),
+                anchor="note",
+                badge="note",
+                wide=True,
+            )
+        )
+        cards.append(
+            _section(
+                "Edit this note",
+                _guard("note editor", lambda: _memory_editor_html(view)),
+                anchor="edit",
+                wide=True,
+            )
+        )
+
+    cards.append(
+        _section("New note", _memory_new_note_html(), anchor="new-note", wide=True)
+    )
+    cards.append(
+        _section(
+            "Persisted diary (SQLite)",
+            _guard("memory diary", lambda: _memory_diary_text(state)),
+            anchor="diary",
+            badge="on disk",
+            wide=True,
+        )
+    )
+    cards.append("</main>")
+    cards.append(
+        '<footer><a href="/">Back to the panel</a> &middot; memory is Claire\'s '
+        "instructions to herself and lives outside the repository.</footer>"
+    )
+    body = "\n".join(cards)
+    return PanelResponse(status=200, body=_page("Claire memories", body).encode("utf-8"))
+
+
+def _memory_note_view(state: PanelState, name: str) -> MemoryNoteView:
+    """Open one note, turning any failure into a view that renders a PROBLEM box.
+
+    The section is built from a value, not from inside a ``_guard`` closure, so
+    this is where the failure is caught: a state that cannot open notes still
+    gets its two cards, each naming what is wrong.
+    """
+    try:
+        return state.memory_note(name)
+    except PanelError as exc:
+        return MemoryNoteView(
+            name=name, error=f"{exc.code}: {exc.message}", fix=exc.fix
+        )
+    except Exception as exc:  # noqa: BLE001 - a broken source is a finding
+        detail = _scrub(exc)
+        return MemoryNoteView(
+            name=name,
+            error=f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__,
+            fix=(
+                "Run `python -m claire.platform.service` for the named check "
+                "behind the memory vault, and report it with that output."
+            ),
+        )
+
+
+def _router_body_html(state: PanelState) -> str:
+    """The router's text, read straight from the file, plus its pointers."""
+    status = state.router_status()
+    if status.error:
+        return _problem(status.error, status.fix)
+    try:
+        text = Path(status.path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return _problem(
+            f"{type(exc).__name__}: {exc}",
+            f"Check that {status.path} is readable by the panel's user.",
+        )
+    from claire.memory import obsidian as obsidian_module
+
+    pointers = obsidian_module.link_targets_in_text(text)
+    pointer_line = (
+        '<p class="hint">Pointers found: '
+        + ", ".join(
+            (
+                f'<a href="{_esc(_note_link(target))}">[[{_esc(target)}]]</a>'
+            )
+            for target in pointers
+        )
+        + "</p>"
+        if pointers
+        else '<p class="muted">This router names no note yet.</p>'
+    )
+    return (
+        f'<p class="mono">{_esc(status.path)} &middot; {status.size_bytes} / '
+        f"{status.budget_bytes} bytes"
+        + (" &middot; <span class=\"bad\">over budget</span>" if status.over_budget else "")
+        + "</p>"
+        + pointer_line
+        + f'<pre class="mono note-body">{_esc(text)}</pre>'
+    )
+
+
+def _memory_diary_text(state: PanelState) -> str:
+    """The recent persisted summaries, with the search box above them."""
+    status = state.diary()
+    html = _diary_html(status)
+    return (
+        '<p class="hint">The memory layer writes one summarised entry per day '
+        "into SQLite. These are summaries, not a verbatim transcript; the "
+        "search box above queries this table too.</p>" + html
+    )
+
+
 def render_index(
     state: PanelState,
     *,
@@ -2501,12 +3543,14 @@ def render_index(
             _provider_section(state, changed=changed),
             _keys_section(state),
             _router_section(state),
+            _memory_section(state),
             _calendar_section(state),
             _self_check_section(state),
             _actions_section(state),
             "</main>",
             f'<footer>Refresh for current state. Text report: '
             f'<a href="{ROUTE_SELF_CHECK}">{ROUTE_SELF_CHECK}</a> '
+            f'&middot; memories: <a href="{ROUTE_MEMORY}">{ROUTE_MEMORY}</a> '
             f'&middot; machine-readable: <a href="{ROUTE_HEALTH}">{ROUTE_HEALTH}</a>.</footer>',
         ]
     )
@@ -2710,13 +3754,129 @@ def handle_select(state: PanelState, request: PanelRequest) -> PanelResponse:
     return _redirect(f"{ROUTE_INDEX}?changed=1")
 
 
+def _memory_notes_error(exc: Exception, *, name: str, mode: str) -> PanelError:
+    """Turn a named :mod:`claire.memory.notes` failure into a panel refusal.
+
+    The note layer already says exactly what is wrong ("note already exists",
+    "not a safe single filename"); the only thing missing is the *fix*, and it
+    differs per failure.  Nothing here is caught generically: an unexpected
+    exception stays unexpected and is rendered with its own type name.
+    """
+    from claire.memory import notes as notes_module
+
+    detail = _scrub(exc)
+    if isinstance(exc, notes_module.NoteExistsError):
+        return PanelBadRequest(
+            f"note {name!r} already exists; nothing was changed. {detail}",
+            fix=(
+                f"Open {name} from the note list and edit it, or create the new "
+                "note under a different name."
+            ),
+        )
+    if isinstance(exc, notes_module.NoteNotFoundError):
+        return PanelBadRequest(
+            f"note {name!r} was not found, so the {mode} changed nothing. {detail}",
+            fix=(
+                "The note may have been deleted or renamed since this page was "
+                "loaded; reload the memories page and try again."
+            ),
+        )
+    if isinstance(exc, notes_module.InvalidNoteNameError):
+        return PanelBadRequest(
+            f"{name!r} is not a usable note name. {detail}",
+            fix=(
+                "A note name is one filename: use letters, digits, spaces, '-' "
+                "or '_' (at most 120 characters), with no '/' or '..'."
+            ),
+        )
+    if isinstance(exc, notes_module.NotesDirectoryError):
+        return PanelWriteError(
+            f"the notes directory is missing, so the {mode} wrote nothing. {detail}",
+            fix="Add the note again; the browser creates the vault and its "
+            "notes/ directory on demand.",
+        )
+    return PanelWriteError(
+        f"the {mode} failed: {type(exc).__name__}: {detail}",
+        fix="Fix the cause above and submit the form again.",
+    )
+
+
+def handle_memory_save(state: PanelState, request: PanelRequest) -> PanelResponse:
+    """Create or replace one note, through :mod:`claire.memory.notes`.
+
+    The same origin guard, key-field refusal and body cap as every other write
+    endpoint on this page.  ``mode`` is explicit rather than inferred from the
+    note's existence: "create" must refuse to clobber an existing note, and
+    "edit" must refuse to silently create a new one.
+    """
+    check_write_origin(request, route=ROUTE_MEMORY_SAVE)
+    form = parse_form(request)
+    refuse_key_fields(form, ROUTE_MEMORY_SAVE)
+
+    mode = str(form.get("mode", "") or "").strip().lower()
+    if mode not in ("create", "edit"):
+        raise PanelBadRequest(
+            f"the note form carried mode {mode!r}; expected 'create' or 'edit'.",
+            fix="Reload the memories page and use one of its note forms.",
+        )
+    name = str(form.get("name", "") or "").strip()
+    if not name:
+        name = str(form.get("original", "") or "").strip()
+    if not name:
+        raise PanelBadRequest(
+            "the note form carried no note name.",
+            fix="Type a note name (one filename, no '/') and submit the form.",
+        )
+    body = str(form.get("body", "") or "")
+    if len(body) > MEMORY_WRITE_MAX_CHARS:
+        raise PanelTooLarge(
+            f"the note body is {len(body)} characters; the editor writes at most "
+            f"{MEMORY_WRITE_MAX_CHARS}.",
+            fix=(
+                f"Shorten the body to {MEMORY_WRITE_MAX_CHARS} characters or "
+                "fewer. A note is meant to be small; put detail in its own note "
+                "and keep a pointer in CLAIRE.md."
+            ),
+        )
+    title = str(form.get("title", "") or "").strip()[:200]
+
+    try:
+        state.save_note(name, body, title=title, create=(mode == "create"))
+    except PanelError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed write is a named refusal
+        raise _memory_notes_error(exc, name=name, mode=mode) from exc
+    return _redirect(f"{ROUTE_MEMORY}?note={quote(name, safe='')}&changed=1")
+
+
+def handle_memory_delete(state: PanelState, request: PanelRequest) -> PanelResponse:
+    """Delete one note, reporting a no-op as a refusal rather than success."""
+    check_write_origin(request, route=ROUTE_MEMORY_DELETE)
+    form = parse_form(request)
+    refuse_key_fields(form, ROUTE_MEMORY_DELETE)
+
+    name = str(form.get("name", "") or "").strip()
+    if not name:
+        raise PanelBadRequest(
+            "the delete form carried no note name.",
+            fix="Reload the memories page, open the note and use its Delete button.",
+        )
+    try:
+        state.delete_note(name)
+    except PanelError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a failed delete is a named refusal
+        raise _memory_notes_error(exc, name=name, mode="delete") from exc
+    return _redirect(f"{ROUTE_MEMORY}?changed=1")
+
+
 def dispatch(state: PanelState, request: PanelRequest) -> PanelResponse:
     """Route one request. Never raises: every refusal is a rendered page."""
     try:
         path, query = parse_target(request.path)
     except PanelError as exc:
         return render_error_page(exc)
-    if path in (ROUTE_SELECT, ROUTE_CHAT):
+    if path in POST_ROUTES:
         if request.method != "POST":
             return render_error_page(
                 PanelMethodNotAllowed(request.method, path, allowed=("POST",))
@@ -2724,6 +3884,10 @@ def dispatch(state: PanelState, request: PanelRequest) -> PanelResponse:
         try:
             if path == ROUTE_CHAT:
                 return handle_chat(state, request)
+            if path == ROUTE_MEMORY_SAVE:
+                return handle_memory_save(state, request)
+            if path == ROUTE_MEMORY_DELETE:
+                return handle_memory_delete(state, request)
             return handle_select(state, request)
         except PanelError as exc:
             return render_error_page(exc)
@@ -2733,6 +3897,24 @@ def dispatch(state: PanelState, request: PanelRequest) -> PanelResponse:
                 PanelMethodNotAllowed(request.method, path, allowed=("GET",))
             )
         return PanelResponse(status=204, body=b"", content_type="image/x-icon")
+    if path == ROUTE_MEMORY:
+        # Dispatched by name, not through GET_VIEWS, because its view takes the
+        # query string (?q= search, ?note= which note to open).
+        if request.method not in ("GET", "HEAD"):
+            return render_error_page(
+                PanelMethodNotAllowed(request.method, path, allowed=("GET",))
+            )
+        try:
+            return render_memory(
+                state,
+                query=query.get("q", [""])[-1].strip(),
+                note=query.get("note", [""])[-1].strip(),
+                changed=query.get("changed", [""])[-1] == "1",
+                bind_host=request.server_host,
+                bind_port=request.server_port,
+            )
+        except PanelError as exc:
+            return render_error_page(exc)
     view = GET_VIEWS.get(path)
     if view is None:
         return render_error_page(PanelRouteNotFound(path))

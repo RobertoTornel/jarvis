@@ -8,6 +8,15 @@ Detailed settings, integrations and troubleshooting. Start with the desktop Sett
 
 Most users won't need to change anything. Open **⚙️ Settings** from the tray menu to configure Claire through a graphical interface: no JSON editing required. Settings are saved to `~/.config/claire/config.json`.
 
+Claire also keeps state in your own data directory, outside both the settings file and the repository:
+
+| What | Default | Move it with |
+|---|---|---|
+| Memory vault — `CLAIRE.md` and `notes/` | `~/.local/share/claire/vault` | `CLAIRE_VAULT_DIR`, or the `vault_dir` key in `config.json` |
+| Conversation database — diary, topics, recall | `~/.local/share/claire/claire.db` | the `db_path` key |
+
+The memory vault is a plain, Obsidian-compatible markdown folder: point Obsidian at it and read Claire's memory as ordinary notes. [OBSIDIAN.md](OBSIDIAN.md) covers the layout and the conventions; [MEMORY.md](MEMORY.md) covers what the router and the notes mean.
+
 <details>
 <summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
 
