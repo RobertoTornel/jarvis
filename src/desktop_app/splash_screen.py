@@ -1,5 +1,5 @@
 """
-🚀 Jarvis Splash Screen
+🚀 Claire Splash Screen
 
 A stylish startup splash screen with animated loading indicator
 that shows progress during application initialization.
@@ -139,7 +139,7 @@ class SplashScreen(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # Title
-        title = QLabel("JARVIS")
+        title = QLabel("CLAIRE")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_font = QFont()
         title_font.setPointSize(28)

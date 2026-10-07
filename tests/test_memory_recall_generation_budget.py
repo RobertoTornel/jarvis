@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from evals.helpers import voice_config
-from jarvis.reply.enrichment import extract_search_params_for_memory
+from claire.reply.enrichment import extract_search_params_for_memory
 
 pytestmark = pytest.mark.unit
 

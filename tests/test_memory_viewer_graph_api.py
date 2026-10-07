@@ -17,7 +17,7 @@ try:
 except ImportError:
     _HAS_FLASK = False
 
-from src.jarvis.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from src.claire.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
 
 
 @pytest.mark.unit

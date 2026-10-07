@@ -5,11 +5,11 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-# Robustly locate repository root (directory containing src/jarvis)
+# Robustly locate repository root (directory containing src/claire)
 _this_file = Path(__file__).resolve()
 ROOT = None
 for parent in _this_file.parents:
-    if (parent / "src" / "jarvis").exists():
+    if (parent / "src" / "claire").exists():
         ROOT = parent
         break
 if ROOT is None:
@@ -18,16 +18,16 @@ if ROOT is None:
 
 SRC = ROOT / "src"
 # Both ROOT and SRC are on sys.path so tests can write either
-#   ``from src.jarvis.x import ...``  (older style, ``src.`` prefix)
+#   ``from src.claire.x import ...``  (older style, ``src.`` prefix)
 # or
-#   ``from jarvis.x import ...``      (newer style, no prefix)
+#   ``from claire.x import ...``      (newer style, no prefix)
 # CAUTION: those two import paths resolve to *distinct module instances*.
-# A monkeypatch on ``src.jarvis.memory.conversation.X`` does NOT take
-# effect on ``jarvis.memory.conversation.X`` and vice versa. When a test
+# A monkeypatch on ``src.claire.memory.conversation.X`` does NOT take
+# effect on ``claire.memory.conversation.X`` and vice versa. When a test
 # stubs out a symbol the production code calls, you MUST patch the same
 # module instance the production code resolves at runtime. Production code
 # in ``src/`` imports without the ``src.`` prefix (e.g. inside endpoint
-# handlers it's ``from jarvis.memory.conversation import ...``), so a test
+# handlers it's ``from claire.memory.conversation import ...``), so a test
 # that monkeypatches a symbol used by production should also import
 # without the prefix. This is the convention going forward; the older
 # ``from src.X`` style is left in place to avoid a churn-only sweep, but
@@ -35,7 +35,7 @@ SRC = ROOT / "src"
 # Add repository root so that 'src' is a package prefix.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-# Also add the src directory (optional, for backwards compatibility with direct 'jarvis' imports)
+# Also add the src directory (optional, for backwards compatibility with direct 'claire' imports)
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
@@ -97,8 +97,6 @@ class MockConfig:
     dialogue_memory_timeout: int = 300
     llm_thinking_enabled: bool = False
     intent_judge_thinking_enabled: bool = False
-    dictation_thinking_enabled: bool = False
-    dictation_hotkey: str = "ctrl+alt+space"
     mcps: Dict[str, Any] = field(default_factory=dict)
     use_stdin: bool = True
 
@@ -118,18 +116,18 @@ class MockConfig:
 def _isolate_user_config_path(tmp_path_factory, monkeypatch):
     """Redirect ``default_config_path`` to a per-session tempfile so a test
     that calls ``load_settings`` (or any other code path that resolves the
-    user's config) cannot read or overwrite ``~/.config/jarvis/config.json``.
+    user's config) cannot read or overwrite ``~/.config/claire/config.json``.
 
     Tests that need to exercise the loader against specific JSON should
     monkey-patch ``_load_json`` (and ``_save_json`` if the migration would
     trigger a write) directly. This fixture is a belt-and-braces guard so
     a half-mocked test cannot reach the real config file.
     """
-    sandbox = tmp_path_factory.mktemp("jarvis_config_sandbox")
+    sandbox = tmp_path_factory.mktemp("claire_config_sandbox")
     monkeypatch.setattr(
-        "jarvis.config.default_config_path", lambda: sandbox / "config.json"
+        "claire.config.default_config_path", lambda: sandbox / "config.json"
     )
-    monkeypatch.setenv("JARVIS_CONFIG_PATH", str(sandbox / "config.json"))
+    monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(sandbox / "config.json"))
 
 
 @pytest.fixture
@@ -141,7 +139,7 @@ def mock_config():
 @pytest.fixture
 def db():
     """Provide an in-memory database for unit tests."""
-    from jarvis.memory.db import Database
+    from claire.memory.db import Database
     database = Database(":memory:", sqlite_vss_path=None)
     yield database
     database.close()
@@ -150,7 +148,7 @@ def db():
 @pytest.fixture
 def dialogue_memory():
     """Provide a dialogue memory instance for unit tests."""
-    from jarvis.memory.conversation import DialogueMemory
+    from claire.memory.conversation import DialogueMemory
     return DialogueMemory(inactivity_timeout=300, max_interactions=20)
 
 

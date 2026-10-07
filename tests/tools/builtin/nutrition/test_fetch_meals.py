@@ -4,9 +4,9 @@ import pytest
 from unittest.mock import Mock
 from datetime import datetime, timezone, timedelta
 
-from src.jarvis.tools.builtin.nutrition.fetch_meals import FetchMealsTool
-from src.jarvis.tools.base import ToolContext
-from src.jarvis.tools.types import ToolExecutionResult
+from src.claire.tools.builtin.nutrition.fetch_meals import FetchMealsTool
+from src.claire.tools.base import ToolContext
+from src.claire.tools.types import ToolExecutionResult
 
 
 class TestFetchMealsTool:

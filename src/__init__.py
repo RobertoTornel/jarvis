@@ -1,1 +1,1 @@
-# Allow imports using 'src.jarvis' in tests.
+# Allow imports using 'src.claire' in tests.

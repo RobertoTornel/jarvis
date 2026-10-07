@@ -1,7 +1,7 @@
 """Engine-level tool carry-over guard.
 
 Field trace (2026-05-03, gemma4:e2b):
-  Turn 1 user: "how's the weather tomorrow Jarvis?" → no location set →
+  Turn 1 user: "how's the weather tomorrow Claire?" → no location set →
     assistant invokes ``getWeather``, tool returns ``success=False``
     ("I couldn't auto-detect your location, please tell me a city"),
     assistant relays the request.
@@ -28,8 +28,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.jarvis.memory.conversation import DialogueMemory
-from src.jarvis.reply.engine import run_reply_engine
+from src.claire.memory.conversation import DialogueMemory
+from src.claire.reply.engine import run_reply_engine
 
 
 def _mock_cfg():
@@ -132,14 +132,14 @@ def _failed_text_tool_turn(tool_name: str) -> list[dict]:
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_followup_carries_over_failed_previous_tool(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -157,12 +157,12 @@ def test_followup_carries_over_failed_previous_tool(
     db = Mock()
     cfg = _mock_cfg()
     dm = DialogueMemory()
-    dm.add_message("user", "how's the weather tomorrow Jarvis")
+    dm.add_message("user", "how's the weather tomorrow Claire")
     dm.record_tool_turn(_failed_tool_turn("getWeather"))
     dm.add_message("assistant", "I do not have a location set.")
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -179,14 +179,14 @@ def test_followup_carries_over_failed_previous_tool(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_successful_previous_tool_does_not_trigger_carryover(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -210,7 +210,7 @@ def test_successful_previous_tool_does_not_trigger_carryover(
     dm.add_message("assistant", "It's 15°C and partly cloudy in London.")
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["logMeal"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -225,14 +225,14 @@ def test_successful_previous_tool_does_not_trigger_carryover(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_cold_start_does_not_trigger_carryover(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -248,7 +248,7 @@ def test_cold_start_does_not_trigger_carryover(
     dm = DialogueMemory()  # cold start — no prior turns
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -260,14 +260,14 @@ def test_cold_start_does_not_trigger_carryover(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_carryover_does_not_pollute_router_cache(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -285,12 +285,12 @@ def test_carryover_does_not_pollute_router_cache(
     db = Mock()
     cfg = _mock_cfg()
     dm = DialogueMemory()
-    dm.add_message("user", "how's the weather tomorrow Jarvis")
+    dm.add_message("user", "how's the weather tomorrow Claire")
     dm.record_tool_turn(_failed_tool_turn("getWeather"))
     dm.add_message("assistant", "I do not have a location set.")
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -308,14 +308,14 @@ def test_carryover_does_not_pollute_router_cache(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_long_followup_still_carries_over_when_previous_failed(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -335,7 +335,7 @@ def test_long_followup_still_carries_over_when_previous_failed(
     db = Mock()
     cfg = _mock_cfg()
     dm = DialogueMemory()
-    dm.add_message("user", "how's the weather tomorrow Jarvis")
+    dm.add_message("user", "how's the weather tomorrow Claire")
     dm.record_tool_turn(_failed_tool_turn("getWeather"))
     dm.add_message("assistant", "I do not have a location set.")
 
@@ -346,7 +346,7 @@ def test_long_followup_still_carries_over_when_previous_failed(
     assert len(long_followup) > 80
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -360,14 +360,14 @@ def test_long_followup_still_carries_over_when_previous_failed(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_text_tool_fallback_failure_carries_over(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -391,7 +391,7 @@ def test_text_tool_fallback_failure_carries_over(
     dm.add_message("assistant", "I couldn't auto-detect your location.")
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -405,14 +405,14 @@ def test_text_tool_fallback_failure_carries_over(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_multi_tool_call_only_failed_sibling_carries_over(
     mock_chat, mock_extract, _mock_extract_mem, _mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -453,7 +453,7 @@ def test_multi_tool_call_only_failed_sibling_carries_over(
                    "your location for the weather lookup.")
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["fetchWebPage"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -471,14 +471,14 @@ def test_multi_tool_call_only_failed_sibling_carries_over(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile",
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile",
        return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
-@patch("src.jarvis.reply.engine.run_tool_with_retries")
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
+@patch("src.claire.reply.engine.run_tool_with_retries")
 def test_planner_direct_exec_stamps_tool_failed(
     mock_tool, mock_chat, mock_extract, _mock_extract_mem,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -488,7 +488,7 @@ def test_planner_direct_exec_stamps_tool_failed(
     loop. Verify that path stamps ``tool_failed`` so the next turn's
     walker can see prior failures planted by direct-exec.
     """
-    from src.jarvis.tools.types import ToolExecutionResult
+    from src.claire.tools.types import ToolExecutionResult
 
     cfg = _mock_cfg()
     cfg.ollama_chat_model = "gemma4:e2b"  # triggers SMALL/text-tool path
@@ -511,10 +511,10 @@ def test_planner_direct_exec_stamps_tool_failed(
 
     # Concrete plan step the resolver fast-path can parse without an LLM.
     with patch(
-        "src.jarvis.reply.engine.plan_query",
+        "src.claire.reply.engine.plan_query",
         return_value=["getWeather", "Reply to the user."],
     ), patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=["getWeather"],
     ):
         run_reply_engine(db=db, cfg=cfg, tts=None,
@@ -545,7 +545,7 @@ def test_walker_logs_orphan_assistant_tool_call(caplog):
     should fail-open and log a diagnostic — never crash, never silently
     widen the allow-list with the orphan name.
     """
-    from src.jarvis.reply.engine import _previous_turn_failed_tool_names
+    from src.claire.reply.engine import _previous_turn_failed_tool_names
 
     recent = [
         {"role": "user", "content": "weather please"},

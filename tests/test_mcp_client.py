@@ -8,7 +8,7 @@ def shutdown_persistent_runtime():
     """Tear down the persistent MCP runtime singleton between tests."""
     yield
     try:
-        from jarvis.tools.external.mcp_runtime import shutdown_runtime
+        from claire.tools.external.mcp_runtime import shutdown_runtime
         shutdown_runtime()
     except Exception:
         pass
@@ -71,14 +71,14 @@ def _make_tracked_doubles(call_count, enter_count, exit_count, *, fail_on_call=N
 
 def _patch_mcp_doubles(monkeypatch, TrackedConn, TrackedSession):
     monkeypatch.setattr(
-        "jarvis.tools.external.mcp_client._resolve_command", lambda c: c
+        "claire.tools.external.mcp_client._resolve_command", lambda c: c
     )
     monkeypatch.setattr(
-        "jarvis.tools.external.mcp_client.stdio_client",
+        "claire.tools.external.mcp_client.stdio_client",
         lambda params, **kw: TrackedConn(),
     )
     monkeypatch.setattr(
-        "jarvis.tools.external.mcp_client.ClientSession", TrackedSession
+        "claire.tools.external.mcp_client.ClientSession", TrackedSession
     )
 
 
@@ -89,7 +89,7 @@ def test_invoke_tool_keeps_mcp_session_alive_across_calls(monkeypatch, shutdown_
     Two consecutive invocations on the same server must share a single
     long-lived stdio session, not spawn the server subprocess twice.
     """
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     enter_count = {"n": 0}
     exit_count = {"n": 0}
@@ -128,8 +128,8 @@ def test_invoke_tool_retries_on_transient_session_loss(
     once. Observable behaviour: the second invocation succeeds even
     though the first underlying worker call failed with the sentinel.
     """
-    from jarvis.tools.external.mcp_client import MCPClient
-    from jarvis.tools.external import mcp_runtime as _runtime_mod
+    from claire.tools.external.mcp_client import MCPClient
+    from claire.tools.external import mcp_runtime as _runtime_mod
 
     enter_count = {"n": 0}
     exit_count = {"n": 0}
@@ -175,7 +175,7 @@ def test_get_worker_replaces_on_config_change(
     runtime to replace the existing worker with a fresh one so the new
     subprocess actually receives the new arguments.
     """
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     enter_count = {"n": 0}
     exit_count = {"n": 0}
@@ -203,20 +203,20 @@ def test_worker_startup_failure_propagates(monkeypatch, shutdown_persistent_runt
     """If session initialisation fails (e.g. subprocess cannot start),
     the failure must propagate to the caller rather than hang.
     """
-    from jarvis.tools.external.mcp_client import (
+    from claire.tools.external.mcp_client import (
         MCPClient,
         MCPServerSessionError,
     )
 
     monkeypatch.setattr(
-        "jarvis.tools.external.mcp_client._resolve_command", lambda c: c
+        "claire.tools.external.mcp_client._resolve_command", lambda c: c
     )
 
     def _broken_stdio_client(params, **kw):
         raise FileNotFoundError("simulated subprocess spawn failure")
 
     monkeypatch.setattr(
-        "jarvis.tools.external.mcp_client.stdio_client", _broken_stdio_client
+        "claire.tools.external.mcp_client.stdio_client", _broken_stdio_client
     )
 
     client = MCPClient(
@@ -234,7 +234,7 @@ def test_runtime_isolates_workers_per_server(
     """Two distinct servers must each have their own stdio session;
     invoking one must not interfere with the other.
     """
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     enter_count = {"n": 0}
     exit_count = {"n": 0}
@@ -270,7 +270,7 @@ def test_list_tools_uses_persistent_session(
     stdio session — listing then invoking must not spawn the server
     twice.
     """
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     enter_count = {"n": 0}
     exit_count = {"n": 0}
@@ -309,7 +309,7 @@ def test_resolve_invoke_timeout_rejects_invalid_values(raw):
     ``Future.result(timeout=...)``, whose wait semantics are undefined for
     values like ``nan`` or non-positive numbers.
     """
-    from jarvis.tools.external.mcp_runtime import (
+    from claire.tools.external.mcp_runtime import (
         _resolve_invoke_timeout,
         _DEFAULT_INVOKE_TIMEOUT_SEC,
     )
@@ -328,7 +328,7 @@ def test_list_tools_honours_per_server_timeout_sec(
     """
     import asyncio
     import concurrent.futures
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     class SlowConn:
         async def __aenter__(self_):
@@ -384,7 +384,7 @@ def test_invoke_tool_honours_per_server_timeout_sec(
     """
     import asyncio
     import concurrent.futures
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     class SlowConn:
         async def __aenter__(self_):
@@ -437,8 +437,8 @@ def test_invoke_tool_defaults_timeout_when_unset(
     """
     import asyncio
     import concurrent.futures
-    from jarvis.tools.external.mcp_client import MCPClient
-    from jarvis.tools.external import mcp_runtime as _runtime_mod
+    from claire.tools.external.mcp_client import MCPClient
+    from claire.tools.external import mcp_runtime as _runtime_mod
 
     monkeypatch.setattr(_runtime_mod, "_DEFAULT_INVOKE_TIMEOUT_SEC", 0.05)
 
@@ -480,7 +480,7 @@ def test_invoke_tool_defaults_timeout_when_unset(
 @pytest.mark.unit
 def test_absolute_path_command_skips_which(monkeypatch, tmp_path):
     """Absolute paths to executables should use os.path.isfile, not shutil.which."""
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     # Create a fake executable file at an absolute path
     fake_exe = tmp_path / "node.exe"
@@ -505,7 +505,7 @@ def test_absolute_path_command_skips_which(monkeypatch, tmp_path):
         which_called = True
         return original_which(cmd)
 
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", tracking_which)
+    monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", tracking_which)
 
     # We need to mock stdio_client to avoid actually connecting
     class FakeCM:
@@ -523,8 +523,8 @@ def test_absolute_path_command_skips_which(monkeypatch, tmp_path):
         async def __aexit__(self, *a):
             return False
 
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.stdio_client", lambda params, **kw: FakeCM())
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.ClientSession", FakeSession)
+    monkeypatch.setattr("claire.tools.external.mcp_client.stdio_client", lambda params, **kw: FakeCM())
+    monkeypatch.setattr("claire.tools.external.mcp_client.ClientSession", FakeSession)
 
     try:
         asyncio.run(client.list_tools_async("test"))
@@ -537,7 +537,7 @@ def test_absolute_path_command_skips_which(monkeypatch, tmp_path):
 @pytest.mark.unit
 def test_absolute_path_not_found_gives_clear_error(tmp_path):
     """Non-existent absolute path should raise FileNotFoundError with clear message."""
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     fake_path = str(tmp_path / "nonexistent" / "node.exe")
     mcps = {
@@ -556,7 +556,7 @@ def test_absolute_path_not_found_gives_clear_error(tmp_path):
 @pytest.mark.unit
 def test_mcp_client_list_and_invoke(monkeypatch):
     # Import the real client and patch its external dependencies
-    from jarvis.tools.external.mcp_client import MCPClient
+    from claire.tools.external.mcp_client import MCPClient
 
     # Prepare fake server config (command won't actually run because we mock stdio_client)
     mcps = {
@@ -622,10 +622,10 @@ def test_mcp_client_list_and_invoke(monkeypatch):
             return False
 
     # Patch public imports inside the module (observable seams)
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.stdio_client", lambda params, **kw: FakeCM(FakeSession()))
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.ClientSession", FakeClientSession)
+    monkeypatch.setattr("claire.tools.external.mcp_client.stdio_client", lambda params, **kw: FakeCM(FakeSession()))
+    monkeypatch.setattr("claire.tools.external.mcp_client.ClientSession", FakeClientSession)
     # Avoid PATH check failing in _connect_stdio
-    monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: cmd)
+    monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: cmd)
 
     tools = asyncio.run(client.list_tools_async("fake"))
     assert isinstance(tools, list) and {t["name"] for t in tools} == {"alpha", "beta"}
@@ -648,14 +648,14 @@ class TestFlattenContent:
 
     def test_extracts_text_from_real_sdk_text_content(self):
         from mcp.types import TextContent
-        from jarvis.tools.external.mcp_client import _flatten_content
+        from claire.tools.external.mcp_client import _flatten_content
 
         block = TextContent(type="text", text="hello world")
         assert _flatten_content([block]) == "hello world"
 
     def test_extracts_text_from_multiple_real_sdk_text_content_blocks(self):
         from mcp.types import TextContent
-        from jarvis.tools.external.mcp_client import _flatten_content
+        from claire.tools.external.mcp_client import _flatten_content
 
         blocks = [
             TextContent(type="text", text="first"),
@@ -664,18 +664,18 @@ class TestFlattenContent:
         assert _flatten_content(blocks) == "first\nsecond"
 
     def test_still_handles_plain_dict_content(self):
-        from jarvis.tools.external.mcp_client import _flatten_content
+        from claire.tools.external.mcp_client import _flatten_content
 
         assert _flatten_content([{"type": "text", "text": "plain dict"}]) == "plain dict"
 
     def test_still_handles_plain_string_content(self):
-        from jarvis.tools.external.mcp_client import _flatten_content
+        from claire.tools.external.mcp_client import _flatten_content
 
         assert _flatten_content("already a string") == "already a string"
 
     def test_result_to_dict_uses_real_text_not_repr(self):
         from mcp.types import TextContent
-        from jarvis.tools.external.mcp_client import _result_to_dict
+        from claire.tools.external.mcp_client import _result_to_dict
 
         class FakeResponse:
             def __init__(self):
@@ -693,14 +693,14 @@ class TestResolveCommand:
 
     def test_finds_command_on_path(self, monkeypatch):
         """When shutil.which succeeds, returns that path."""
-        from jarvis.tools.external.mcp_client import _resolve_command
-        monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: "/usr/bin/npx")
+        from claire.tools.external.mcp_client import _resolve_command
+        monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: "/usr/bin/npx")
         assert _resolve_command("npx") == "/usr/bin/npx"
 
     def test_finds_command_in_extra_dirs(self, monkeypatch, tmp_path):
         """When shutil.which fails, probes extra directories."""
-        from jarvis.tools.external.mcp_client import _resolve_command
-        monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: None)
+        from claire.tools.external.mcp_client import _resolve_command
+        monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: None)
 
         # Create a fake executable in a temp dir
         fake_npx = tmp_path / "npx"
@@ -709,24 +709,24 @@ class TestResolveCommand:
 
         # Inject our temp dir into the extra paths list
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client._EXTRA_PATH_DIRS",
+            "claire.tools.external.mcp_client._EXTRA_PATH_DIRS",
             [str(tmp_path)],
         )
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
         # Skip login shell fallback
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._sys.platform", "win32")
+        monkeypatch.setattr("claire.tools.external.mcp_client._sys.platform", "win32")
 
         assert _resolve_command("npx") == str(fake_npx)
 
     def test_falls_back_to_login_shell(self, monkeypatch):
         """When extra dirs fail, tries bash -lc which."""
-        from jarvis.tools.external.mcp_client import _resolve_command
+        from claire.tools.external.mcp_client import _resolve_command
         import subprocess
 
-        monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: None)
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._sys.platform", "darwin")
+        monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: None)
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._sys.platform", "darwin")
 
         mock_result = type("R", (), {"returncode": 0, "stdout": "/opt/homebrew/bin/npx\n"})()
         monkeypatch.setattr(
@@ -737,10 +737,10 @@ class TestResolveCommand:
 
     def test_finds_command_via_nvm_glob(self, monkeypatch, tmp_path):
         """When shutil.which and static dirs fail, probes nvm-style version dirs."""
-        from jarvis.tools.external.mcp_client import _resolve_command
-        monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: None)
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._sys.platform", "win32")
+        from claire.tools.external.mcp_client import _resolve_command
+        monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: None)
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._sys.platform", "win32")
 
         # Create nvm-style version dirs with npx
         v18 = tmp_path / "v18.0.0" / "bin"
@@ -753,7 +753,7 @@ class TestResolveCommand:
         (v22 / "npx").chmod(0o755)
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client._EXTRA_PATH_GLOBS",
+            "claire.tools.external.mcp_client._EXTRA_PATH_GLOBS",
             [str(tmp_path / "*/bin")],
         )
         # Should prefer the highest version (v22) due to reverse sort
@@ -762,18 +762,18 @@ class TestResolveCommand:
 
     def test_raises_when_not_found_anywhere(self, monkeypatch):
         """When all resolution methods fail, raises FileNotFoundError."""
-        from jarvis.tools.external.mcp_client import _resolve_command
-        monkeypatch.setattr("jarvis.tools.external.mcp_client.shutil.which", lambda cmd: None)
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
-        monkeypatch.setattr("jarvis.tools.external.mcp_client._sys.platform", "win32")
+        from claire.tools.external.mcp_client import _resolve_command
+        monkeypatch.setattr("claire.tools.external.mcp_client.shutil.which", lambda cmd: None)
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_DIRS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._EXTRA_PATH_GLOBS", [])
+        monkeypatch.setattr("claire.tools.external.mcp_client._sys.platform", "win32")
 
         with pytest.raises(FileNotFoundError, match="not found on PATH"):
             _resolve_command("nonexistent-command")
 
     def test_absolute_path_verified_directly(self, tmp_path):
         """Absolute paths bypass PATH lookup entirely."""
-        from jarvis.tools.external.mcp_client import _resolve_command
+        from claire.tools.external.mcp_client import _resolve_command
 
         fake = tmp_path / "my-server"
         fake.write_text("#!/bin/sh")
@@ -782,7 +782,7 @@ class TestResolveCommand:
 
     def test_absolute_path_missing_raises(self, tmp_path):
         """Non-existent absolute path raises FileNotFoundError."""
-        from jarvis.tools.external.mcp_client import _resolve_command
+        from claire.tools.external.mcp_client import _resolve_command
 
         with pytest.raises(FileNotFoundError, match="does not exist"):
             _resolve_command(str(tmp_path / "nope"))
@@ -794,14 +794,14 @@ class TestConnectStdioPathInjection:
 
     def test_command_dir_added_to_env_path(self, monkeypatch, tmp_path):
         """The directory of the resolved command should be prepended to env PATH."""
-        from jarvis.tools.external.mcp_client import MCPClient
+        from claire.tools.external.mcp_client import MCPClient
 
         fake_npx = tmp_path / "npx"
         fake_npx.write_text("#!/bin/sh")
         fake_npx.chmod(0o755)
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client._resolve_command",
+            "claire.tools.external.mcp_client._resolve_command",
             lambda cmd: str(fake_npx),
         )
 
@@ -813,7 +813,7 @@ class TestConnectStdioPathInjection:
             return None
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client.stdio_client",
+            "claire.tools.external.mcp_client.stdio_client",
             fake_stdio_client,
         )
 
@@ -829,14 +829,14 @@ class TestConnectStdioPathInjection:
 
     def test_user_env_preserved_alongside_path(self, monkeypatch, tmp_path):
         """User-supplied env vars should be preserved when PATH is injected."""
-        from jarvis.tools.external.mcp_client import MCPClient
+        from claire.tools.external.mcp_client import MCPClient
 
         fake_npx = tmp_path / "npx"
         fake_npx.write_text("#!/bin/sh")
         fake_npx.chmod(0o755)
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client._resolve_command",
+            "claire.tools.external.mcp_client._resolve_command",
             lambda cmd: str(fake_npx),
         )
 
@@ -847,7 +847,7 @@ class TestConnectStdioPathInjection:
             return None
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client.stdio_client",
+            "claire.tools.external.mcp_client.stdio_client",
             fake_stdio_client,
         )
 
@@ -861,14 +861,14 @@ class TestConnectStdioPathInjection:
 
     def test_no_env_override_when_command_already_on_path(self, monkeypatch):
         """When command dir is already on PATH and no user env, env should be None."""
-        from jarvis.tools.external.mcp_client import MCPClient
+        from claire.tools.external.mcp_client import MCPClient
 
         # Resolve to a path that's already on the system PATH
         system_path_dir = os.environ.get("PATH", "").split(os.pathsep)[0]
         fake_cmd = os.path.join(system_path_dir, "fake-cmd")
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client._resolve_command",
+            "claire.tools.external.mcp_client._resolve_command",
             lambda cmd: fake_cmd,
         )
 
@@ -879,7 +879,7 @@ class TestConnectStdioPathInjection:
             return None
 
         monkeypatch.setattr(
-            "jarvis.tools.external.mcp_client.stdio_client",
+            "claire.tools.external.mcp_client.stdio_client",
             fake_stdio_client,
         )
 

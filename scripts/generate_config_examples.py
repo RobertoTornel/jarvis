@@ -8,13 +8,13 @@ import json
 import sys
 from pathlib import Path
 
-# Add src to path so we can import jarvis modules
+# Add src to path so we can import claire modules
 script_dir = Path(__file__).parent
 project_root = script_dir.parent
 src_dir = project_root / "src"
 sys.path.insert(0, str(src_dir))
 
-from jarvis.config import export_example_config
+from claire.config import export_example_config
 
 
 def generate_config_example() -> None:

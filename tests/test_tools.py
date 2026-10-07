@@ -1,7 +1,7 @@
 import types
 import pytest
 
-from jarvis.tools.registry import run_tool_with_retries, ToolExecutionResult
+from claire.tools.registry import run_tool_with_retries, ToolExecutionResult
 
 
 class DummyCfg:
@@ -76,7 +76,7 @@ def test_local_files_list_and_read(tmp_path):
     cfg = DummyCfg()
 
     # Monkeypatch expanduser to point to tmp home
-    import jarvis.tools.registry as tools_mod
+    import claire.tools.registry as tools_mod
     import builtins
     from pathlib import Path as _P
 
@@ -119,7 +119,7 @@ def test_local_files_list_and_read(tmp_path):
 def test_local_files_write_append_delete(tmp_path):
     db = DummyDB()
     cfg = DummyCfg()
-    import jarvis.tools.registry as tools_mod
+    import claire.tools.registry as tools_mod
 
     orig_expanduser = tools_mod.os.path.expanduser
     tools_mod.os.path.expanduser = lambda p: str(tmp_path) if p == "~" or p.startswith("~") else orig_expanduser(p)
@@ -183,7 +183,7 @@ def test_local_files_write_append_delete(tmp_path):
 @pytest.mark.unit
 def test_fetch_web_page_success(monkeypatch):
     """Test fetchWebPage tool with a mocked successful response."""
-    import jarvis.tools.registry as tools_mod
+    import claire.tools.registry as tools_mod
     
     # Mock a successful HTTP response
     class MockResponse:

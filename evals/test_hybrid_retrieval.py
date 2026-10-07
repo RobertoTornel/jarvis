@@ -9,8 +9,8 @@ import sqlite3
 
 import pytest
 
-from jarvis.memory.db import Database
-from jarvis.utils.vector_store import PythonVectorStore, get_python_vector_store
+from claire.memory.db import Database
+from claire.utils.vector_store import PythonVectorStore, get_python_vector_store
 
 pytestmark = pytest.mark.eval
 
@@ -76,7 +76,7 @@ def test_hybrid_recall_at_three(tmp_path, mixed_dimensions, failed_refresh, upda
 
 
 def test_superseded_refresh_preserves_semantic_recall(tmp_path, monkeypatch):
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store',
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store',
                         lambda path, dimension: get_python_vector_store(path))
     first = Database(str(tmp_path / 'freshness.db'))
     second = Database(first.db_path)

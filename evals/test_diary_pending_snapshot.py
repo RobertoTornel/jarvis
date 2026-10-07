@@ -6,7 +6,7 @@ import pytest
 
 from evals.conftest import requires_judge_llm
 from evals.helpers import voice_config
-from jarvis.memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
+from claire.memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 
 
 @pytest.mark.eval
@@ -26,13 +26,13 @@ def test_diary_retains_early_middle_and_late_user_facts(eval_db, facts, streamin
     for chunk in chunks:
         role, _, text = chunk.partition(': ')
         memory.add_message(role.lower(), text)
-    monkeypatch.setattr('jarvis.memory.graph_ops.update_graph_from_dialogue',
+    monkeypatch.setattr('claire.memory.graph_ops.update_graph_from_dialogue',
                         lambda **kwargs: SimpleNamespace(stored=0, skipped=0))
     tokens = []
     ident = update_diary_from_dialogue_memory(
         eval_db, memory, cfg, force=True, timeout_sec=60, on_token=tokens.append if streaming else None,
     )
-    row = eval_db.get_conversation_summary(datetime.now(timezone.utc).date().isoformat(), 'jarvis')
+    row = eval_db.get_conversation_summary(datetime.now(timezone.utc).date().isoformat(), 'claire')
     assert ident and row and row['topics'], 'Incomplete inference is not a saved diary'
     assert all(fact.casefold() in row['summary'].casefold() for fact in ('Pip', 'Mira', 'Kyoto')), row['summary']
     assert memory.get_pending_chunks() == []

@@ -4,7 +4,7 @@ import json
 import pytest
 
 from evals.helpers import voice_config
-from jarvis.reply import planner
+from claire.reply import planner
 
 pytestmark = pytest.mark.unit
 

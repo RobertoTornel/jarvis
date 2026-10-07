@@ -1,7 +1,7 @@
 """
-Jarvis Desktop App - System Tray Application
+Claire Desktop App - System Tray Application
 
-A cross-platform system tray app for controlling the Jarvis voice assistant.
+A cross-platform system tray app for controlling the Claire voice assistant.
 Supports Windows, Ubuntu (Linux), and macOS.
 """
 
@@ -63,22 +63,26 @@ except ImportError:
     HAS_WEBENGINE = False
     QWebEngineView = None
 
-from jarvis.debug import debug_log
-from jarvis.config import default_config_path, _default_db_path, SUPPORTED_CHAT_MODELS, get_supported_model_ids
+from claire.debug import debug_log
+from claire.config import default_config_path, _default_db_path, SUPPORTED_CHAT_MODELS, get_supported_model_ids
 from desktop_app.diary_dialog import DiaryUpdateDialog
-from desktop_app.themes import JARVIS_THEME_STYLESHEET, COLORS
+from desktop_app.themes import CLAIRE_THEME_STYLESHEET, COLORS
 from desktop_app.log_output import LogStream, clean_log, parse_progress
 from desktop_app.face_widget import FaceWindow
 
 
 _LOG_SEPARATOR = "─" * 50
 
+# Report-a-bug links point at the upstream project Claire forked from.
+# This is a personal standalone fork with no issue tracker of its own.
+UPSTREAM_ISSUES_URL = "https://github.com/isair/jarvis/issues/new"
+
 
 @dataclass
 class OllamaRuntimeOwnership:
     """Tracks whether this desktop session launched the local Ollama runtime."""
 
-    started_by_jarvis: bool = False
+    started_by_claire: bool = False
     launch_method: str = ""
     process: Optional[subprocess.Popen] = None
     stopped: bool = False
@@ -120,7 +124,7 @@ def _should_emit_as_log(line: str) -> bool:
     maintains. Diary IPC stays: it carries progress and token deltas the
     log window exists to show.
     """
-    from jarvis.daemon import CHAT_IPC_PREFIX, VOICE_IPC_PREFIX
+    from claire.daemon import CHAT_IPC_PREFIX, VOICE_IPC_PREFIX
 
     return not line.startswith((CHAT_IPC_PREFIX, VOICE_IPC_PREFIX))
 
@@ -137,7 +141,7 @@ def _collect_runtime_status_snapshot(
 ) -> RuntimeStatusSnapshot:
     """Collect runtime status without mutating desktop or daemon state."""
     if settings_loader is None:
-        from jarvis.config import load_settings as settings_loader
+        from claire.config import load_settings as settings_loader
     if ollama_checker is None:
         from desktop_app.setup_wizard import check_ollama_server as ollama_checker
 
@@ -163,8 +167,8 @@ def _collect_runtime_status_snapshot(
             daemon_pid = os.getpid()
 
     ownership = ollama_runtime_ownership or OllamaRuntimeOwnership()
-    if ownership.started_by_jarvis and not ownership.stopped:
-        ollama_owner = "Jarvis"
+    if ownership.started_by_claire and not ownership.stopped:
+        ollama_owner = "Claire"
     elif ollama_running:
         ollama_owner = "External"
     else:
@@ -255,7 +259,7 @@ def _format_runtime_status(snapshot: RuntimeStatusSnapshot) -> str:
 
 
 class RuntimeStatusDialog(QDialog):
-    """Themed diagnostic summary of Jarvis' active runtime.
+    """Themed diagnostic summary of Claire' active runtime.
 
     Renders the collected snapshot as a structured dialog: emoji section
     headers, aligned key/value rows (secondary-colour keys, monospace
@@ -266,7 +270,7 @@ class RuntimeStatusDialog(QDialog):
     def __init__(self, snapshot: RuntimeStatusSnapshot, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Runtime Status")
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
         self.setMinimumWidth(380)
 
         layout = QVBoxLayout(self)
@@ -327,7 +331,7 @@ def _stop_owned_ollama_runtime(
     """
     if (
         ownership is None
-        or not ownership.started_by_jarvis
+        or not ownership.started_by_claire
         or ownership.stopped
     ):
         return False
@@ -542,7 +546,7 @@ def setup_crash_logging():
             import faulthandler
             faulthandler.enable(file=log_handle)
 
-            print(f"=== Jarvis Desktop App Crash Log ===", flush=True)
+            print(f"=== Claire Desktop App Crash Log ===", flush=True)
             print(f"Timestamp: {__import__('datetime').datetime.now()}", flush=True)
             print(f"Platform: {sys.platform}", flush=True)
             print(f"Python: {sys.version}", flush=True)
@@ -570,7 +574,7 @@ def get_crash_paths() -> tuple[Path, Path, Path]:
     from desktop_app.paths import get_log_dir
     log_dir = get_log_dir()
 
-    crash_log = log_dir / "jarvis_desktop_crash.log"
+    crash_log = log_dir / "claire_desktop_crash.log"
     crash_marker = log_dir / ".crash_marker"
     previous_crash = log_dir / "previous_crash.log"
 
@@ -605,7 +609,7 @@ def collect_macos_crash_report(
         if not diagnostics_dir.is_dir():
             return None
 
-        app_name = "Jarvis"
+        app_name = "Claire"
         since = crash_log_path.stat().st_mtime if crash_log_path.exists() else 0.0
 
         candidates = []
@@ -743,15 +747,15 @@ def show_crash_report_dialog(crash_content: str) -> None:
         from PyQt6.QtCore import Qt
         import webbrowser
         import urllib.parse
-        from jarvis import get_version
+        from claire import get_version
 
         class CrashReportDialog(QDialog):
             def __init__(self, crash_info: str):
                 super().__init__()
                 self.crash_info = crash_info
-                self.setWindowTitle("🐛 Jarvis Crash Report")
+                self.setWindowTitle("🐛 Claire Crash Report")
                 self.setMinimumSize(600, 450)
-                self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+                self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
                 self._setup_ui()
 
             def _setup_ui(self):
@@ -759,7 +763,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
                 layout.setSpacing(16)
 
                 # Header
-                header = QLabel("😵 Jarvis crashed in the previous session")
+                header = QLabel("😵 Claire crashed in the previous session")
                 header.setStyleSheet("font-size: 18px; font-weight: bold; color: #f87171;")
                 layout.addWidget(header)
 
@@ -879,7 +883,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
                     'body': body,
                     'labels': 'bug,crash'
                 })
-                url = f"https://github.com/isair/jarvis/issues/new?{params}"
+                url = f"{UPSTREAM_ISSUES_URL}?{params}"
 
                 webbrowser.open(url)
                 self.accept()
@@ -898,7 +902,7 @@ def check_model_support() -> Optional[str]:
     Returns the model name if unsupported, None if supported.
     """
     try:
-        from jarvis.config import load_config, DEFAULT_CHAT_MODEL
+        from claire.config import load_config, DEFAULT_CHAT_MODEL
         config = load_config()
         model = config.get("ollama_chat_model", DEFAULT_CHAT_MODEL)
 
@@ -937,7 +941,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                 self.open_wizard = False
                 self.setWindowTitle("⚠️ Unsupported Model")
                 self.setMinimumWidth(500)
-                self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+                self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
                 self._setup_ui()
 
             def _setup_ui(self):
@@ -953,7 +957,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                 # Description
                 supported_list = ", ".join(sorted(SUPPORTED_CHAT_MODELS))
                 desc = QLabel(
-                    f"You're using <b>{self.model}</b> which hasn't been tested with Jarvis.\n\n"
+                    f"You're using <b>{self.model}</b> which hasn't been tested with Claire.\n\n"
                     f"Officially supported models: <b>{supported_list}</b>\n\n"
                     "Other models may work but could have issues with tool calling, "
                     "response formatting, or performance."
@@ -1020,18 +1024,18 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
 def get_lock_file_path() -> Path:
     """Get the path to the single-instance lock file."""
     if sys.platform == "darwin":
-        lock_dir = Path.home() / "Library" / "Application Support" / "Jarvis"
+        lock_dir = Path.home() / "Library" / "Application Support" / "Claire"
     elif sys.platform == "win32":
-        lock_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Jarvis"
+        lock_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Claire"
     else:
-        lock_dir = Path.home() / ".jarvis"
+        lock_dir = Path.home() / ".claire"
 
     lock_dir.mkdir(parents=True, exist_ok=True)
-    return lock_dir / "jarvis_desktop.lock"
+    return lock_dir / "claire_desktop.lock"
 
 
 def get_existing_instance_pid() -> Optional[int]:
-    """Read the PID of the existing Jarvis instance from the lock file."""
+    """Read the PID of the existing Claire instance from the lock file."""
     lock_file = get_lock_file_path()
     try:
         if lock_file.exists():
@@ -1045,19 +1049,19 @@ def get_existing_instance_pid() -> Optional[int]:
 
 def kill_existing_instance(pid: int) -> bool:
     """
-    Terminate an existing Jarvis instance by PID.
+    Terminate an existing Claire instance by PID.
 
     Returns True if the process was terminated, False otherwise.
     """
     try:
         process = psutil.Process(pid)
-        # Verify it's actually a Jarvis process (safety check)
+        # Verify it's actually a Claire process (safety check)
         proc_name = process.name().lower()
-        if "jarvis" not in proc_name and "python" not in proc_name:
-            debug_log(f"PID {pid} doesn't look like Jarvis (name: {proc_name}), not killing", "desktop")
+        if "claire" not in proc_name and "python" not in proc_name:
+            debug_log(f"PID {pid} doesn't look like Claire (name: {proc_name}), not killing", "desktop")
             return False
 
-        debug_log(f"Terminating existing Jarvis instance (PID {pid})", "desktop")
+        debug_log(f"Terminating existing Claire instance (PID {pid})", "desktop")
         process.terminate()
 
         # Wait up to 5 seconds for graceful shutdown
@@ -1088,8 +1092,8 @@ def show_instance_conflict_dialog() -> bool:
     from PyQt6.QtGui import QIcon
 
     msg = QMessageBox()
-    msg.setWindowTitle("Jarvis Already Running")
-    msg.setText("Another instance of Jarvis is already running.")
+    msg.setWindowTitle("Claire Already Running")
+    msg.setText("Another instance of Claire is already running.")
     msg.setInformativeText("Would you like to close the existing instance and start a new one?")
     msg.setIcon(QMessageBox.Icon.Question)
 
@@ -1099,8 +1103,8 @@ def show_instance_conflict_dialog() -> bool:
     msg.setDefaultButton(kill_btn)
 
     # Apply theme
-    from desktop_app.themes import JARVIS_THEME_STYLESHEET
-    msg.setStyleSheet(JARVIS_THEME_STYLESHEET)
+    from desktop_app.themes import CLAIRE_THEME_STYLESHEET
+    msg.setStyleSheet(CLAIRE_THEME_STYLESHEET)
 
     msg.exec()
 
@@ -1182,15 +1186,15 @@ class LogSignals(QObject):
 
 
 class LogViewerWindow(QMainWindow):
-    """Window for viewing Jarvis logs in real-time."""
+    """Window for viewing Claire logs in real-time."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("📝 Jarvis Logs")
+        self.setWindowTitle("📝 Claire Logs")
         self.setGeometry(100, 100, 900, 650)
 
         # Apply theme
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
 
         # Create central widget and layout
         central_widget = QWidget()
@@ -1211,7 +1215,7 @@ class LogViewerWindow(QMainWindow):
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.setSpacing(4)
 
-        title = QLabel("📝 Jarvis Logs")
+        title = QLabel("📝 Claire Logs")
         title.setObjectName("title")
         title.setStyleSheet("font-size: 20px; font-weight: 600; color: #fbbf24;")
         title_layout.addWidget(title)
@@ -1406,8 +1410,8 @@ class LogViewerWindow(QMainWindow):
 
     def _report_issue(self) -> None:
         """Open GitHub issue with redacted log contents."""
-        from jarvis import get_version
-        from jarvis.utils.redact import _REDACTION_RULES
+        from claire import get_version
+        from claire.utils.redact import _REDACTION_RULES
 
         try:
             version = get_version()
@@ -1462,23 +1466,23 @@ class LogViewerWindow(QMainWindow):
             'body': body,
             'labels': 'bug'
         })
-        url = f"https://github.com/isair/jarvis/issues/new?{params}"
+        url = f"{UPSTREAM_ISSUES_URL}?{params}"
 
         webbrowser.open(url)
 
 
 class MemoryViewerWindow(QMainWindow):
-    """Window for viewing Jarvis memory using embedded web view."""
+    """Window for viewing Claire memory using embedded web view."""
 
     MEMORY_VIEWER_PORT = 5050
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("🧠 Jarvis Memory")
+        self.setWindowTitle("🧠 Claire Memory")
         self.setGeometry(150, 150, 1200, 900)
 
         # Apply theme
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET)
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET)
 
         self.server_process: Optional[subprocess.Popen] = None
         self.server_thread: Optional[threading.Thread] = None
@@ -1783,7 +1787,7 @@ class MemoryViewerWindow(QMainWindow):
 
 
 class DaemonThread(KeepAliveWorker):
-    """QThread that runs the Jarvis daemon inside the bundled app.
+    """QThread that runs the Claire daemon inside the bundled app.
 
     Inherits ``KeepAliveWorker`` so the object stays referenced in the
     registry until its OS thread has fully finished: ``_on_daemon_finished``
@@ -1812,16 +1816,16 @@ class DaemonThread(KeepAliveWorker):
 
             try:
                 # Import and run the daemon
-                from jarvis.daemon import main as daemon_main, set_voice_feedback_callback
+                from claire.daemon import main as daemon_main, set_voice_feedback_callback
                 feedback_setter = set_voice_feedback_callback
                 feedback_setter(self.log_signals.low_confidence.emit)
-                self.log_signals.new_log.emit("🚀 Jarvis daemon started\n")
+                self.log_signals.new_log.emit("🚀 Claire daemon started\n")
                 self.log_signals.new_log.emit("📋 Initializing daemon components...\n")
 
                 # Run daemon - this should run the main loop
                 daemon_main()
 
-                from jarvis.daemon import is_stop_requested
+                from claire.daemon import is_stop_requested
                 if is_stop_requested():
                     self.log_signals.new_log.emit("✅ Daemon stopped gracefully\n")
                 else:
@@ -1851,8 +1855,8 @@ class DaemonThread(KeepAliveWorker):
                 print(error_msg, file=old_stderr)
 
 
-class JarvisSystemTray:
-    """System tray application for Jarvis voice assistant."""
+class ClaireSystemTray:
+    """System tray application for Claire voice assistant."""
 
     def __init__(
         self,
@@ -1874,7 +1878,7 @@ class JarvisSystemTray:
             ollama_runtime_ownership or OllamaRuntimeOwnership()
         )
 
-        # Kill any orphaned Jarvis processes from previous sessions
+        # Kill any orphaned Claire processes from previous sessions
         self.cleanup_orphaned_processes()
 
         # Create log viewer window (hidden by default)
@@ -1893,15 +1897,8 @@ class JarvisSystemTray:
             self._on_low_confidence, Qt.ConnectionType.QueuedConnection,
         )
 
-        # Create dictation history window (hidden by default)
-        from desktop_app.dictation_history import DictationHistoryWindow
-        from jarvis.dictation.history import DictationHistory
-        self._dictation_history = DictationHistory()
-        self.dictation_history_window = DictationHistoryWindow(history=self._dictation_history)
-
         # Chat window is created lazily on first open (see show_chat). Kept
-        # alive for the session once created, same lifecycle as the dictation
-        # history window. ``self._chat_submit_fn`` is set when the daemon
+        # alive for the session once created. ``self._chat_submit_fn`` is set when the daemon
         # starts so the window can route queries in subprocess mode.
         self.chat_window = None
         self._chat_submit_fn = None
@@ -1951,16 +1948,16 @@ class JarvisSystemTray:
         debug_log("desktop app initialized", "desktop")
 
     def cleanup_orphaned_processes(self) -> None:
-        """Kill any orphaned Jarvis daemon processes from previous sessions."""
+        """Kill any orphaned Claire daemon processes from previous sessions."""
         try:
             current_pid = os.getpid()
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     cmdline = proc.info.get('cmdline', [])
-                    if cmdline and 'jarvis.main' in ' '.join(cmdline):
-                        # This is a Jarvis daemon process
+                    if cmdline and 'claire.main' in ' '.join(cmdline):
+                        # This is a Claire daemon process
                         if proc.pid != current_pid:
-                            debug_log(f"killing orphaned jarvis process: {proc.pid}", "desktop")
+                            debug_log(f"killing orphaned claire process: {proc.pid}", "desktop")
                             proc.terminate()
                             try:
                                 proc.wait(timeout=2)
@@ -2007,11 +2004,6 @@ class JarvisSystemTray:
         self.memory_action = QAction("🧠 Memory Viewer")
         self.memory_action.triggered.connect(self.show_memory_viewer)
         self.menu.addAction(self.memory_action)
-
-        # Dictation history action
-        self.dictation_history_action = QAction("🎙️ Dictation History")
-        self.dictation_history_action.triggered.connect(self.show_dictation_history)
-        self.menu.addAction(self.dictation_history_action)
 
         # Chat window action
         self.chat_action = QAction("💬 Chat")
@@ -2115,7 +2107,7 @@ class JarvisSystemTray:
             "Reinstall GPU libraries",
             (
                 "This will download cuBLAS and cuDNN (~1.1 GB) and install them "
-                "into the Jarvis program folder. You'll see a UAC prompt. "
+                "into the Claire program folder. You'll see a UAC prompt. "
                 "Continue?"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2141,7 +2133,7 @@ class JarvisSystemTray:
             "Reinstall GPU libraries",
             (
                 "The CUDA installer is running. Once it finishes, restart "
-                f"Jarvis to use GPU acceleration. See {action_spec.target_dir / 'install.log'} "
+                f"Claire to use GPU acceleration. See {action_spec.target_dir / 'install.log'} "
                 "for details."
             ),
         )
@@ -2183,7 +2175,7 @@ class JarvisSystemTray:
         if result == QDialog.DialogCode.Accepted and self.is_listening:
             reply = QMessageBox.question(
                 None, "🔄 Restart?",
-                "Settings saved. Restart Jarvis now to apply changes?",
+                "Settings saved. Restart Claire now to apply changes?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
@@ -2202,7 +2194,7 @@ class JarvisSystemTray:
         )
 
     def show_runtime_status(self) -> None:
-        """Show a compact diagnostic summary of Jarvis' active runtime.
+        """Show a compact diagnostic summary of Claire' active runtime.
 
         The snapshot is collected on a worker thread and delivered back
         through a signal, the same marshalling this app already uses for
@@ -2252,7 +2244,7 @@ class JarvisSystemTray:
                 msg.setWindowTitle("Updates")
                 msg.setText("Auto-update is only available in the bundled desktop app.")
                 msg.setInformativeText("You're running from source. Use git pull to update.")
-                msg.setStyleSheet(JARVIS_THEME_STYLESHEET)
+                msg.setStyleSheet(CLAIRE_THEME_STYLESHEET)
                 msg.exec()
             return
 
@@ -2321,12 +2313,6 @@ class JarvisSystemTray:
         self.memory_viewer.raise_()
         self.memory_viewer.activateWindow()
 
-    def show_dictation_history(self) -> None:
-        """Show the dictation history window and bring it to front."""
-        self.dictation_history_window.show()
-        self.dictation_history_window.raise_()
-        self.dictation_history_window.activateWindow()
-
     def show_chat(self) -> None:
         """Show the text chat window (created lazily on first open)."""
         if self.chat_window is None:
@@ -2359,34 +2345,6 @@ class JarvisSystemTray:
         self.chat_window._submit_fn = self._chat_submit_fn
         self.chat_window._control_fn = getattr(self, "_chat_control_fn", None)
         self.chat_window.set_daemon_status(status)
-
-    def _connect_dictation_history(self, retries_left: int = 3) -> None:
-        """Wire dictation engine's result callback to the history window signal.
-
-        Called once after daemon startup so live entries appear immediately.
-        Retries up to *retries_left* times (5 s apart) if the engine isn't ready.
-        """
-        try:
-            from jarvis.daemon import get_dictation_engine
-            engine = get_dictation_engine()
-            if engine is None:
-                if retries_left > 0:
-                    QTimer.singleShot(
-                        5000,
-                        lambda: self._connect_dictation_history(retries_left - 1),
-                    )
-                else:
-                    debug_log("dictation engine never became available", "desktop")
-                return
-            # Share the same DictationHistory instance
-            engine.history = self._dictation_history
-            # Route new-entry notifications through the Qt signal
-            engine.set_on_dictation_result(
-                lambda entry: self.dictation_history_window.signals.new_entry.emit(entry)
-            )
-            debug_log("dictation history connected to UI", "desktop")
-        except Exception as e:
-            debug_log(f"failed to connect dictation history: {e}", "desktop")
 
     def show_face_window(self) -> None:
         """Show the face window and bring it to front."""
@@ -2485,8 +2443,8 @@ class JarvisSystemTray:
         """Reset the face to asleep so it doesn't look ready while the daemon is down."""
         try:
             self.face_window.clear_voice_feedback()
-            from desktop_app.face_widget import JarvisState, get_jarvis_state
-            get_jarvis_state().set_state(JarvisState.ASLEEP)
+            from desktop_app.face_widget import ClaireState, get_claire_state
+            get_claire_state().set_state(ClaireState.ASLEEP)
         except Exception:
             pass
 
@@ -2498,7 +2456,7 @@ class JarvisSystemTray:
     def _on_voice_ipc_line(self, line: str) -> None:
         """Decode payload-free speech feedback on the subprocess log reader."""
         import json
-        from jarvis.daemon import VOICE_IPC_PREFIX
+        from claire.daemon import VOICE_IPC_PREFIX
         try:
             event = json.loads(line[len(VOICE_IPC_PREFIX):])
             if isinstance(event, dict) and event.get("type") == "low_confidence":
@@ -2507,14 +2465,14 @@ class JarvisSystemTray:
             debug_log("invalid voice feedback event", "desktop")
 
     def toggle_listening(self) -> None:
-        """Toggle the Jarvis daemon on/off."""
+        """Toggle the Claire daemon on/off."""
         if self.is_listening:
             self.stop_daemon()
         else:
             self.start_daemon()
 
     def start_daemon(self) -> None:
-        """Start the Jarvis daemon."""
+        """Start the Claire daemon."""
         self._daemon_stop_expected = False
         self._set_chat_daemon_status("starting")
         try:
@@ -2530,9 +2488,6 @@ class JarvisSystemTray:
                     Qt.ConnectionType.QueuedConnection,
                 )
                 self.daemon_thread.start()
-
-                # Connect dictation engine to history window once daemon is ready
-                QTimer.singleShot(3000, self._connect_dictation_history)
             else:
                 # When not bundled, use subprocess as before
                 python_exe = sys.executable
@@ -2548,7 +2503,7 @@ class JarvisSystemTray:
                 # so it starts the stdin monitor. Without this the daemon would
                 # treat a non-TTY stdin as "no monitor" on non-Windows, and a
                 # stray /dev/null wouldn't kill it.
-                env["JARVIS_STDIN_IPC"] = "1"
+                env["CLAIRE_STDIN_IPC"] = "1"
 
                 # Use creationflags to prevent console window popup on Windows
                 # CREATE_NEW_PROCESS_GROUP is needed for CTRL_BREAK_EVENT to work
@@ -2557,7 +2512,7 @@ class JarvisSystemTray:
                     creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
                 self.daemon_process = subprocess.Popen(
-                    [python_exe, "-m", "jarvis.main"],
+                    [python_exe, "-m", "claire.main"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.PIPE,
@@ -2573,7 +2528,7 @@ class JarvisSystemTray:
                 # directly, so it writes a __CHAT_QUERY__: line to stdin.
                 # The reply comes back as __CHAT__: events on stdout, parsed
                 # in _read_daemon_logs and routed to the chat window's signals.
-                from jarvis.daemon import CHAT_CANCEL_IPC_PREFIX, CHAT_QUERY_IPC_PREFIX
+                from claire.daemon import CHAT_CANCEL_IPC_PREFIX, CHAT_QUERY_IPC_PREFIX
                 _proc = self.daemon_process
 
                 def _submit_chat_subprocess(text: str) -> None:
@@ -2615,7 +2570,7 @@ class JarvisSystemTray:
                     transcript, and a dead daemon has no memory to rewind.
                     """
                     import json as _json
-                    from jarvis.daemon import CHAT_REWIND_IPC_PREFIX
+                    from claire.daemon import CHAT_REWIND_IPC_PREFIX
                     if kind != "rewind":
                         debug_log(f"unknown chat control command: {kind}", "desktop")
                         return
@@ -2645,7 +2600,7 @@ class JarvisSystemTray:
                 )
                 log_thread.start()
                 self.log_reader_threads.append(log_thread)
-                self.log_signals.new_log.emit("🚀 Jarvis daemon started\n")
+                self.log_signals.new_log.emit("🚀 Claire daemon started\n")
 
             self.is_listening = True
             self.toggle_action.setText("⏸️ Stop Listening")
@@ -2654,7 +2609,7 @@ class JarvisSystemTray:
             self._set_chat_daemon_status("running")
 
             self.tray_icon.showMessage(
-                "Jarvis Started",
+                "Claire Started",
                 "Voice assistant is now listening",
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
@@ -2668,7 +2623,7 @@ class JarvisSystemTray:
             self._set_chat_daemon_status("crashed")
             self.log_signals.new_log.emit(f"❌ Failed to start: {str(e)}\n{traceback.format_exc()}\n")
             self.tray_icon.showMessage(
-                "Error Starting Jarvis",
+                "Error Starting Claire",
                 f"Failed to start: {str(e)}",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000
@@ -2694,7 +2649,7 @@ class JarvisSystemTray:
         if not self.daemon_process or not self.daemon_process.stdout:
             return
 
-        from jarvis.daemon import CHAT_IPC_PREFIX, VOICE_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX, VOICE_IPC_PREFIX
 
         try:
             while True:
@@ -2739,7 +2694,7 @@ class JarvisSystemTray:
         self,
         show_diary_dialog: bool = True,
     ) -> None:
-        """Stop the Jarvis daemon.
+        """Stop the Claire daemon.
 
         Args:
             show_diary_dialog: If True (and bundled), shows a dialog with live diary update progress.
@@ -2763,7 +2718,7 @@ class JarvisSystemTray:
             if self.is_bundled and self.daemon_thread:
                 # When running in a QThread, use the stop flag for graceful shutdown
                 # This ensures the daemon's finally block runs (for diary update)
-                self.log_signals.new_log.emit("⏸️ Stopping Jarvis daemon...\n")
+                self.log_signals.new_log.emit("⏸️ Stopping Claire daemon...\n")
 
                 # Show diary update dialog for bundled app
                 if show_diary_dialog:
@@ -2785,7 +2740,7 @@ class JarvisSystemTray:
                         diary_dialog.signals.completed.emit(success)
 
                     # Set callbacks in daemon before requesting stop
-                    from jarvis.daemon import set_diary_update_callbacks, request_stop
+                    from claire.daemon import set_diary_update_callbacks, request_stop
                     set_diary_update_callbacks(
                         on_token=on_token,
                         on_status=on_status,
@@ -2832,7 +2787,7 @@ class JarvisSystemTray:
                 else:
                     # No dialog - simple wait
                     # Note: We avoid QThread.terminate() as it can corrupt state
-                    from jarvis.daemon import request_stop
+                    from claire.daemon import request_stop
                     request_stop()
 
                     if not self.daemon_thread.wait(shutdown_wait_timeout_sec * 1000):
@@ -2970,13 +2925,13 @@ class JarvisSystemTray:
             self._set_face_asleep()
 
             self.tray_icon.showMessage(
-                "Jarvis Stopped",
+                "Claire Stopped",
                 "Voice assistant is no longer listening",
                 QSystemTrayIcon.MessageIcon.Information,
                 2000
             )
 
-            self.log_signals.new_log.emit("⏸️ Jarvis daemon stopped\n")
+            self.log_signals.new_log.emit("⏸️ Claire daemon stopped\n")
             debug_log("daemon stopped from desktop app", "desktop")
 
         except Exception as e:
@@ -2996,7 +2951,7 @@ class JarvisSystemTray:
                 # Thread has terminated
                 self._on_daemon_finished()
                 self.tray_icon.showMessage(
-                    "Jarvis Stopped",
+                    "Claire Stopped",
                     "Voice assistant process ended unexpectedly",
                     QSystemTrayIcon.MessageIcon.Warning,
                     3000
@@ -3019,7 +2974,7 @@ class JarvisSystemTray:
                     self._set_face_asleep()
 
                     self.tray_icon.showMessage(
-                        "Jarvis Stopped",
+                        "Claire Stopped",
                         "Voice assistant process ended unexpectedly",
                         QSystemTrayIcon.MessageIcon.Warning,
                         3000
@@ -3073,9 +3028,9 @@ def _ollama_runtime_flags(cfg) -> tuple[bool, bool]:
 def _check_openai_compat_reachable(cfg, timeout_sec: float = 4.0) -> bool:
     """True when the configured OpenAI-compatible server answers its model
     listing. Used at startup to warn the user early if their local server
-    isn't running, since (unlike Ollama) Jarvis cannot start it for them."""
+    isn't running, since (unlike Ollama) Claire cannot start it for them."""
     try:
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         return bool(get_llm_backend(cfg).list_models(timeout_sec=timeout_sec))
     except Exception:
         return False
@@ -3086,9 +3041,9 @@ def _build_unreachable_message(cfg) -> str:
     without Qt dependencies so tests can verify it directly."""
     base = (getattr(cfg, "llm_base_url", "") or "").strip() or "your configured server"
     return (
-        f"⚠️ Jarvis couldn't reach a ready LLM server at {base}.\n\n"
+        f"⚠️ Claire couldn't reach a ready LLM server at {base}.\n\n"
         "Make sure your local server (for example LM Studio, Ollama, llama.cpp, "
-        "vLLM) is running with a model loaded, and Jarvis will connect "
+        "vLLM) is running with a model loaded, and Claire will connect "
         "automatically.\n\n"
         "You can open the Setup Wizard to change your server, or close and "
         "adjust Settings later via the tray menu \u2192 LLM Provider."
@@ -3100,7 +3055,7 @@ def _show_openai_unreachable_dialog(cfg, splash: QWidget) -> None:
     from PyQt6.QtWidgets import QMessageBox
 
     dialog = QMessageBox()
-    dialog.setWindowTitle("Jarvis")
+    dialog.setWindowTitle("Claire")
     dialog.setText(_build_unreachable_message(cfg))
     dialog.setIcon(QMessageBox.Icon.Warning)
     open_wizard_btn = dialog.addButton("🔧 Open Setup Wizard", QMessageBox.ButtonRole.ActionRole)
@@ -3191,7 +3146,7 @@ def _smoke_test_main() -> int:
         # (e.g. a faster_whisper / ctranslate2 native lib) surfaces as a
         # clean "Daemon initialisation failed" instead of an uncaught
         # traceback with a mysterious exit code 1.
-        from jarvis.daemon import main as daemon_main
+        from claire.daemon import main as daemon_main
         daemon_main(smoke_test=True)
     except Exception as exc:
         print(f"❌ Daemon initialisation failed: {exc}", flush=True)
@@ -3292,7 +3247,7 @@ def main() -> int:
     # Single-instance check
     # This prevents multiple tray icons and log windows from spawning
     if not acquire_single_instance_lock():
-        print("⚠️ Another instance of Jarvis Desktop is already running.", flush=True)
+        print("⚠️ Another instance of Claire Desktop is already running.", flush=True)
 
         # Create a minimal QApplication for the dialog
         from PyQt6.QtWidgets import QApplication
@@ -3341,7 +3296,7 @@ def main() -> int:
     # Register clean exit handler
     atexit.register(mark_session_clean_exit)
 
-    print("Starting Jarvis Desktop App...", flush=True)
+    print("Starting Claire Desktop App...", flush=True)
     print(f"Python executable: {sys.executable}", flush=True)
     print(f"Working directory: {os.getcwd()}", flush=True)
     print(f"__file__: {__file__}", flush=True)
@@ -3438,7 +3393,7 @@ def main() -> int:
         # block. When chat runs on Ollama we verify the chat model; when only
         # embeddings run on Ollama we just make sure the server is up.
         try:
-            from jarvis.config import load_settings as _load_provider_settings
+            from claire.config import load_settings as _load_provider_settings
             _provider_cfg = _load_provider_settings()
             _ollama_needed, _chat_on_ollama = _ollama_runtime_flags(_provider_cfg)
         except Exception:
@@ -3466,7 +3421,7 @@ def main() -> int:
                 print("⚠️ LLM server not reachable at startup", flush=True)
                 _show_openai_unreachable_dialog(_provider_cfg, splash)
 
-        # Default ownership: not started by us. Re-assigned below if Jarvis
+        # Default ownership: not started by us. Re-assigned below if Claire
         # launches its own Ollama server process.
         ollama_runtime_ownership = OllamaRuntimeOwnership()
 
@@ -3553,7 +3508,7 @@ def main() -> int:
                         ollama_launch_method = "serve"
 
                     ollama_runtime_ownership = OllamaRuntimeOwnership(
-                        started_by_jarvis=True,
+                        started_by_claire=True,
                         launch_method=ollama_launch_method,
                         process=ollama_process,
                     )
@@ -3678,7 +3633,7 @@ def main() -> int:
         # Runs on Windows (DXGI) and any platform with nvidia-smi.
         if _chat_on_ollama:
             try:
-                from jarvis.utils.vram import detect_total_vram_mb, format_vram_warning
+                from claire.utils.vram import detect_total_vram_mb, format_vram_warning
                 _vram_mb = detect_total_vram_mb()
                 if _vram_mb is not None:
                     _chat_model = getattr(_provider_cfg, "llm_chat_model", "") if _provider_cfg else ""
@@ -3710,16 +3665,16 @@ def main() -> int:
                 splash.set_status("Model check complete!")
                 app.processEvents()
 
-        splash.set_status("Loading Jarvis...")
-        print("Initializing JarvisSystemTray...", flush=True)
-        tray_instance = JarvisSystemTray(
+        splash.set_status("Loading Claire...")
+        print("Initializing ClaireSystemTray...", flush=True)
+        tray_instance = ClaireSystemTray(
             ollama_runtime_ownership=ollama_runtime_ownership,
         )
-        print("JarvisSystemTray initialized successfully", flush=True)
+        print("ClaireSystemTray initialized successfully", flush=True)
 
         # Always auto-start listening
         splash.set_status("Starting voice assistant...")
-        print("🚀 Auto-starting Jarvis listener...", flush=True)
+        print("🚀 Auto-starting Claire listener...", flush=True)
         tray_instance.start_daemon()
 
         # Close splash screen
@@ -3735,7 +3690,7 @@ def main() -> int:
             # Show notification with log file location
             from PyQt6.QtWidgets import QSystemTrayIcon
             tray_instance.tray_icon.showMessage(
-                "Jarvis Started",
+                "Claire Started",
                 f"Crash logs available at:\n{crash_log_file}",
                 QSystemTrayIcon.MessageIcon.Information,
                 3000
@@ -3756,8 +3711,8 @@ def main() -> int:
 
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Icon.Critical)
-            msg.setWindowTitle("Jarvis Desktop App Error")
-            msg.setText("Failed to start Jarvis Desktop App")
+            msg.setWindowTitle("Claire Desktop App Error")
+            msg.setText("Failed to start Claire Desktop App")
             msg.setDetailedText(str(e) + "\n\n" + traceback.format_exc())
             if crash_log_file:
                 msg.setInformativeText(f"Check log file at:\n{crash_log_file}")

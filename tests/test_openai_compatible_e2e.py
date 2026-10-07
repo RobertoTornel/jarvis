@@ -1,7 +1,7 @@
 """End-to-end integration tests for the OpenAI-compatible provider path.
 
 These stand up a minimal in-process HTTP server that speaks the OpenAI wire
-shape and drive the REAL ``jarvis.llm`` backends + factory + config loader
+shape and drive the REAL ``claire.llm`` backends + factory + config loader
 through it over actual HTTP. This catches wire-shape regressions (request
 payload, response normalisation, tool-call decoding, SSE streaming, auth
 header, per-provider config resolution) without depending on a live vendor
@@ -129,36 +129,36 @@ class TestOpenAICompatibleEndToEnd:
     """Drive the real backend over HTTP against the stub."""
 
     def test_factory_dispatches_to_openai_backend_at_configured_url(self, stub):
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+        from claire.llm import get_llm_backend, OpenAICompatibleBackend
         backend = get_llm_backend(_cfg(stub))
         assert isinstance(backend, OpenAICompatibleBackend)
         assert backend.base_url == stub.base_url
 
     def test_direct_returns_assistant_text(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         out = get_llm_backend(_cfg(stub)).direct("stub-chat", "sys", "hi", timeout_sec=5)
         assert out == "Hello from stub"
 
     def test_sends_bearer_api_key(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         get_llm_backend(_cfg(stub)).direct("stub-chat", "sys", "hi", timeout_sec=5)
         auths = [h.get("Authorization") for p, h, _ in stub.calls if p.endswith("/chat/completions")]
         assert auths and auths[0] == "Bearer sk-stub"
 
     def test_no_auth_header_when_key_empty(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         get_llm_backend(_cfg(stub, llm_api_key="")).direct("stub-chat", "sys", "hi", timeout_sec=5)
         auths = [h.get("Authorization") for p, h, _ in stub.calls if p.endswith("/chat/completions")]
         assert auths and auths[0] is None
 
     def test_chat_normalises_message_to_top_level(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         resp = get_llm_backend(_cfg(stub)).chat(
             "stub-chat", [{"role": "user", "content": "hi"}], timeout_sec=5)
         assert resp["message"]["content"] == "Hello from stub"
 
     def test_chat_decodes_tool_call_arguments_to_dict(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         resp = get_llm_backend(_cfg(stub)).chat(
             "stub-chat", [{"role": "user", "content": "weather?"}],
             tools=[{"type": "function", "function": {"name": "getWeather"}}],
@@ -168,7 +168,7 @@ class TestOpenAICompatibleEndToEnd:
         assert isinstance(args, dict) and args["location"] == "London"
 
     def test_streaming_reassembles_sse_and_fires_on_token(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         toks: list[str] = []
         full = get_llm_backend(_cfg(stub)).streaming(
             "stub-chat", "sys", "hi", on_token=toks.append, timeout_sec=5)
@@ -176,13 +176,13 @@ class TestOpenAICompatibleEndToEnd:
         assert toks == ["Hel", "lo"]
 
     def test_embeddings_via_inherited_provider(self, stub):
-        from jarvis.llm import get_embedding_backend, OpenAICompatibleBackend
+        from claire.llm import get_embedding_backend, OpenAICompatibleBackend
         eb = get_embedding_backend(_cfg(stub))  # embedding_provider="" inherits chat
         assert isinstance(eb, OpenAICompatibleBackend)
         assert eb.embed("hello", "stub-embed", timeout_sec=5) == [0.1, 0.2, 0.3]
 
     def test_list_models(self, stub):
-        from jarvis.llm import get_llm_backend
+        from claire.llm import get_llm_backend
         models = get_llm_backend(_cfg(stub)).list_models(timeout_sec=5)
         assert "stub-chat" in models and "stub-embed" in models
 
@@ -250,14 +250,14 @@ class TestCheckCapabilities:
     """``check_capabilities`` probes the real endpoints and reports honestly."""
 
     def test_full_featured_server(self, stub):
-        from jarvis.llm import OpenAICompatibleBackend
+        from claire.llm import OpenAICompatibleBackend
         backend = OpenAICompatibleBackend(stub.base_url, api_key="sk-stub")
         caps = backend.check_capabilities("stub-chat", "stub-embed", timeout_sec=5)
         assert caps.reachable and caps.chat and caps.tools and caps.embeddings
         assert "stub-chat" in caps.models
 
     def test_server_without_tools(self):
-        from jarvis.llm import OpenAICompatibleBackend
+        from claire.llm import OpenAICompatibleBackend
         srv = _ConfigurableServer(tools=False).start()
         try:
             caps = OpenAICompatibleBackend(srv.base_url).check_capabilities(
@@ -268,7 +268,7 @@ class TestCheckCapabilities:
             srv.stop()
 
     def test_server_without_embeddings(self):
-        from jarvis.llm import OpenAICompatibleBackend
+        from claire.llm import OpenAICompatibleBackend
         srv = _ConfigurableServer(embeddings=False).start()
         try:
             caps = OpenAICompatibleBackend(srv.base_url).check_capabilities(
@@ -279,7 +279,7 @@ class TestCheckCapabilities:
             srv.stop()
 
     def test_unreachable_server_is_not_reachable(self):
-        from jarvis.llm import OpenAICompatibleBackend
+        from claire.llm import OpenAICompatibleBackend
         caps = OpenAICompatibleBackend("http://127.0.0.1:1/v1").check_capabilities(
             "x", timeout_sec=1)
         assert caps.reachable is False
@@ -300,10 +300,10 @@ class TestConfigRoundTrip:
             "llm_chat_model": "stub-chat",
             "embedding_model": "stub-embed",
         }))
-        monkeypatch.setenv("JARVIS_CONFIG_PATH", str(cfg_path))
+        monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(cfg_path))
 
-        from jarvis.config import load_settings
-        from jarvis.llm import get_llm_backend, OpenAICompatibleBackend
+        from claire.config import load_settings
+        from claire.llm import get_llm_backend, OpenAICompatibleBackend
 
         settings = load_settings()
         assert settings.llm_provider == "openai_compatible"

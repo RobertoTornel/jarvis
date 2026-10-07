@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Test script for the Jarvis Desktop App
+# Test script for the Claire Desktop App
 
 # Parse arguments
 VOICE_DEBUG=0
@@ -16,27 +16,19 @@ done
 # Navigate to project root first
 cd "$(dirname "$0")/.." || exit
 
-echo "🔧 Testing Jarvis Desktop App locally..."
+echo "🔧 Testing Claire Desktop App locally..."
 if [ "$VOICE_DEBUG" = "1" ]; then
     echo "   📋 Voice debug: ENABLED"
 fi
 echo ""
 
-# Find a suitable Python (3.10+)
-# Check both PATH and common install locations (homebrew, deadsnakes, etc.)
+# Find a suitable Python (3.10+) on PATH.
 PYTHON=""
-SEARCH_PATHS=(
-    ""                          # PATH lookup
-    "/opt/homebrew/bin/"        # macOS Homebrew (Apple Silicon)
-    "/usr/local/bin/"           # macOS Homebrew (Intel) / Linux manual installs
-)
 for candidate in python3.12 python3.11 python3.10; do
-    for prefix in "${SEARCH_PATHS[@]}"; do
-        if [ -x "${prefix}${candidate}" ] 2>/dev/null || command -v "${prefix}${candidate}" &>/dev/null; then
-            PYTHON="${prefix}${candidate}"
-            break 2
-        fi
-    done
+    if command -v "$candidate" &>/dev/null; then
+        PYTHON="$(command -v "$candidate")"
+        break
+    fi
 done
 if [ -z "$PYTHON" ]; then
     # Fall back to python3 and hope it's new enough
@@ -87,7 +79,7 @@ export PYTHONPATH="$(pwd)/src:$PYTHONPATH"
 
 # Set voice debug environment variable if requested
 if [ "$VOICE_DEBUG" = "1" ]; then
-    export JARVIS_VOICE_DEBUG=1
+    export CLAIRE_VOICE_DEBUG=1
 fi
 
 python -m desktop_app

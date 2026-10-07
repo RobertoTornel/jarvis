@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from jarvis.memory.conversation import generate_conversation_summary
+from claire.memory.conversation import generate_conversation_summary
 
 pytestmark = pytest.mark.unit
 

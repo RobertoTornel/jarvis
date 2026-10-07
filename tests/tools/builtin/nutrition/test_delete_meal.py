@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import Mock
 
-from src.jarvis.tools.builtin.nutrition.delete_meal import DeleteMealTool
-from src.jarvis.tools.base import ToolContext
-from src.jarvis.tools.types import ToolExecutionResult
+from src.claire.tools.builtin.nutrition.delete_meal import DeleteMealTool
+from src.claire.tools.base import ToolContext
+from src.claire.tools.types import ToolExecutionResult
 
 
 class TestDeleteMealTool:

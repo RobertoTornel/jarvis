@@ -6,9 +6,9 @@ from threading import Barrier
 
 import pytest
 
-from jarvis.memory.db import Database, _SCHEMA_SQL
-from jarvis.utils.fast_vector_store import FAISSVectorStore
-from jarvis.utils.vector_store import PythonVectorStore
+from claire.memory.db import Database, _SCHEMA_SQL
+from claire.utils.fast_vector_store import FAISSVectorStore
+from claire.utils.vector_store import PythonVectorStore
 
 pytestmark = pytest.mark.unit
 
@@ -18,7 +18,7 @@ def diary(request, tmp_path, monkeypatch):
     kind = PythonVectorStore if request.param == 'python' else FAISSVectorStore
     def make_store(path, dimension):
         return kind(path) if kind is PythonVectorStore else kind(path, 2)
-    monkeypatch.setattr('jarvis.utils.vector_store.get_best_vector_store', make_store)
+    monkeypatch.setattr('claire.utils.vector_store.get_best_vector_store', make_store)
     db = Database(str(tmp_path / 'diary.db'))
     yield db
     db.close()
@@ -105,7 +105,7 @@ def test_existing_diary_full_text_entries_are_rebuilt_on_open(tmp_path):
         for text in ('cycling', 'coffee'):
             conn.execute("INSERT OR REPLACE INTO conversation_summaries "
                          "(date_utc, ts_utc, summary, source_app) VALUES (?, ?, ?, ?)",
-                         ('2026-01-01', '2026-01-01T12:00:00+00:00', text, 'jarvis'))
+                         ('2026-01-01', '2026-01-01T12:00:00+00:00', text, 'claire'))
     db = Database(path)
     try:
         assert_fts_consistent(db)
@@ -168,7 +168,7 @@ def test_failed_rebuild_releases_writer_and_can_retry(tmp_path, monkeypatch):
     with connect(path, timeout=0) as conn:
         assert conn.execute('SELECT count(*) FROM diary_index_migrations').fetchone()[0] == 0
         conn.execute("INSERT INTO conversation_summaries(date_utc,ts_utc,summary,source_app) "
-                     "VALUES ('2026-01-01','2026-01-01T12:00:00+00:00','cycling','jarvis')")
+                     "VALUES ('2026-01-01','2026-01-01T12:00:00+00:00','cycling','claire')")
     reopened = Database(path)
     try:
         assert_fts_consistent(reopened)
@@ -184,7 +184,7 @@ def test_concurrent_first_owners_complete_the_rebuild(tmp_path):
         for text in ('cycling', 'coffee'):
             conn.execute("INSERT OR REPLACE INTO conversation_summaries "
                          "(date_utc, ts_utc, summary, source_app) VALUES (?, ?, ?, ?)",
-                         ('2026-01-01', '2026-01-01T12:00:00+00:00', text, 'jarvis'))
+                         ('2026-01-01', '2026-01-01T12:00:00+00:00', text, 'claire'))
     ready = Barrier(2)
     def open_diary():
         ready.wait(timeout=2)

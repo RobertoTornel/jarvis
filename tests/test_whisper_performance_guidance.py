@@ -3,20 +3,24 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 import numpy as np
 import pytest
-from jarvis.listening.listener import VoiceListener, _TranscriptionJob
+from claire.listening.listener import VoiceListener, _TranscriptionJob
 
 pytestmark = pytest.mark.unit
 
 
 def run_speech(monkeypatch, durations, model='medium', audio_seconds=2, transcript='hello'):
+    # The slow-decode guidance is Whisper's, so these tests select the opt-in
+    # Whisper decode path (``_transcribe_audio``); Parakeet is the production
+    # default and never reaches it.
     cfg = SimpleNamespace(sample_rate=16000, vad_enabled=False, echo_tolerance=0.3,
                           echo_energy_threshold=2, hot_window_seconds=3,
-                          tune_enabled=False, whisper_model=model)
+                          tune_enabled=False, whisper_model=model,
+                          stt_engine='faster_whisper')
     listener = VoiceListener(MagicMock(), cfg, None, MagicMock())
     listener._whisper_model_name = model
     listener._transcribe_audio = lambda audio: (transcript, 'en', ())
     clock = iter(t for index, elapsed in enumerate(durations) for t in (index*20, index*20+elapsed))
-    monkeypatch.setattr('jarvis.listening.listener.time.monotonic', lambda: next(clock))
+    monkeypatch.setattr('claire.listening.listener.time.monotonic', lambda: next(clock))
     for _ in durations:
         listener._transcription_jobs_q.put(_TranscriptionJob(
             np.zeros(int(audio_seconds*16000)), 1, 3, 0.1, 0, False, 0))

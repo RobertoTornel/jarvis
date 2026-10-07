@@ -1,7 +1,7 @@
 """Tests for TTS link preprocessing functionality."""
 
 import pytest
-from src.jarvis.output.tts import (
+from src.claire.output.tts import (
     _preprocess_for_speech,
     _strip_markdown_for_speech,
     _extract_domain_description,

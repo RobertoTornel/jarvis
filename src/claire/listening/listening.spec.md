@@ -1,0 +1,588 @@
+# Listening Flow Specification v2
+
+This document outlines the voice listening architecture. The system uses a **transcript-first** approach where speech is continuously transcribed, and an LLM intent judge extracts queries with full context.
+
+**One listening model.** Parakeet is the one authoritative recogniser (decision D4). Whisper still exists as an explicitly opt-in engine (`stt_engine='faster_whisper'`) but is never a fallback: it is not imported, downloaded or loaded in a Parakeet-configured process, and a Parakeet failure is reported as a named, visible degradation instead of being answered by a second engine.
+
+## Architecture Overview
+
+### Capture format and health
+
+The input stream tries mono at the configured sample rate. Unsupported channel
+counts or sample rates trigger bounded retries on the same selected input:
+mono, stereo and the device's advertised maximum channel count, at the configured
+and native rates, without duplicate attempts. Access and device-availability
+errors are not retried as format failures. Both the Windows permission probe and
+continuous capture use this negotiation and input selection. The system default
+is resolved to a concrete input index before the permission probe and model
+loading, so changing the default during startup cannot redirect capture. An
+unavailable default produces Settings guidance without choosing another input.
+Name matching skips
+output-only devices; a missing named microphone produces an actionable error
+rather than silently selecting another input. Multichannel samples are averaged
+to mono before framing and speech detection.
+
+Frames always span the configured 10, 20 or
+30 ms at the actual capture rate; unsupported frame durations use 20 ms. Partial
+callback blocks are retained until a complete frame is available and discarded
+on audio-state resets. WebRTC VAD receives a 16 kHz mono PCM copy, including when
+the hardware captures at 44.1 or 48 kHz. Utterances retain native-rate samples
+until resampling for the recogniser, preserving their duration.
+
+VAD errors emit a single warning and use the configured energy threshold instead
+of silently discarding speech. Capture health is checked every five seconds with
+a monotonic clock. Missing callbacks, silent samples, callback errors, PortAudio
+status flags and dropped queue blocks are reported outside the audio callback.
+Warnings are transition-based. With
+`voice_debug`, diagnostics include callback/frame counts, speech-frame counts,
+peak level and capture rate, without saving microphone audio. Linux warnings
+point users to PipeWire/PulseAudio recording-source routing.
+
+Utterance assembly enforces `max_utterance_ms` during continuous speech as
+well as at silent endpoints. While TTS is speaking, `tts_max_utterance_ms`
+applies so interruption audio reaches the recogniser promptly. Limits count complete
+native-rate frames, including pre-roll. Reaching a limit queues the captured
+chunk and allows the following frame to start the next utterance.
+
+Audio-frame processing runs on a dedicated serial worker, limited to VAD and
+utterance assembly. Intent judging and reply generation on the listener thread
+do not block frame consumption. The listener thread owns the PortAudio stream.
+Completed utterances are enqueued for a single FIFO transcription worker.
+Transcription results return to the listener loop in order, where transcript
+storage and intent processing remain serialised. Both transcription queues are
+bounded. A full job backlog reports an explicit warning rather than blocking
+microphone-frame consumption or silently losing an utterance. A full result
+queue applies cancellable backpressure to the recogniser without dropping results.
+The capture generation identifies the capture session a transcription job or
+result belongs to; a change to it invalidates work started under the previous
+generation, including a decode or intent decision that finishes afterwards.
+A buffer reset bumps the audio generation and clears captured audio, so callback
+blocks carrying the generation from before their copy are stale; stale blocks
+are discarded after a reset, including blocks already dequeued. Remaining
+frames in a dequeued batch cannot append after a buffer reset. Transcript
+processing retains the result generation through buffer storage. Listener shutdown discards pending transcriptions and results;
+workers receive bounded join grace periods. Invalidated voice queries cannot
+start a reply after waiting for the shared query lock, and an invalidated reply
+cannot produce speech or a spoken error, including invalidation during thinking
+tune teardown. Cancelled language work stops its thinking tune without
+overwriting the face state. In-flight model calls retain their
+configured deadlines. Transcript echo flags use the utterance capture interval
+against TTS timing. The job carries that capture-time context through transcription
+to echo rejection, stop-command handling and intent processing, so later TTS
+playback cannot reclassify an older utterance.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Audio Stream                            │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+            ┌───────────────┼───────────────┐
+            ▼               ▼               ▼
+┌───────────────┐                  ┌───────────────┐
+│     VAD       │                  │   TTS Output  │
+│ (speech gate) │                  │   Tracking    │
+└───────┬───────┘                  └───────────────┘
+        │
+        ▼
+┌───────────────┐
+│  Recogniser   │
+│ (transcribe)  │
+└───────┬───────┘
+        │
+        ▼
+┌───────────────────────────────────────┐
+│     Rolling Transcript Buffer         │
+│     (2 minutes, with timestamps)      │
+│                                       │
+│  Segments include:                    │
+│  - text, start_time, end_time         │
+│  - energy level                       │
+│  - is_during_tts flag                 │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼ (on wake detection)
+┌───────────────────────────────────────┐
+│          Intent Judge LLM             │
+│        (gemma4 or main)          │
+│                                       │
+│  Inputs:                              │
+│  - Transcript buffer (recent)         │
+│  - Wake word timestamp (if any)       │
+│  - Last TTS text + finish time        │
+│  - Current state                      │
+│                                       │
+│  Outputs:                             │
+│  - directed: bool                     │
+│  - query: "extracted clean query"     │
+│  - stop: bool                         │
+│  - confidence: high/medium/low        │
+│  - reasoning: "brief explanation"     │
+└───────────────────┬───────────────────┘
+                    │
+                    ▼
+┌───────────────────────────────────────┐
+│           Reply Engine                │
+└───────────────────────────────────────┘
+```
+
+## Key Design Principles
+
+### 0. Serialised PortAudio Lifecycle
+
+All stream lifecycle calls (`InputStream`/`OutputStream` construction,
+`start`/`stop`/`close`/`abort`) run under the process-wide
+`claire.utils.audio_lock.portaudio_lock`, shared with TTS and the thinking
+tune. PortAudio documents stream open/close as not
+thread safe; unserialised calls across threads abort the whole app on
+Windows (#462, #401, #422). The run loop uses `_serialised_stream` instead
+of the raw `with stream:` context manager. Two deliberate exceptions: the
+Windows mic-permission probe opens its stream *without* the lock (that open
+can hang indefinitely when Windows blocks mic access, and hanging while
+holding the process-wide lock would freeze every audio user), and its
+timeout path abandons a blocked stream instead of aborting/closing it from
+another thread — the check thread may still be inside `start()`/`stop()`
+on it, and a cross-thread close is a native use-after-free.
+
+### 1. Transcript-First
+
+Instead of extracting post-wake-word audio, we:
+- Continuously transcribe all speech (VAD-gated)
+- Store transcripts with timestamps in a rolling buffer
+- Let the intent judge extract the relevant query
+
+**Benefits:**
+- Pre-wake-word chatter naturally filtered: "blah blah Claire what time is it" → "what time is it"
+- Full context available for intent understanding
+- Echo detection via multi-layer approach (fuzzy text matching + LLM intent judge)
+
+### 2. Text-Based Wake Detection
+
+Wake detection checks the current transcript for case-insensitive, literal primary-name and alias matches at Unicode word boundaries. Empty names are ignored. Configured aliases represent known mishearings and require exact whole-name matches; their approximate neighbours are not wake signals. Only a single-word primary name participates in fuzzy token matching, using `wake_fuzzy_ratio`. Tokens may extend the primary name by at most one character; shorter forms use the configured similarity threshold. Fallback query extraction removes the same complete configured names while preserving names embedded inside other words. These rules use configured names without language-specific exclusions.
+
+### 3. Context-Aware Intent Judge
+
+The intent judge receives full context and makes intelligent decisions:
+- Knows what TTS said → can identify echo vs real speech
+- Sees pre-wake-word context → can understand "...what do YOU think, Claire?"
+- Extracts clean query → removes filler words, false starts
+
+**Gating:** The judge is called only when there is an engagement signal — (a) a wake word was detected in the current utterance, (b) the utterance falls inside (or pending) a hot window, or (c) TTS is currently speaking. Pure ambient speech skips the judge entirely. This keeps the synchronous audio loop from blocking up to `intent_judge_timeout_sec` on every background utterance, which would otherwise freeze the UI when Ollama is slow or contended.
+
+**Alias normalisation:** Before the transcript is sent to the judge, every configured wake-word alias in each segment is replaced with the primary assistant name (case-insensitive, word-boundary-aware). Aliases are known mishearings of the wake word (e.g. "Jervis", "Jaivis" for "Claire"); without this step the small judge model sees the alias, doesn't know it refers to the assistant, and can decide the user is addressing a different person. Normalisation happens at prompt-build time only — the raw transcript buffer is untouched.
+
+**Wake-word removal in the extracted query:** When the assistant is addressed, its wake word is not part of the query content. The judge prompt explicitly instructs removing every occurrence of the wake word from the extracted `query` — at the start, end, or middle of the sentence, including when it sits next to a named entity (e.g. "movie called Possessor Claire" → film is "Possessor", not "Possessor Claire"). The only exception is when the user is literally talking *about* the assistant as a subject ("tell me about Claire"). This is enforced by prompt rule + example rather than post-hoc string stripping, because the LLM already understands the semantic distinction and can handle cases a regex would mishandle (e.g. proper names that contain the wake word, like "Claire Cocker").
+
+**Mention versus address in wake-word mode:** The judge determines the addressee before extracting a query. Explanations to another person about speaking to the assistant, such as "I'm talking to Claire, not you", are mentions and return `directed=false` with an empty query. The distinction applies across languages and normalised aliases. Outside the hot window, a high-confidence non-echo rejection stops query collection even if a wake word is present. Inconclusive or unavailable judgements retain wake-word fallback; hot-window and echo handling retain their own rules.
+
+**Model residency (`keep_alive`):** Each intent-judge request asks Ollama to keep the model resident after the call. The default duration is 30 minutes, which avoids cold reloads between utterances. When `cfg.low_power_mode` is true, the duration is 1 minute so the model can unload soon after an active exchange. The trade-off is latency: low-power sessions can pay a cold-load cost after idle periods, while default sessions keep the judge model (default `gemma4:e2b`, ~2 GB) in RAM/VRAM during active voice use.
+
+## Startup & Model Warmup
+
+Before the listener announces "Listening!", it pre-loads every model the first engagement will need. All warmup output is grouped under a single `🔥 Warming up models...` header with indented child status lines, e.g.
+
+```
+  🔥 Warming up models...
+     🎤 Recogniser 'parakeet' ready
+     💬 Chat model 'llama3.1' ready
+     🧠 Intent judge 'gemma4:e2b' ready
+🎙️  Listening! Try:
+      "How's the weather, Claire?"          ← when location is known
+      "How's the weather in [your city], Claire?"  ← when location is disabled or not configured
+      "I just ate a Big Mac, Claire."
+      "What are you thinking, Claire?"
+      "What do you know about me, Claire?"
+```
+
+The weather example adapts to location availability: if `location_enabled` is true, a location source is configured (`location_auto_detect` or a manual `location_ip_address`), **and** the GeoLite2 database is present (`is_location_available()` returns true), the plain form is shown; otherwise the `[your city]` placeholder form is shown so the user understands they must substitute a real city name in their query.
+
+On small models, a caveat line is appended above a more involved example to set expectations (`⚠️ Small model in use (…). Assume it can't infer — spell out the steps for anything more involved:`). The Chrome MCP tip continues to appear as its own block when the browser tool is detected.
+
+**What gets warmed:**
+- **Parakeet** (the authoritative recogniser, when `stt_engine='parakeet'`) — loads on first use and is cached for the process lifetime, shared with the phone bridge so only one NeMo instance ever exists. Nothing else is loaded in its place.
+- **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/chat` request with the power-mode `keep_alive` (`30m` normally, `1m` in low-power mode) so the weights stay resident.
+- **Intent judge model** (the fast tier: `resolve_model(cfg, Tier.FAST)`) — same pattern. If it points at the same Ollama model as the chat model, a single warmup covers both roles (Ollama loads the weights once).
+
+**Whisper is opt-in only:** Whisper is imported, downloaded and loaded *only* when `stt_engine` names it (`'faster_whisper'` or `'whisper'`). A Parakeet-configured process never imports `faster_whisper`/`mlx_whisper`, never downloads a Whisper model and never holds one in memory; the engine factory raises for any other token instead of falling back to it. When Whisper *is* selected: auto mode prefers MLX on Apple Silicon only when `mlx-whisper` imports successfully, an explicit `faster-whisper` preference disables MLX, and an explicit `mlx` preference falls back to faster-whisper when MLX is unavailable. `large-v3-turbo` is supported by MLX or by faster-whisper 1.1.0 and newer; on an unsupported faster-whisper backend startup loads `medium` instead and prints a warning.
+
+**Low-power mode:** When `cfg.low_power_mode` is true, the listener skips chat and intent-judge warmup threads and prints `🌱 Low power mode: LLM warmup skipped`. The recogniser still loads because speech recognition needs to be ready before the listener can accept input. The first LLM-backed engagement after startup or idle loads models on demand.
+
+**Concurrency:** LLM warmups run in daemon threads started at listener startup, so they overlap with recogniser setup. The listener then joins the warmup threads with a **single 60 s budget** shared across them all. If the budget is exhausted, the listener continues (with a `⏳ Some models still warming — continuing anyway` notice) and the first engagement pays the cold-load cost on demand. With `stt_engine='faster_whisper'` the opt-in Whisper load runs in the same phase; with Parakeet nothing Whisper-related runs here at all.
+
+**Best-effort semantics:** Every warmup path swallows its own errors and returns a bool. A failed warmup prints `⚠️ … warmup failed — will load on first use` but never blocks or crashes the listener — voice input is prioritised over startup latency.
+
+## The Three Listening Modes
+
+### 1. Wake Word Mode (Default)
+
+System is waiting for wake word activation.
+
+**Triggers:**
+- Text-based detection finds wake word (or aliases) in transcript
+
+**On trigger:**
+1. Start thinking beep immediately and set face state to LISTENING
+2. Wait for utterance to complete (user finishes speaking)
+3. Send transcript buffer + wake timestamp to intent judge
+4. If `directed=true` and `query` exists, dispatch to reply engine
+5. If rejected, stop the beep and revert face state to IDLE
+
+### 2. Hot Window Mode
+
+After TTS finishes, allow wake-word-free follow-up.
+
+**Activation:** `echo_tolerance` seconds after TTS ends (allows echo to settle)
+
+**Acoustic tail guard:** audio captured during TTS, or starting inside
+`POST_TTS_TAIL_GUARD_SECONDS` (0.6 s) after TTS ends, is rejected **unless the
+wake word is genuinely present** (`listener.py:880-919`, constants at
+`listener.py:47-67`). The gate uses the acoustic `captured_during_tts` signal,
+not recogniser text — text similarity alone (`partial_ratio >= 70`) can never
+catch a mis-transcribed echo. A verified wake word resets the chain
+(`listener.py:738-743`, reusing `is_wake_word_detected`).
+
+**Follow-up renewal cap:** at most `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
+hot-window follow-up per explicit wake word (`state_manager.py:394-408`). A
+second consecutive follow-up without "Claire" is refused
+(`Follow-up window closed — say "Claire" to continue`), an audio-independent
+loop-breaker so even a missed echo cannot cause an unbounded loop.
+
+**Duration:** Configurable (default: 3 seconds)
+
+**Timer ownership:** Activation and expiry callbacks belong to the current
+scheduled window. Cancelled or superseded callbacks cannot clear a newer
+pending activation, open a cancelled window or expire a replacement window.
+State changes, timer replacement and shutdown are serialised under one
+reentrant lock. Expiry uses the remaining duration from activation, including
+notification time. Shutdown rejects further activation/reset scheduling and
+hot-window admission; manual expiry also cancels pending activation.
+
+
+**Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
+
+**Mixed echo+speech handling:** When the recogniser merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
+
+**Extracted-query source guard:** A hot-window query containing at least the shared minimum salvage word count is rejected if its complete normalised word sequence occurs in the captured TTS text but not in the current utterance. This prevents an earlier assistant phrase from becoming a fresh query after mixed echo and user speech. Matching uses whole Unicode words and the echo normaliser. Current utterance quotes and non-echo semantic follow-ups remain eligible; rejected prior echo stops the thinking tune without opening query collection.
+
+**Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails (for example because the recogniser mis-transcribed the first echo word — *"explores"* → *"laws"* — breaking the word-level comparison), the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left looking for the rightmost 5-word window that fuzzy-matches the TTS tail (`partial_ratio >= 85`) and keeps everything after it. This preserves short follow-ups (*"Who made it?"*) that the existing fuzzy-prefix salvage would otherwise truncate by one word because it prefers the shortest suffix. If the surviving remainder has at least `EchoDetector.min_salvage_words` words (default 3), it replaces the transcript segment text and is treated as the user's follow-up. The same minimum-word threshold is shared by the during-TTS and post-TTS merged-chunk salvage paths so the policy is consistent across all three sites.
+
+**Timestamp-based detection:** `was_speech_during_hot_window(utterance_start_time, utterance_end_time)` compares the utterance's time range against the hot window's time span (from schedule to expiry). This eliminates race conditions between slow transcription and the expiry timer — if the user started speaking during the window, it counts as hot window input regardless of when the transcript arrives. Also handles **overlapping utterances** where VAD triggered during TTS (mic picking up echo) but the utterance extended into the hot window period.
+
+**`could_be_hot_window` (intent judge context):** Derived from timestamp comparison — returns True if the hot window is active, activation is pending, the utterance started within the window span even after expiry, or the utterance overlaps with the span (started before, ended during).
+
+**Expiry:** Timer-based, guaranteed to fire even if no audio
+
+### 3. During TTS
+
+While TTS is playing, echo rejection and stop commands are handled with fast text-based checks (no LLM). This prevents self-loops where the mic picks up TTS output. After TTS finishes, the intent judge takes over.
+
+**Stop detection:**
+- Text-based: Check for "stop", "quiet", "shut up", etc.
+- Intent judge can also detect stop commands
+- During active TTS, a standalone configured stop phrase (including a fuzzy transcription) retains immediate interruption priority. Longer literal echoes of the current TTS text are rejected even when they contain a configured stop phrase. Unicode punctuation and casing are normalised without language-specific patterns; an appended user command remains eligible for interruption.
+
+**Echo handling:**
+- Transcripts during TTS are flagged with `is_during_tts=true`
+- Intent judge uses this context to identify echo
+
+## Rolling Transcript Buffer
+
+### Design
+
+```python
+@dataclass
+class TranscriptSegment:
+    text: str              # Transcribed text
+    start_time: float      # Unix timestamp when speech started
+    end_time: float        # Unix timestamp when speech ended
+    energy: float          # Audio energy level
+    is_during_tts: bool    # Whether TTS was playing during this segment
+
+class TranscriptBuffer:
+    max_duration_sec: float = 120.0  # Ambient speech context for intent judging
+```
+
+### Memory Alignment
+
+- **Transcript buffer** (`transcript_buffer_duration_sec`): Rolling raw ambient speech. Separate and potentially longer — in group conversations, 2+ minutes of context lets the intent judge synthesise a complete query with relevant information when someone decides to involve Claire later in the conversation.
+- **Short-term memory** (`dialogue_memory_timeout`): Processed Claire interactions (user queries + assistant responses). This window also drives the forced diary update interval.
+- **Long-term memory (diary):** Forced update when unsaved messages reach `dialogue_memory_timeout` age. Enrichment retrieves any relevant earlier context from the diary.
+
+### Methods
+
+- `add(text, start_time, end_time, energy, is_during_tts)`: Add segment
+- `get_since(timestamp)`: Get all segments since a timestamp
+- `get_around(timestamp, before_sec, after_sec)`: Get segments in time window
+- `format_for_llm(segments)`: Format for intent judge input
+- `prune()`: Remove segments older than max_duration
+
+## Intent Judge
+
+### Context Duration & Query Synthesis
+
+The intent judge receives the full transcript buffer (default: 120 seconds / 2 minutes) and **synthesizes a complete query** using conversation context.
+
+This enables Claire to **chime into ongoing conversations** between people. When someone asks "Claire, what do you think?", the judge uses context to understand what they were discussing and creates a complete, actionable query. Vague references like "that", "it", "this", "they" in the current segment are resolved using previous segments in the buffer (e.g. "I think dinosaurs are cool" + "What do you think about that Claire?" → "what do you think about dinosaurs being cool").
+
+**Multi-topic disambiguation.** Real buffers often contain interleaved threads from ambient chatter — e.g. a sports conversation running alongside a purchase discussion. When the wake-word segment uses a vague reference or a topic-less question ("what's the price", "how much does it cost"), the judge must pick the thread whose subject fits the question's grammar (a purchasable thing for "price", a release for "when did it come out") and ignore unrelated threads. When resolving to a sub-item ("pro model", "the red one"), the query must include the parent noun/brand so it remains answerable without the transcript. The grammar-matching behaviour lives entirely in the judge's system prompt (no runtime code branch) and is exercised by the `buried_target_*` eval cases in `evals/test_intent_judge.py` — if the small model regresses on this behaviour, those evals catch it.
+
+**Hot-window override.** In hot-window mode the user is always treated as directed; the topic-less / vague-reference heuristics above are subordinate. Short follow-ups like "tell me more", "and?", or "what else" stay directed rather than being rejected as undirected chatter, because the hot window only opens after a completed Claire exchange.
+
+**Declarative statements addressed to the wake word.** Segments where the user shares information, feelings, or an action with the assistant — e.g. "Claire, I just ate a burger from McDonald's", "I'm feeling a bit tired today, Claire", "my flight got cancelled, Claire" — are directed and must be extracted verbatim (wake word removed) as the query. The wake word can appear at the start, middle, or end of the segment; position does not affect directedness. The judge must not reject these as "not a command or question": any segment where the wake word is used to address the assistant (as opposed to a narrative mention like "I told my friend about Claire") is directed, regardless of sentence mood.
+
+**Imperative resolution.** The same mechanism covers imperatives that refer to a prior unanswered question. If a prior segment contains a question and the wake-word segment is an instruction like "answer that", "respond to that", "reply to that", "address that", "answer my question", or "go ahead and answer", the query is the prior question itself — not the literal imperative. Misheard tense variants of these imperatives ("answered that", "answers that", "answering that") are treated the same. If the current segment contains both an imperative and a new explicit question, the new question takes priority.
+
+**Multi-person conversation example:**
+```
+[12:28:30] Person A: "I wonder what the weather will be like tomorrow"
+[12:28:45] Person B: "Yeah, we should check before planning the picnic"
+[12:29:00] Person A: "Claire, what do you think?"
+```
+
+The intent judge synthesizes: `"what do you think about the weather tomorrow for the picnic"`
+
+### Input Format
+
+```
+Transcript (last 120 seconds):
+[12:28:30] "I wonder what the weather will be like tomorrow"
+[12:28:45] "Yeah, we should check before planning the picnic"
+[12:29:00] "Claire what do you think"
+
+Wake word detected at: 12:29:00.8 (text-based)
+Last TTS: "The weather is sunny and 72 degrees"
+TTS finished at: 12:28:02
+Current state: wake_word_mode
+```
+
+### Output Format
+
+```json
+{
+  "directed": true,
+  "query": "what do you think about the weather tomorrow for the picnic",
+  "stop": false,
+  "confidence": "high",
+  "reasoning": "synthesized context from conversation about weather and picnic"
+}
+```
+
+### Multi-Layer Echo Detection
+
+Echo detection uses a layered approach for reliability:
+
+1. **Fuzzy text matching (safety net):** `rapidfuzz.fuzz.partial_ratio` compares transcript against last TTS text. Score ≥ 70 = echo. This runs before the intent judge and catches obvious echoes quickly, including in the hot window directed path.
+2. **Intent judge (contextual):** Receives `last_tts_text` and timing context. Can identify echo even when fuzzy matching misses subtle cases, and can extract real user speech from mixed echo+speech chunks.
+
+The fuzzy check acts as a fast, reliable safety net. The intent judge provides deeper understanding but may be unreliable with smaller models (e.g. gemma4).
+
+Example:
+```
+TTS: "The weather is sunny and 72 degrees"
+TTS finished: 12:30:14
+
+Transcript:
+[12:30:15] "The weather is sunny and 72 degrees" ← Echo (fuzzy score 100, rejected)
+[12:30:18] "Ni hao" ← Real speech (fuzzy score < 70, sent to judge)
+
+Judge output: {"directed": true, "query": "Ni hao", "reasoning": "New speech directed at assistant"}
+```
+
+## Early Feedback (Beep & Face State)
+
+To minimise perceived latency, audio and visual feedback starts **immediately after transcription**, before the intent judge runs:
+
+- **Wake word mode:** If the transcribed text contains the wake word (fuzzy-matched), start the thinking beep and set face state to LISTENING.
+- **Hot window:** If voice started during an active (or pending) hot window, start the thinking beep and set face state to LISTENING.
+- **No trigger:** If neither condition is met, no feedback is given.
+
+If the intent judge later rejects the query (and no hot window override applies), the beep is stopped and face state reverts to IDLE. This brief false-positive beep is acceptable — users prefer immediate acknowledgement over delayed but perfect accuracy.
+
+**Face state is not set during TTS** — the beep is suppressed while TTS is playing to avoid self-triggering.
+
+## Low-Confidence Rejection Events
+
+`VoiceListener` accepts an optional keyword-only `on_low_confidence` callback.
+On the opt-in Whisper path both faster-whisper and MLX emit one immutable `LowConfidenceEvent` per segment
+discarded because its confidence is below `whisper_min_confidence`, including
+very low-confidence segments that only appear in debug logs. The event contains:
+
+- `confidence`: the same score used by the rejection check.
+- `transcript`: the full raw segment text, without trimming or truncation.
+- `reason`: `"low_confidence"`.
+
+The event is available from `claire.listening`. Rejection events travel with
+their transcription result and are emitted in segment order on the listener
+thread after the result passes shutdown and capture-generation checks. An
+invalidated result emits no events, and invalidation during a callback stops
+further event delivery and transcript processing. The callback runs
+synchronously and must not block. Consumers that need to update another thread
+must enqueue their own work. Callback exceptions are logged by exception type,
+without payloads, and do not interrupt voice processing. Events are held only
+until their transcription result is processed; the listener does not persist
+them.
+
+Segments rejected by the earlier no-speech gate do not emit low-confidence
+events. Accepted segments and segments without confidence metadata retain their
+existing backend-specific filtering behaviour. The listener does not directly
+trigger TTS, update widgets, add transcript-buffer entries, or dispatch queries
+for these events. Accepted speech in a mixed utterance continues through the
+normal pipeline. Without a callback, the listener filters and logs rejected
+segments without notifying any consumer.
+
+The daemon registers a non-blocking consumer that coalesces notifications and
+wakes a dedicated notification worker. The worker delivers payload-free visual feedback
+independently of synchronous diary and graph processing
+through a bundled callback or desktop IPC. The rejected transcript remains in
+the listener result only and is not forwarded, logged by the feedback consumer
+or persisted. Headless operation emits no desktop protocol, and shutdown drops
+pending feedback.
+
+## Configuration
+
+```json
+{
+  "transcript_buffer_duration_sec": 120,
+
+  "fast_model": "gemma4:e2b",
+  "intent_judge_timeout_sec": 6.0,
+
+  "hot_window_seconds": 3.0,
+  "echo_tolerance": 0.3
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Claire. Separate from dialogue memory. |
+| `whisper_min_confidence` (opt-in Whisper path) | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
+| `whisper_no_speech_threshold` (opt-in Whisper path) | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+
+Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
+
+## State Transitions
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> WakeWord: System Starts
+
+    WakeWord: Listening for Wake Word
+    HotWindow: Listening for Follow-up
+    DuringTTS: TTS Playing
+
+    WakeWord --> IntentJudge: Wake detected (text-based)
+    IntentJudge --> DuringTTS: Query dispatched, TTS starts
+    IntentJudge --> WakeWord: Not directed / no query
+    DuringTTS --> HotWindow: TTS ends + echo_tolerance
+    HotWindow --> IntentJudge: Speech detected
+    HotWindow --> WakeWord: Timer expires
+    DuringTTS --> WakeWord: Stop command detected
+```
+
+## Audio Pipeline
+
+```
+Microphone Audio
+    ↓
+Sounddevice Callback → _audio_q
+    ↓
+Main Loop: Get Frames → VAD Check
+    ↓
+Speech Detected → Accumulate Frames
+    ↓
+Silence Timeout → Bounded FIFO Transcription Jobs
+    ↓
+Serial Transcription Worker → Transcription Results
+    ↓
+Main Loop: Transcript and Intent Processing
+    ↓
+Add to Transcript Buffer (with timestamps)
+    ↓
+Wake Detection Check:
+    └→ Text contains wake word? → Start thinking beep + LISTENING face
+    ↓
+If wake detected OR in hot window:
+    → Fuzzy echo check (partial_ratio ≥ 70 = echo → reject + reset timer)
+    → Send buffer + context to Intent Judge
+    ↓
+If judge.directed and judge.query:
+    → Verify wake word present (wake word mode) or non-echo (hot window)
+    → Dispatch query to Reply Engine
+If judge rejects but in hot window and non-echo:
+    → Override rejection, dispatch as query
+```
+
+## Fallback Behaviour
+
+When components are unavailable, the system degrades gracefully:
+
+| Component | Unavailable Behaviour |
+|-----------|---------------------|
+| Intent Judge | Simple text-based wake word + query extraction; hot window override still applies |
+| Unsupported input format | Retry channel count and native sample rate on the selected device, then convert to 16 kHz mono for the recogniser |
+| Transcript Buffer | Process each utterance independently |
+
+## Download Recovery
+
+On the opt-in Whisper path, model loading handles transient download failures automatically:
+
+### Download and loading visibility
+
+LLM startup messages report warmup probe results, not role readiness. Chat, judge and router roles sharing one model share one reported probe; the configured intent deadline is displayed separately, with an explicit notice that the full intent request was not tested. Embeddings always use their own embedding-endpoint probe, even when configured with the same model name. Failure directs users to model availability/settings rather than promising success on first use.
+
+MLX Whisper prepares files through Hugging Face's snapshot cache before loading the model. The desktop displays the Hub's native per-file byte progress rather than an outer file-count bar. Existing caching, authentication, offline cache fallback and transfer resume remain owned by the Hub. The resulting local path is used for both warmup and subsequent transcription so the in-memory MLX model is reused.
+
+Startup distinguishes checking/downloading model files, loading into memory and warming up, and model readiness. Starting the listener thread is not reported as voice readiness. A failed download does not emit a loading or ready message.
+
+### Isolated faster-whisper downloads
+
+Every faster-whisper load, including cache and CPU recovery, prepares complete
+local model files before CTranslate2 initialisation. The installed downloader
+owns model aliases and Hub cache resolution. Cached files and user-supplied local
+directories require non-empty weights, configuration, tokeniser and vocabulary;
+an incomplete local directory produces an error rather than downloading a
+replacement or a tokeniser.
+
+Network preparation runs in a multiprocessing spawn child, compatible with the
+desktop's frozen-process bootstrap. It has a five-minute timeout, is terminated
+and reaped on failure, and returns a validated local path or a classified error.
+Child exit and timeout stop model loading without falling back to in-process
+network work. Visible rate-limit status is preserved through nested errors for bounded
+startup retries. Remote preparation that returns incomplete files also receives
+up to four retries with exponential backoff (2, 4, 8 and 16 seconds), including
+when an upstream cache fallback hides the remote error. An incomplete explicit
+local directory fails immediately. Every model constructor receives the
+local path and `local_files_only=True`. Cached files remain available after a
+failed attempt, retaining the Hub's download resume behaviour.
+
+### Corrupted Cache Recovery
+
+If the HuggingFace model cache is corrupted (e.g. from an interrupted download), the system detects the CTranslate2 "unable to open file" error, deletes the parent `models--` cache directory, and retries the download once. Recovery is attempted at most once per startup, across all device and compute fallbacks. Downloaded files from that attempt remain available to later fallbacks and restarts. Missing-file errors take priority over device and compute classification, including when the cache path contains those terms. If the retry also fails, a message guides the user to manually delete the cache, and the final failure reports the latest loading error.
+
+### Rate Limit Retry (HTTP 429)
+
+When HuggingFace returns HTTP 429 (Too Many Requests), both faster-whisper and MLX Whisper backends retry up to 4 times with exponential backoff (2s, 4s, 8s, 16s). Progress messages inform the user of each retry attempt. If all retries are exhausted, the user is advised to wait and restart.
+
+## Future: Acoustic Echo Cancellation
+
+Currently, echo is handled at the transcript level via fuzzy text matching and the intent judge. True acoustic echo cancellation (AEC) would:
+- Require the audio output signal (reference)
+- Process in real-time with adaptive filtering
+- Add 10-50ms latency
+
+**Current recommendation:** The transcript-level echo detection (fuzzy matching + intent judge) is sufficient and simpler. Consider AEC only if transcript-level detection proves inadequate in practice.
+
+### CUDA decode recovery
+
+- A faster-whisper CUDA runtime failure during warmup or transcription triggers one CPU recovery attempt per listener instance. Both eager failures and errors while consuming lazy segments are handled.
+- The loaded model name is retained. CPU decoding uses `float32` when configured, otherwise `int8`, and the CPU decoding optimisations apply immediately.
+- A successful recovery retries the current audio once and serves subsequent audio through the shared CPU model. A failed recovery is not retried for every utterance. CPU and unrelated transcription failures do not trigger model replacement.
+- Model replacement and lazy segment consumption hold the shared transcription lock, and consumers resolve the shared model reference under it.
+- Recovery logs the underlying error and displays a warning that CPU decoding may be slower.
+
+### Speech performance guidance
+
+- The serial transcription worker measures decode elapsed time with a monotonic clock, excluding queue waiting and startup warmup. Stale or empty results do not trigger guidance.
+- Three consecutive usable utterances of at least one second that each take at least two seconds and longer than their audio duration produce one warning per listener instance. Fast or short eligible samples reset the streak.
+- The warning recommends a smaller supported model while preserving English-only selection, states the accuracy trade-off, and points to the Setup Wizard or Whisper settings. The smallest or an unknown model gets hardware/load guidance instead. User configuration is never changed automatically.
+- Debug diagnostics record audio duration, decode duration and the loaded model while gathering samples.

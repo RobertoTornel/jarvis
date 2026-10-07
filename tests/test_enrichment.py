@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.reply.engine import (
+from claire.reply.engine import (
     _build_enrichment_context_hint,
     _match_question,
     _maybe_digest_tool_result,
 )
-from jarvis.reply.enrichment import extract_search_params_for_memory
+from claire.reply.enrichment import extract_search_params_for_memory
 
 
 class TestMatchQuestion:
@@ -119,7 +119,7 @@ class TestExtractorPromptRendering:
             captured["user_content"] = call_kwargs["user_content"]
             return '{"keywords": []}'
 
-        with patch("jarvis.reply.enrichment.call_llm_direct", side_effect=fake_call):
+        with patch("claire.reply.enrichment.call_llm_direct", side_effect=fake_call):
             extract_search_params_for_memory(
                 "dummy query", _cfg(), "m", timeout_sec=1.0, **kwargs
             )
@@ -160,7 +160,7 @@ class TestExtractorPromptRendering:
         assert "Tbilisi" in with_hint["user_content"]
 
     def test_extract_returns_empty_dict_when_no_usable_response(self):
-        with patch("jarvis.reply.enrichment.call_llm_direct", return_value=""):
+        with patch("claire.reply.enrichment.call_llm_direct", return_value=""):
             result = extract_search_params_for_memory(
                 "q", _cfg(), "m", timeout_sec=0.1,
             )
@@ -172,7 +172,7 @@ class TestExtractorPromptRendering:
         required" round-trip on every reply that passes through enrichment.
         Other resolvers (planner, evaluator) gate explicitly; this one must
         too for parity."""
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_call:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_call:
             result = extract_search_params_for_memory(
                 "q", _cfg(), "", timeout_sec=0.1,
             )
@@ -182,7 +182,7 @@ class TestExtractorPromptRendering:
     def test_short_circuits_when_chat_model_is_whitespace(self):
         """A whitespace-only model field is functionally unset; treat it as
         the empty case so the extractor still skips cleanly."""
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_call:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_call:
             result = extract_search_params_for_memory(
                 "q", _cfg(), "   ", timeout_sec=0.1,
             )
@@ -203,7 +203,7 @@ class TestGraphEnrichmentGating:
     """Graph enrichment is question-driven: no questions → no graph crawl."""
 
     def _run(self, extract_return: dict, enrichment_source: str = "all"):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         class _DM:
             def has_recent_messages(self):
@@ -257,8 +257,8 @@ class TestGraphEnrichmentGating:
             def get_ancestors(self, node_id):
                 return []
 
-        with patch("jarvis.reply.engine.extract_search_params_for_memory", return_value=extract_return), \
-             patch("jarvis.memory.graph.GraphMemoryStore", _FakeStore):
+        with patch("claire.reply.engine.extract_search_params_for_memory", return_value=extract_return), \
+             patch("claire.memory.graph.GraphMemoryStore", _FakeStore):
             run_reply_engine(db=None, cfg=cfg, tts=None, text="q", dialogue_memory=_DM())
 
         return store_calls
@@ -303,7 +303,7 @@ class TestGraphContextReachesSystemMessage:
     """
 
     def test_graph_context_appears_in_system_prompt(self):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         class _Node:
             def __init__(self):
@@ -365,11 +365,11 @@ class TestGraphContextReachesSystemMessage:
             return {"message": {"content": "ok", "role": "assistant"}}
 
         with patch(
-            "jarvis.reply.engine.extract_search_params_for_memory",
+            "claire.reply.engine.extract_search_params_for_memory",
             return_value={"keywords": ["food"], "questions": ["what cuisine does the user enjoy?"]},
-        ), patch("jarvis.memory.graph.GraphMemoryStore", _FakeStore), \
-             patch("jarvis.reply.engine.chat_with_messages", side_effect=fake_chat), \
-             patch("jarvis.tools.selection.select_tools", return_value=[]):
+        ), patch("claire.memory.graph.GraphMemoryStore", _FakeStore), \
+             patch("claire.reply.engine.chat_with_messages", side_effect=fake_chat), \
+             patch("claire.tools.selection.select_tools", return_value=[]):
             run_reply_engine(db=None, cfg=cfg, tts=None, text="what do you know about me?", dialogue_memory=_DM())
 
         system_msgs = [m for m in captured_messages if m.get("role") == "system"]
@@ -400,7 +400,7 @@ class TestDigestMemoryForQuery:
         )
 
     def test_empty_inputs_returns_empty(self):
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         result = digest_memory_for_query(
             diary_entries=[], graph_parts=[], **self._base_kwargs()
@@ -409,10 +409,10 @@ class TestDigestMemoryForQuery:
 
     def test_short_input_passes_through_unchanged(self):
         """Below _DIGEST_MIN_CHARS, the raw block is already cheap; no LLM call."""
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         short_entry = "[2026-04-20] Brief chat about coffee."
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_llm:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_llm:
             result = digest_memory_for_query(
                 diary_entries=[short_entry], graph_parts=[], **self._base_kwargs()
             )
@@ -421,11 +421,11 @@ class TestDigestMemoryForQuery:
         assert short_entry in result
 
     def test_none_sentinel_returns_empty(self):
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         big_entry = "[2026-04-20] " + ("x " * 300)
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="NONE",
         ):
             result = digest_memory_for_query(
@@ -434,12 +434,12 @@ class TestDigestMemoryForQuery:
         assert result == ""
 
     def test_bracketed_none_variants_return_empty(self):
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         big_entry = "[2026-04-20] " + ("x " * 300)
         for variant in ["(NONE)", "[NONE]", "none.", "N/A"]:
             with patch(
-                "jarvis.reply.enrichment.call_llm_direct",
+                "claire.reply.enrichment.call_llm_direct",
                 return_value=variant,
             ):
                 result = digest_memory_for_query(
@@ -448,11 +448,11 @@ class TestDigestMemoryForQuery:
             assert result == "", f"Variant {variant!r} should yield empty digest"
 
     def test_returns_digest_when_model_finds_relevance(self):
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         big_entry = "[2026-04-20] Long cooking chat. " + ("detail " * 100)
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="User previously discussed cooking Thai curry on 2026-04-20.",
         ):
             result = digest_memory_for_query(
@@ -461,7 +461,7 @@ class TestDigestMemoryForQuery:
         assert "cooking Thai curry" in result
 
     def test_truncates_oversized_digest(self):
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _DIGEST_MAX_CHARS,
             digest_memory_for_query,
         )
@@ -469,7 +469,7 @@ class TestDigestMemoryForQuery:
         big_entry = "[2026-04-20] " + ("x " * 300)
         overflow = "A " * 600  # 1200 chars — well past _DIGEST_MAX_CHARS
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value=overflow,
         ):
             result = digest_memory_for_query(
@@ -479,11 +479,11 @@ class TestDigestMemoryForQuery:
         assert result.endswith("…")
 
     def test_llm_failure_returns_empty(self):
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         big_entry = "[2026-04-20] " + ("x " * 300)
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=RuntimeError("boom"),
         ):
             result = digest_memory_for_query(
@@ -493,7 +493,7 @@ class TestDigestMemoryForQuery:
 
     def test_batches_when_total_exceeds_cap(self):
         """Dumps larger than _DIGEST_BATCH_MAX_CHARS get split into batches."""
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _DIGEST_BATCH_MAX_CHARS,
             digest_memory_for_query,
         )
@@ -513,7 +513,7 @@ class TestDigestMemoryForQuery:
             return "NONE" if call_count["n"] % 2 == 0 else f"Note {call_count['n']}."
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=fake_llm,
         ):
             result = digest_memory_for_query(
@@ -527,12 +527,12 @@ class TestDigestMemoryForQuery:
 
     def test_graph_parts_alone_produce_digest(self):
         """Graph is in beta and optional — exercise the graph-only path."""
-        from jarvis.reply.enrichment import digest_memory_for_query
+        from claire.reply.enrichment import digest_memory_for_query
 
         # Pad with enough chars to clear the MIN threshold.
         graph = ["[Preferences > Food] " + ("User loves ramen. " * 40)]
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="User enjoys ramen.",
         ):
             result = digest_memory_for_query(
@@ -582,9 +582,9 @@ class TestDigestToolResultForQuery:
         return body
 
     def test_empty_input_returns_empty(self):
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_llm:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_llm:
             result = digest_tool_result_for_query(
                 tool_result="", **self._base_kwargs()
             )
@@ -593,9 +593,9 @@ class TestDigestToolResultForQuery:
 
     def test_whitespace_only_input_returns_empty(self):
         """Whitespace-only tool output collapses to empty before any LLM call."""
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_llm:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_llm:
             result = digest_tool_result_for_query(
                 tool_result="   \n\n   \t   ", **self._base_kwargs()
             )
@@ -604,10 +604,10 @@ class TestDigestToolResultForQuery:
 
     def test_short_result_passes_through_unchanged(self):
         """Below _TOOL_DIGEST_MIN_CHARS, the raw text is cheap; no LLM call."""
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
         short_result = "Weather: 14 °C and cloudy in London."
-        with patch("jarvis.reply.enrichment.call_llm_direct") as mock_llm:
+        with patch("claire.reply.enrichment.call_llm_direct") as mock_llm:
             result = digest_tool_result_for_query(
                 tool_result=short_result, **self._base_kwargs()
             )
@@ -615,10 +615,10 @@ class TestDigestToolResultForQuery:
         assert result == short_result
 
     def test_none_sentinel_returns_empty(self):
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="NONE",
         ):
             result = digest_tool_result_for_query(
@@ -628,7 +628,7 @@ class TestDigestToolResultForQuery:
 
     def test_returns_digest_with_source_attribution_preserved(self):
         """The digest must keep a source framing, not present bare facts."""
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
         distilled = (
             "According to the web extract, Possessor is a 2020 Canadian "
@@ -637,7 +637,7 @@ class TestDigestToolResultForQuery:
             "Christopher Abbott."
         )
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value=distilled,
         ):
             result = digest_tool_result_for_query(
@@ -650,10 +650,10 @@ class TestDigestToolResultForQuery:
         assert "according to" in result.lower() or "web extract" in result.lower()
 
     def test_llm_failure_returns_empty(self):
-        from jarvis.reply.enrichment import digest_tool_result_for_query
+        from claire.reply.enrichment import digest_tool_result_for_query
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=RuntimeError("boom"),
         ):
             result = digest_tool_result_for_query(
@@ -664,14 +664,14 @@ class TestDigestToolResultForQuery:
         assert result == ""
 
     def test_truncates_oversized_digest(self):
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _TOOL_DIGEST_MAX_CHARS,
             digest_tool_result_for_query,
         )
 
         overflow = "A " * 600  # 1200 chars — past _TOOL_DIGEST_MAX_CHARS
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value=overflow,
         ):
             result = digest_tool_result_for_query(
@@ -682,7 +682,7 @@ class TestDigestToolResultForQuery:
 
     def test_batches_when_total_exceeds_cap(self):
         """Payloads past _TOOL_DIGEST_BATCH_MAX_CHARS are split into chunks."""
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _TOOL_DIGEST_BATCH_MAX_CHARS,
             digest_tool_result_for_query,
         )
@@ -706,7 +706,7 @@ class TestDigestToolResultForQuery:
             )
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=fake_llm,
         ):
             result = digest_tool_result_for_query(
@@ -718,7 +718,7 @@ class TestDigestToolResultForQuery:
 
     def test_multi_batch_llm_failure_returns_empty(self):
         """If every chunk's distil raises, the combined digest collapses to empty."""
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _TOOL_DIGEST_BATCH_MAX_CHARS,
             digest_tool_result_for_query,
         )
@@ -728,7 +728,7 @@ class TestDigestToolResultForQuery:
         assert len(payload) > _TOOL_DIGEST_BATCH_MAX_CHARS
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=RuntimeError("upstream flake"),
         ):
             result = digest_tool_result_for_query(
@@ -738,7 +738,7 @@ class TestDigestToolResultForQuery:
 
     def test_multi_batch_partial_llm_failure_keeps_surviving_notes(self):
         """A single chunk raising must not abort the whole digest."""
-        from jarvis.reply.enrichment import (
+        from claire.reply.enrichment import (
             _TOOL_DIGEST_BATCH_MAX_CHARS,
             digest_tool_result_for_query,
         )
@@ -756,7 +756,7 @@ class TestDigestToolResultForQuery:
             return f"According to the tool output, note {calls['n']}."
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             side_effect=fake_llm,
         ):
             result = digest_tool_result_for_query(
@@ -793,7 +793,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(tool_result_digest_enabled=False)
         raw = "some tool output" * 100
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = _maybe_digest_tool_result(
                 cfg=cfg, query="q", tool_name="webSearch", raw_tool_result=raw,
@@ -806,7 +806,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(ollama_chat_model="llama3.1:70b")
         raw = "payload " * 200
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = _maybe_digest_tool_result(
                 cfg=cfg, query="q", tool_name="webSearch", raw_tool_result=raw,
@@ -818,7 +818,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(ollama_chat_model="gemma4:e2b")
         raw = "payload " * 200
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="According to the tool output, Y.",
         ):
             out = _maybe_digest_tool_result(
@@ -830,7 +830,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(tool_result_digest_enabled=True)
         raw = "payload " * 200
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="NONE",
         ):
             out = _maybe_digest_tool_result(
@@ -842,7 +842,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(tool_result_digest_enabled=True)
         raw = "payload " * 200
         with patch(
-            "jarvis.reply.enrichment.digest_tool_result_for_query",
+            "claire.reply.enrichment.digest_tool_result_for_query",
             side_effect=RuntimeError("boom"),
         ):
             out = _maybe_digest_tool_result(
@@ -854,7 +854,7 @@ class TestMaybeDigestToolResult:
         cfg = self._cfg(tool_result_digest_enabled=True)
         short = "14 °C and cloudy."
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = _maybe_digest_tool_result(
                 cfg=cfg, query="q", tool_name="getWeather", raw_tool_result=short,
@@ -877,9 +877,9 @@ class TestMaybeDigestToolResult:
         # short-circuit — we're proving the per-tool skip wins.
         raw = "Forecast for London: " + ("sunny 18C; " * 500)
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm, patch(
-            "jarvis.reply.enrichment.digest_tool_result_for_query"
+            "claire.reply.enrichment.digest_tool_result_for_query"
         ) as mock_digest:
             out = _maybe_digest_tool_result(
                 cfg=cfg, query="weather this week",
@@ -907,7 +907,7 @@ class TestDigestLoopForMaxTurns:
         return SimpleNamespace(**base)
 
     def test_happy_path_returns_cleaned_reply_and_prompt_includes_query(self):
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         captured = {}
 
@@ -927,7 +927,7 @@ class TestDigestLoopForMaxTurns:
             {"role": "assistant", "content": "Let me also check tomorrow."},
         ]
 
-        with patch("jarvis.reply.enrichment.call_llm_direct",
+        with patch("claire.reply.enrichment.call_llm_direct",
                    side_effect=fake_call):
             out = digest_loop_for_max_turns(
                 user_query="what's the weather in London this week?",
@@ -943,10 +943,10 @@ class TestDigestLoopForMaxTurns:
         assert captured["timeout_sec"] == 8.0
 
     def test_em_dash_is_scrubbed_from_output(self):
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct",
+            "claire.reply.enrichment.call_llm_direct",
             return_value="I didn't finish — here's what I found so far.",
         ):
             out = digest_loop_for_max_turns(
@@ -959,13 +959,13 @@ class TestDigestLoopForMaxTurns:
         assert "—" not in out
 
     def test_llm_failure_returns_none(self):
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         def boom(**_kwargs):
             raise TimeoutError("llm timed out")
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct", side_effect=boom
+            "claire.reply.enrichment.call_llm_direct", side_effect=boom
         ):
             out = digest_loop_for_max_turns(
                 user_query="hello",
@@ -976,10 +976,10 @@ class TestDigestLoopForMaxTurns:
         assert out is None
 
     def test_empty_llm_response_returns_none(self):
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct", return_value=""
+            "claire.reply.enrichment.call_llm_direct", return_value=""
         ):
             out = digest_loop_for_max_turns(
                 user_query="hello",
@@ -990,10 +990,10 @@ class TestDigestLoopForMaxTurns:
         assert out is None
 
     def test_no_loop_activity_returns_none_without_calling_llm(self):
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = digest_loop_for_max_turns(
                 user_query="hello",
@@ -1009,10 +1009,10 @@ class TestDigestLoopForMaxTurns:
         it must short-circuit to None rather than calling the backend with
         an empty model name. The factory itself is fail-soft (it always
         builds a backend), so the chat_model gate is what guards the call."""
-        from jarvis.reply.enrichment import digest_loop_for_max_turns
+        from claire.reply.enrichment import digest_loop_for_max_turns
 
         with patch(
-            "jarvis.reply.enrichment.call_llm_direct"
+            "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = digest_loop_for_max_turns(
                 user_query="hello",

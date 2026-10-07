@@ -1,10 +1,10 @@
 # Setup Wizard Specification
 
-First-run wizard that sets up Whisper and a local model provider before Jarvis starts.
+First-run wizard that sets up Whisper and a local model provider before Claire starts.
 
 ## Overview
 
-The setup wizard is shown only when **user action is required** — it is not shown merely because the Ollama server isn't running (Jarvis can auto-start it), unless auto-start has already been attempted and failed. The triggers are:
+The setup wizard is shown only when **user action is required** — it is not shown merely because the Ollama server isn't running (Claire can auto-start it), unless auto-start has already been attempted and failed. The triggers are:
 
 1. Ollama CLI is not installed.
 2. Ollama server is running but required models are missing.

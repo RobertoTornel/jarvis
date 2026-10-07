@@ -1,10 +1,16 @@
 Data privacy comes first, always.
 
-Jarvis is offline-first by principle. Do not add integrations that depend on a specific proprietary cloud vendor (e.g. ElevenLabs TTS, or any SaaS that requires shipping user audio/text/data to a third party's servers), not even as an opt-in feature. The line is the offline path: a backend is acceptable only if it can run fully locally. Generic, self-hostable protocols where the user points at their own endpoint (Ollama, OpenAI-compatible servers, LM Studio) are fine precisely because they can be local; a vendor-locked cloud service with no local option is not. When a feature request asks for such a service, decline it on principle and redirect to the offline equivalent (e.g. better local TTS voices rather than cloud TTS).
+Claire is a personal fork of `isair/jarvis`, and cloud services are allowed and expected here. This fork deliberately drops upstream's offline-first stance: reach for cloud backends where they give the best result instead of declining a vendor-locked service on principle. The rules that keep that safe:
 
-All user-facing command line output should make use of emojis. Especially an initial emoji to start off the lines that depict what the line is about. Output should make use of indentation spacing to establish a visual hierarchy and aim to make output as easy to sift through as possible. Exception: Windows .bat scripts cannot use emojis (cmd.exe doesn't render Unicode properly).
+- **All LLM traffic goes through OmniRouter** at `http://127.0.0.1:20129/v1` (an OpenAI-compatible endpoint). The API key comes from the `OMNIROUTE_API_KEY` environment variable and is never written into a repository file or a config file.
+- **Speech synthesis is Fish Audio** with a cloned voice. `piper` and `chatterbox` remain in place as offline fallbacks.
+- **Vision goes through OmniRouter's multimodal routes**, not a direct vendor SDK.
+- **Secrets live in the OS keychain** (`keyring`) or in `0600` files outside the repository. Never print, log, commit, or echo a secret value, and never interpolate one into an error message; tool results and panel reads expose at most the last four characters plus a fingerprint.
+- **Never claim an action you did not perform.** If a transport cannot send, or a call cannot be placed, say exactly that rather than reporting success.
 
-Any important point in our logical flows should have debug logs using the `debug_log` method from `src/jarvis/debug.py`. Avoid excessive logging to keep the logs easily readable and actionable.
+All user-facing command line output should make use of emojis. Especially an initial emoji to start off the lines that depict what the line is about. Output should make use of indentation spacing to establish a visual hierarchy and aim to make output as easy to sift through as possible.
+
+Any important point in our logical flows should have debug logs using the `debug_log` method from `src/claire/debug.py`. Avoid excessive logging to keep the logs easily readable and actionable.
 
 Any code change must either adhere to our spec files perfectly or you should ask the user to confirm changes, which should also propagate to the specs themselves. Spec files follow the \*.spec.md format and live next to the code that implements them. Always search for related spec files before starting any work. When corrected about how something should work, check if there's a spec for it and whether it needs updating.
 
@@ -12,33 +18,31 @@ Any code change must either adhere to our spec files perfectly or you should ask
 
 | Spec file | Covers | Key principles |
 |-----------|--------|----------------|
-| `src/desktop_app/desktop_app.spec.md` | System tray app, startup flow, daemon integration, windows, theme, updates | Desktop is separate from core; jarvis has no knowledge of desktop_app |
+| `src/desktop_app/desktop_app.spec.md` | System tray app, startup flow, daemon integration, windows, theme, updates | Desktop is separate from core; claire has no knowledge of desktop_app |
 | `src/desktop_app/settings_window.spec.md` | Auto-generated settings UI from config metadata | Metadata-driven; only non-default values written; preserves unknown keys |
 | `src/desktop_app/setup_wizard.spec.md` | First-run wizard (Ollama, models, Whisper, location) | Minimal friction; only shown when user action required; doesn't configure everything |
 | `src/desktop_app/chat_window.spec.md` | Text chat interface alongside voice; shared conversation, no TTS, bundled callbacks + subprocess IPC | One conversation for voice + text; text never speaks; redaction shared with voice path |
-| `src/jarvis/dictation/dictation.spec.md` | Hold-to-dictate engine, hotkey, clipboard paste | Independent from assistant pipeline; shared Whisper model; pause flag on listener |
-| `src/jarvis/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline | — |
-| `src/jarvis/reply/reply.spec.md` | LLM reply generation, tool use, profiles | Tools return raw data; profiles handle formatting |
-| `src/jarvis/reply/evaluator.spec.md` | **Deprecated** — evaluator no longer runs in the reply engine; preserved for reference | Replaced by the planner; see planner.spec.md |
-| `src/jarvis/reply/planner.spec.md` | Task-list planner: pre-loop query decomposition + direct-exec step resolver for small models | Fail-open; rides warm small model chain; advisory for large models, direct-exec for small |
-| `src/jarvis/tools/builtin/local_files.spec.md` | Local file operations and listing boundaries | Home-directory confinement; literal UTF-8 content; boolean recursion |
-| `src/jarvis/tools/builtin/tool_search.spec.md` | toolSearchTool escape hatch for mid-loop tool routing | Re-runs the same router; never removes stop/self; capped per reply |
-| `src/jarvis/tools/external/mcp_runtime.spec.md` | Persistent MCP runtime: per-server long-lived stdio session, queue-based dispatch, retry on transient session loss | One worker per server keyed by config; calls to the same server serialise; `MCPServerSessionError` for session-level failures; opt-in `idle_timeout_sec` for stateless servers |
-| `src/jarvis/reply/prompts/prompts.spec.md` | System/user prompt templates | — |
-| `src/jarvis/tools/builtin/web_search.spec.md` | webSearch tool: cascade fetch, SSRF guard, prompt-injection fence, links-only envelope | Untrusted web content is fenced as data, not instructions; rank preference over speed; honest failure over confabulation |
-| `src/jarvis/tools/builtin/fetch_web_page.spec.md` | Supplied-URL page fetching, bounded download, HTML and raw-text extraction | Stream decoded content before parsing; reject oversized pages without partial results |
-| `src/jarvis/tools/builtin/nutrition/log_meal.spec.md` | logMeal tool: single-property schema for planner fast-path, internal nutrition extraction, untrusted-data fence, follow-ups | Public schema is a single optional `meal` string; nutrition fields are internal; user text is fenced as data |
-| `src/jarvis/utils/location.spec.md` | GeoIP location detection | Privacy-first; local GeoLite2 DB only |
-| `src/jarvis/memory/graph.spec.md` | Node graph memory (v2), self-organising tree, UI explorer | Dynamic structure; access-aware; auto-split/merge (future) |
-| `src/jarvis/memory/summariser.spec.md` | Diary summariser prompt contract, hygiene rules (deflection, attribution, topic separation), post-process scrub, and bulk-sweep clean button | Two-layer defence: prompt + deterministic scrub; corrupted summaries poison every downstream consumer |
-| `src/jarvis/memory/recall_gate.spec.md` | Deterministic skip-enrichment heuristic when the hot window covers a follow-up | Fail-open; language-agnostic via `\w{3,}` + `re.UNICODE`; planner intent always wins |
-| `src/jarvis/llm/llm.spec.md` | Pluggable LLM backend abstraction: `LLMBackend` ABC, `OllamaBackend`, `OpenAICompatibleBackend`, factory dispatch on `llm_provider`, `get_embedding_backend` override, config migrations, the two-tier model system (`Tier.FAST` / `Tier.CHAT` via `resolve_model`), function-style helpers | Provider-agnostic interface so Jarvis can run on Ollama, OpenAI-compatible (LM Studio / oMLX / llama.cpp / vLLM / LocalAI), or Anthropic-compatible servers; every context states its tier instead of defining a model fallback chain |
+| `src/claire/listening/listening.spec.md` | Voice listener, wake word detection, audio pipeline | — |
+| `src/claire/reply/reply.spec.md` | LLM reply generation, tool use, profiles | Tools return raw data; profiles handle formatting |
+| `src/claire/reply/planner.spec.md` | Task-list planner: pre-loop query decomposition + direct-exec step resolver for small models | Fail-open; rides warm small model chain; advisory for large models, direct-exec for small |
+| `src/claire/tools/builtin/local_files.spec.md` | Local file operations and listing boundaries | Home-directory confinement; literal UTF-8 content; boolean recursion |
+| `src/claire/tools/builtin/tool_search.spec.md` | toolSearchTool escape hatch for mid-loop tool routing | Re-runs the same router; never removes stop/self; capped per reply |
+| `src/claire/tools/external/mcp_runtime.spec.md` | Persistent MCP runtime: per-server long-lived stdio session, queue-based dispatch, retry on transient session loss | One worker per server keyed by config; calls to the same server serialise; `MCPServerSessionError` for session-level failures; opt-in `idle_timeout_sec` for stateless servers |
+| `src/claire/reply/prompts/prompts.spec.md` | System/user prompt templates | — |
+| `src/claire/tools/builtin/web_search.spec.md` | webSearch tool: cascade fetch, SSRF guard, prompt-injection fence, links-only envelope | Untrusted web content is fenced as data, not instructions; rank preference over speed; honest failure over confabulation |
+| `src/claire/tools/builtin/fetch_web_page.spec.md` | Supplied-URL page fetching, bounded download, HTML and raw-text extraction | Stream decoded content before parsing; reject oversized pages without partial results |
+| `src/claire/tools/builtin/nutrition/log_meal.spec.md` | logMeal tool: single-property schema for planner fast-path, internal nutrition extraction, untrusted-data fence, follow-ups | Public schema is a single optional `meal` string; nutrition fields are internal; user text is fenced as data |
+| `src/claire/utils/location.spec.md` | GeoIP location detection | Privacy-first; local GeoLite2 DB only |
+| `src/claire/memory/graph.spec.md` | Node graph memory (v2), self-organising tree, UI explorer | Dynamic structure; access-aware; auto-split/merge (future) |
+| `src/claire/memory/summariser.spec.md` | Diary summariser prompt contract, hygiene rules (deflection, attribution, topic separation), post-process scrub, and bulk-sweep clean button | Two-layer defence: prompt + deterministic scrub; corrupted summaries poison every downstream consumer |
+| `src/claire/memory/recall_gate.spec.md` | Deterministic skip-enrichment heuristic when the hot window covers a follow-up | Fail-open; language-agnostic via `\w{3,}` + `re.UNICODE`; planner intent always wins |
+| `src/claire/llm/llm.spec.md` | Pluggable LLM backend abstraction: `LLMBackend` ABC, `OllamaBackend`, `OpenAICompatibleBackend`, factory dispatch on `llm_provider`, `get_embedding_backend` override, config migrations, the two-tier model system (`Tier.FAST` / `Tier.CHAT` via `resolve_model`), function-style helpers | Provider-agnostic interface so Claire can run on Ollama, OpenAI-compatible (LM Studio / oMLX / llama.cpp / vLLM / LocalAI), or Anthropic-compatible servers; every context states its tier instead of defining a model fallback chain |
 
 The LLM contexts graph at `docs/llm_contexts.md` maps every LLM call in the app (model, gating, inputs, outputs, limits, flow). Keep it up-to-date at all times: any change that adds, removes, or alters an LLM context (model resolution, timeout, cap, prompt source, gating flag, data-flow edge) must update `docs/llm_contexts.md` in the same PR.
 
 Avoid hardcoded language patterns as this assistant needs to support an arbitrary amount of different languages.
 
-Tools define when/how to be used and return raw data without LLM processing. The unified system prompt in `src/jarvis/system_prompt.py` handles response formatting and personality through the daemon's LLM loop.
+Tools define when/how to be used and return raw data without LLM processing. The unified system prompt in `src/claire/system_prompt.py` handles response formatting and personality through the daemon's LLM loop.
 
 ## Git Workflow
 
@@ -62,10 +66,10 @@ Use the `/triage` skill for triaging open issues and discussions. It owns the fu
 
 ## Development Environment
 
-The project uses a micromamba environment at `.mamba_env/`. Always activate it before running builds, tests, or the app:
+The project is a Linux-only standalone Python app. It uses the virtualenv committed at `.venv/` (there is no conda/micromamba environment); use it for tests, builds, and running the app:
 
 ```bash
-eval "$(micromamba.exe shell hook --shell bash)" && micromamba activate "C:/Users/baris/projects/jarvis/.mamba_env"
+.venv/bin/python -m pytest -q
 ```
 
 ## README Maintenance
@@ -78,7 +82,7 @@ Keep README.md up-to-date when making changes that affect user-facing functional
 - Fixing or introducing known limitations
 
 README priorities (in order of importance):
-1. **Privacy-first messaging** - The local/offline nature is a core selling point
+1. **Privacy-first messaging** - Secrets stay in the OS keychain and transports report honestly
 2. **Quick install** - Users should get running in minutes
 3. **Features list** - High-level capabilities at a glance
 4. **Known limitations** - Be transparent about what doesn't work yet

@@ -32,12 +32,12 @@ class TestDiaryScrubEndpoint:
     def setup_app(self, tmp_path, monkeypatch):
         # Import via the same module paths the endpoint itself uses
         # (no ``src.`` prefix). With both repo-root and ``src/`` on
-        # ``sys.path`` (see ``tests/conftest.py``), ``src.jarvis.x`` and
-        # ``jarvis.x`` resolve to distinct module instances and a
+        # ``sys.path`` (see ``tests/conftest.py``), ``src.claire.x`` and
+        # ``claire.x`` resolve to distinct module instances and a
         # monkeypatch on one does not land on the other.
         from desktop_app import memory_viewer
-        import jarvis.memory.conversation as cmod
-        from jarvis.memory.db import Database
+        import claire.memory.conversation as cmod
+        from claire.memory.db import Database
 
         db_path = str(tmp_path / "test.db")
         # Seed before the endpoint opens its own connection — the
@@ -58,7 +58,7 @@ class TestDiaryScrubEndpoint:
             ),
         ]:
             seed_db.upsert_conversation_summary(
-                date_utc=date_utc, summary=summary, topics=None, source_app="jarvis",
+                date_utc=date_utc, summary=summary, topics=None, source_app="claire",
             )
 
         # Make the endpoint use the seeded path.

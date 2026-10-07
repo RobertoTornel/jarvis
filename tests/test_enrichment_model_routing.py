@@ -17,8 +17,8 @@ import pytest
 
 @pytest.mark.unit
 def test_enrichment_extractor_uses_fast_tier():
-    from jarvis.reply import engine as engine_mod
-    from jarvis.llm import resolve_model, Tier
+    from claire.reply import engine as engine_mod
+    from claire.llm import resolve_model, Tier
 
     captured: dict[str, str] = {}
 

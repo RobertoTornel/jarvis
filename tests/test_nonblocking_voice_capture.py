@@ -1,29 +1,47 @@
 """Microphone frames keep reaching speech detection during slow language work."""
 from dataclasses import replace
 import threading
+
+# These tests assert ORDERING: that completed audio is decoded, and delivered,
+# without waiting for the slow language stage. They do it by blocking that stage
+# and proving the fast path still completes. The numbers therefore encode a
+# RATIO, not a speed expectation, and raising only the deadlines would destroy
+# the test: if BLOCK_SECONDS expired before a deadline, a decoder that really did
+# serialise behind language work would pass by waiting it out. So the block is
+# long and the deadlines are short - but both carry enough headroom for a loaded
+# machine, which the old 3s/1s pair did not. Under the full suite those 1s
+# deadlines failed consistently while passing in isolation: a scheduling delay,
+# not a regression. The product was never slow; the test was impatient.
+BLOCK_SECONDS = 60.0   # the slow stage stays blocked for the whole test
+START_SECONDS = 10.0   # liveness: reach the starting checkpoint
+FAST_SECONDS = 5.0     # the discriminating deadline: must stay well under BLOCK_SECONDS
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from jarvis.config import load_settings
-from jarvis.listening.listener import VoiceListener
-import jarvis.listening.listener as capture
+from claire.config import load_settings
+from claire.listening.listener import VoiceListener
+import claire.listening.listener as capture
 
 pytestmark = pytest.mark.unit
 
 
 @pytest.fixture
 def synthetic_listener(monkeypatch):
+    # ``stt_engine='faster_whisper'`` makes ``_transcribe_audio`` — the
+    # deterministic stub these tests inject — the active decode path. With the
+    # production default (Parakeet) that path is unreachable by design.
     cfg = replace(load_settings(), voice_debug=False, vad_enabled=False,
+                  stt_engine='faster_whisper',
                   whisper_backend='faster-whisper', whisper_device='cpu')
     monkeypatch.setattr(capture, 'create_intent_judge', lambda _cfg: None)
     monkeypatch.setattr(capture, 'FASTER_WHISPER_AVAILABLE', True)
     monkeypatch.setattr(capture, '_load_faster_whisper_model', lambda *a, **kw: MagicMock())
     monkeypatch.setattr(VoiceListener, '_decode_faster_whisper', lambda *a: ([], None))
     monkeypatch.setattr(VoiceListener, '_start_llm_warmup', lambda _self: [])
-    monkeypatch.setattr('desktop_app.face_widget.get_jarvis_state', lambda: MagicMock())
+    monkeypatch.setattr('desktop_app.face_widget.get_claire_state', lambda: MagicMock())
     obj = VoiceListener(MagicMock(), cfg, None, None)
 
     class Stream:
@@ -55,7 +73,7 @@ def test_audio_reaches_vad_while_language_processing_is_blocked(synthetic_listen
 
     def block(*args):
         entered.set()
-        if not release.wait(3):
+        if not release.wait(BLOCK_SECONDS):
             raise AssertionError('Synthetic language work was not released')
 
     if blocked_stage == 'intent':
@@ -77,10 +95,10 @@ def test_audio_reaches_vad_while_language_processing_is_blocked(synthetic_listen
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        assert entered.wait(2), 'Synthetic listener did not reach the slow language stage'
+        assert entered.wait(START_SECONDS), 'Synthetic listener did not reach the slow language stage'
         frames = obj.cfg.sample_rate * obj.cfg.vad_frame_ms // 1000
         obj._on_audio(np.ones((frames, 1), dtype=np.float32) * .1, frames, None, None)
-        assert processed.wait(.5), 'Audio stalled behind intent judging or reply generation'
+        assert processed.wait(FAST_SECONDS), 'Audio stalled behind intent judging or reply generation'
     finally:
         obj.stop()
         release.set()
@@ -89,7 +107,7 @@ def test_audio_reaches_vad_while_language_processing_is_blocked(synthetic_listen
     assert not errors
 
 
-@pytest.mark.parametrize('invalidate', ['shutdown', 'dictation'])
+@pytest.mark.parametrize('invalidate', ['shutdown', 'generation'])
 def test_full_transcript_queue_cancels_pending_delivery(synthetic_listener, invalidate):
     import queue
     obj = synthetic_listener
@@ -102,22 +120,21 @@ def test_full_transcript_queue_cancels_pending_delivery(synthetic_listener, inva
     obj._transcription_results_q = ResultQueue(maxsize=1)
     obj._transcription_results_q.put(object())
     def transcribe(audio):
-        return 'Jarvis hello', 'en', ()
+        return 'Claire hello', 'en', ()
     obj._transcribe_audio = transcribe
     job = SimpleNamespace(audio=np.ones(obj.cfg.sample_rate), start_time=1., end_time=2.,
-                          energy=.1, dictation_generation=0, captured_during_tts=False,
+                          energy=.1, capture_generation=0, captured_during_tts=False,
                           captured_tts_start_time=0.)
     obj._transcription_jobs_q.put(job)
     obj._transcription_jobs_q.put(None)
     worker = threading.Thread(target=obj._run_transcription_worker)
     worker.start()
     try:
-        assert delivering.wait(1)
+        assert delivering.wait(FAST_SECONDS)
         if invalidate == 'shutdown':
             obj.stop()
         else:
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._capture_generation += 1
         worker.join(.4)
         assert not worker.is_alive(), 'Invalidated transcript stayed blocked behind a full result queue'
     finally:
@@ -127,25 +144,24 @@ def test_full_transcript_queue_cancels_pending_delivery(synthetic_listener, inva
     assert not worker.is_alive()
 
 
-@pytest.mark.parametrize('invalidate', ['shutdown', 'dictation'])
+@pytest.mark.parametrize('invalidate', ['shutdown', 'generation'])
 def test_invalidated_intent_result_does_not_start_query(synthetic_listener, invalidate):
-    from jarvis.listening.intent_judge import IntentJudgment
+    from claire.listening.intent_judge import IntentJudgment
     obj = synthetic_listener
     def judge(**kwargs):
         if invalidate == 'shutdown':
             obj.stop()
         else:
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._capture_generation += 1
         return IntentJudgment(directed=True, query='weather', stop=False,
-                              confidence='high', reasoning='Addressed to Jarvis')
+                              confidence='high', reasoning='Addressed to Claire')
     obj._intent_judge = SimpleNamespace(available=True, judge=judge)
-    obj._process_transcript('Jarvis weather', captured_during_tts=False,
-                            captured_tts_start_time=0., generation=obj._dictation_generation)
+    obj._process_transcript('Claire weather', captured_during_tts=False,
+                            captured_tts_start_time=0., generation=obj._capture_generation)
     assert not obj.state_manager.get_pending_query(), 'Invalidated intent was accepted as a new query'
 
 
-@pytest.mark.parametrize('invalidate', ['shutdown', 'dictation'])
+@pytest.mark.parametrize('invalidate', ['shutdown', 'generation'])
 @pytest.mark.parametrize('reply_error', [False, True])
 def test_invalidated_reply_does_not_speak(synthetic_listener, monkeypatch, invalidate, reply_error):
     obj = synthetic_listener
@@ -156,25 +172,23 @@ def test_invalidated_reply_does_not_speak(synthetic_listener, monkeypatch, inval
         if invalidate == 'shutdown':
             obj.stop()
         else:
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._capture_generation += 1
         if reply_error:
             raise RuntimeError('Synthetic reply failure')
         return 'Synthetic reply'
-    monkeypatch.setattr('jarvis.reply.engine.run_reply_engine', reply)
+    monkeypatch.setattr('claire.reply.engine.run_reply_engine', reply)
     obj._dispatch_query('weather')
     assert spoken == [], 'Invalidated voice reply reached speech output'
 
 
-def test_brief_dictation_pause_discards_captured_audio_without_waiting_for_worker(synthetic_listener):
+def test_cleared_buffers_discard_captured_audio_without_waiting_for_worker(synthetic_listener):
     obj = synthetic_listener
     old = np.full(obj.cfg.sample_rate, .1, dtype=np.float32)
     fresh = np.full(obj.cfg.sample_rate, .2, dtype=np.float32)
     obj._utterance_frames = [old]
     obj.is_speech_active = True
     obj._on_audio(old[:, None], len(old), None, None)
-    obj._dictation_active = True
-    obj._dictation_active = False
+    obj._clear_audio_buffers()
     decoded = []
     def transcribe(audio):
         decoded.append(audio.copy())
@@ -186,7 +200,7 @@ def test_brief_dictation_pause_discards_captured_audio_without_waiting_for_worke
     obj._run_transcription_worker()
     assert len(decoded) == 1
     np.testing.assert_array_equal(decoded[0], fresh)
-    assert obj._audio_q.empty(), 'Audio captured before dictation remained queued'
+    assert obj._audio_q.empty(), 'Audio captured before the buffer clear remained queued'
 
 
 @pytest.mark.parametrize('blocked_stage', ['intent', 'reply'])
@@ -197,7 +211,7 @@ def test_completed_audio_is_decoded_fifo_during_language_work(synthetic_listener
     samples = []
     def block(*args):
         entered.set()
-        assert release.wait(3)
+        assert release.wait(BLOCK_SECONDS)
     if blocked_stage == 'intent':
         obj._transcription_results_q.put(object())
         obj._handle_transcription_result = block
@@ -215,11 +229,11 @@ def test_completed_audio_is_decoded_fifo_during_language_work(synthetic_listener
     thread = threading.Thread(target=obj.run)
     thread.start()
     try:
-        assert entered.wait(2)
+        assert entered.wait(START_SECONDS)
         size = obj.cfg.sample_rate * obj.cfg.max_utterance_ms // 1000
         for value in (.1, .2):
             obj._on_audio(np.full((size, 1), value, dtype=np.float32), size, None, None)
-        assert decoded.wait(1), 'Completed speech waited for language work'
+        assert decoded.wait(FAST_SECONDS), 'Completed speech waited for language work'
         assert len(samples) == 2
         for audio, value in zip(samples, (.1, .2)):
             np.testing.assert_array_equal(audio, np.full(size, value, dtype=np.float32))
@@ -244,7 +258,7 @@ def test_reset_discards_remaining_frames_in_an_already_dequeued_batch(synthetic_
             first_batch = False
             yield old
             reached.set()
-            assert resume.wait(2)
+            assert resume.wait(BLOCK_SECONDS)
             yield old
         else:
             yield fresh
@@ -261,11 +275,11 @@ def test_reset_discards_remaining_frames_in_an_already_dequeued_batch(synthetic_
     obj._start_audio_worker(obj.cfg.vad_frame_ms)
     try:
         obj._on_audio(old[:, None], len(old), None, None)
-        assert reached.wait(1)
+        assert reached.wait(START_SECONDS)
         obj._clear_audio_buffers()
         obj._on_audio(fresh[:, None], len(fresh), None, None)
         resume.set()
-        assert decoded.wait(1)
+        assert decoded.wait(FAST_SECONDS)
         assert len(samples) == 1
         np.testing.assert_array_equal(samples[0], np.concatenate([fresh, fresh]))
     finally:
@@ -284,29 +298,28 @@ def test_failed_frame_processing_stops_listener_and_reports_recovery(synthetic_l
     obj._on_audio(np.ones((obj._frame_samples, 1), dtype=np.float32), obj._frame_samples, None, None)
     obj._run_audio_worker(obj.cfg.vad_frame_ms)
     assert obj._should_stop
-    assert 'Restart Jarvis to resume listening' in capsys.readouterr().out
+    assert 'Restart Claire to resume listening' in capsys.readouterr().out
 
 
-def test_pause_after_dequeue_rejects_audio_captured_before_pause(synthetic_listener):
+def test_buffer_clear_after_dequeue_rejects_audio_captured_before_reset(synthetic_listener):
     import queue
     obj = synthetic_listener
     obj._frame_samples = obj.cfg.sample_rate * obj.cfg.vad_frame_ms // 1000
-    class PauseOnDequeue(queue.Queue):
+    class ResetOnDequeue(queue.Queue):
         def get(self, *args, **kwargs):
             if self.empty():
                 obj.stop()
                 raise queue.Empty
             item = super().get(*args, **kwargs)
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._clear_audio_buffers()
             return item
-    obj._audio_q = PauseOnDequeue()
+    obj._audio_q = ResetOnDequeue()
     detected = []
     obj._is_speech_frame = lambda frame: detected.append(frame.copy()) or True
     obj._on_audio(np.full((obj._frame_samples, 1), .125, dtype=np.float32),
                   obj._frame_samples, None, None)
     obj._consume_audio_frames(obj.cfg.vad_frame_ms)
-    assert detected == [], 'Pre-pause audio acquired the post-pause generation'
+    assert detected == [], 'Audio captured before the reset acquired the new generation'
 
 
 def test_discarded_reply_stops_thinking_audio(synthetic_listener, monkeypatch):
@@ -315,16 +328,15 @@ def test_discarded_reply_stops_thinking_audio(synthetic_listener, monkeypatch):
     obj._tune_player = SimpleNamespace(stop_tune=lambda: playing.__setitem__(0, False),
                                       is_playing=lambda: playing[0])
     def reply(*args, **kwargs):
-        obj._dictation_active = True
-        obj._dictation_active = False
+        obj._capture_generation += 1
         return 'Stale reply'
-    monkeypatch.setattr('jarvis.reply.engine.run_reply_engine', reply)
+    monkeypatch.setattr('claire.reply.engine.run_reply_engine', reply)
     obj._dispatch_query('weather')
     assert not playing[0], 'Suppressed reply left thinking audio playing'
 
 
-@pytest.mark.parametrize('invalidate', ['shutdown', 'dictation'])
-def test_pause_during_thinking_tune_teardown_cancels_tts(synthetic_listener, monkeypatch, invalidate):
+@pytest.mark.parametrize('invalidate', ['shutdown', 'generation'])
+def test_invalidation_during_thinking_tune_teardown_cancels_tts(synthetic_listener, monkeypatch, invalidate):
     obj = synthetic_listener
     spoken = []
     obj.tts = SimpleNamespace(enabled=True, is_speaking=lambda: False,
@@ -333,26 +345,24 @@ def test_pause_during_thinking_tune_teardown_cancels_tts(synthetic_listener, mon
         if invalidate == 'shutdown':
             obj.stop()
         else:
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._capture_generation += 1
     obj._tune_player = SimpleNamespace(stop_tune=teardown)
     if invalidate == 'shutdown':
         # Simulate shutdown during the blocking player join without recursive teardown.
         obj._tune_player.stop_tune = lambda: setattr(obj, '_should_stop', True)
-    monkeypatch.setattr('jarvis.reply.engine.run_reply_engine', lambda *a, **kw: 'Stale reply')
+    monkeypatch.setattr('claire.reply.engine.run_reply_engine', lambda *a, **kw: 'Stale reply')
     obj._dispatch_query('weather')
     assert spoken == [], 'Invalidation during tune teardown still queued speech'
 
 
-def test_callback_copy_cannot_relabel_audio_after_pause(synthetic_listener):
+def test_callback_copy_cannot_relabel_audio_after_reset(synthetic_listener):
     obj = synthetic_listener
     obj._frame_samples = obj.cfg.sample_rate * obj.cfg.vad_frame_ms // 1000
-    class PausingInput:
+    class ResettingInput:
         def copy(self):
-            obj._dictation_active = True
-            obj._dictation_active = False
+            obj._clear_audio_buffers()
             return np.full((obj._frame_samples, 1), .125, dtype=np.float32)
-    obj._on_audio(PausingInput(), obj._frame_samples, None, None)
+    obj._on_audio(ResettingInput(), obj._frame_samples, None, None)
     samples = []
     obj._is_speech_frame = lambda frame: samples.append(frame.copy()) or True
     class StopWhenEmpty:
@@ -364,68 +374,67 @@ def test_callback_copy_cannot_relabel_audio_after_pause(synthetic_listener):
             return self.wrapped.get(*args, **kwargs)
     obj._audio_q = StopWhenEmpty(obj._audio_q)
     obj._consume_audio_frames(obj.cfg.vad_frame_ms)
-    assert not samples, 'Pre-pause callback samples entered speech detection'
+    assert not samples, 'Samples from before the reset entered speech detection'
 
 
 def test_transcript_keeps_capture_generation_across_buffer_storage(synthetic_listener):
-    from jarvis.listening.listener import _TranscriptionResult
-    from jarvis.listening.intent_judge import IntentJudgment
+    from claire.listening.listener import _TranscriptionResult
+    from claire.listening.intent_judge import IntentJudgment
     obj = synthetic_listener
     def add(**kwargs):
-        obj._dictation_active = True
-        obj._dictation_active = False
+        obj._capture_generation += 1
     obj._transcript_buffer.add = add
     obj._intent_judge = SimpleNamespace(available=True, judge=lambda **kw:
         IntentJudgment(directed=True, query='weather', stop=False,
-                      confidence='high', reasoning='Addressed to Jarvis'))
-    result = _TranscriptionResult('Jarvis weather', 'en', (), 1., 2., .1,
-                                   obj._dictation_generation, False, 0.)
+                      confidence='high', reasoning='Addressed to Claire'))
+    result = _TranscriptionResult('Claire weather', 'en', (), 1., 2., .1,
+                                   obj._capture_generation, False, 0.)
     obj._handle_transcription_result(result)
     assert not obj.state_manager.get_pending_query(), 'Old transcript adopted a new voice generation'
 
 
 @pytest.mark.parametrize('text', [
-    "I'm talking to Jairus not you.",
-    "I'm talking to Jarvis, not you.",
-    "I told my friend about Jarvis yesterday.",
-    "Jarvis'le konuşuyorum, seninle değil.",
-    "Estoy hablando con Jarvis, no contigo.",
+    "I'm talking to Clair not you.",
+    "I'm talking to Claire, not you.",
+    "I told my friend about Claire yesterday.",
+    "Claire'le konuşuyorum, seninle değil.",
+    "Estoy hablando con Claire, no contigo.",
 ])
 def test_confident_mention_rejection_does_not_start_query(synthetic_listener, text):
-    from jarvis.listening.intent_judge import IntentJudgment
+    from claire.listening.intent_judge import IntentJudgment
     obj = synthetic_listener
     obj._intent_judge = SimpleNamespace(available=True, judge=lambda **kwargs:
         IntentJudgment(directed=False, query='', stop=False, confidence='high',
                        reasoning='Assistant mentioned while addressing another person'))
     obj._process_transcript(text, captured_during_tts=False,
-                            captured_tts_start_time=0., generation=obj._dictation_generation)
+                            captured_tts_start_time=0., generation=obj._capture_generation)
     assert not obj.state_manager.get_pending_query(), 'Mention reached reply collection'
 
 
 @pytest.mark.parametrize('confidence,directed', [('high', True), ('low', False)])
 def test_direct_address_and_inconclusive_fallback_remain_usable(synthetic_listener, confidence, directed):
-    from jarvis.listening.intent_judge import IntentJudgment
+    from claire.listening.intent_judge import IntentJudgment
     obj = synthetic_listener
     obj._intent_judge = SimpleNamespace(available=True, judge=lambda **kwargs:
         IntentJudgment(directed=directed, query='I am tired' if directed else '',
                        stop=False, confidence=confidence, reasoning='Address or uncertainty'))
-    obj._process_transcript('Jarvis I am tired', captured_during_tts=False,
-                            captured_tts_start_time=0., generation=obj._dictation_generation)
+    obj._process_transcript('Claire I am tired', captured_during_tts=False,
+                            captured_tts_start_time=0., generation=obj._capture_generation)
     assert obj.state_manager.get_pending_query(), 'Direct address or fail-open fallback was lost'
 
 
 @pytest.mark.parametrize('text,accepted', [
     ("Doesn't matter if her oppresses A, first joins", False),
     ('the first person joins the game', False),
-    ('Jairus what time is it', True),
-    ('Jarvas what time is it', True),
+    ('Clair what time is it', True),
+    ('Clairee what time is it', True),
 ])
 def test_whole_alias_gate_keeps_ambient_words_out_of_reply_collection(synthetic_listener, text, accepted):
-    from jarvis.listening.intent_judge import IntentJudgment
+    from claire.listening.intent_judge import IntentJudgment
     obj = synthetic_listener
     obj._intent_judge = SimpleNamespace(available=True, judge=lambda **kwargs:
         IntentJudgment(directed=True, query='what time is it', stop=False,
                        confidence='high', reasoning='Synthetic directed decision'))
     obj._process_transcript(text, captured_during_tts=False,
-                            captured_tts_start_time=0., generation=obj._dictation_generation)
+                            captured_tts_start_time=0., generation=obj._capture_generation)
     assert bool(obj.state_manager.get_pending_query()) is accepted

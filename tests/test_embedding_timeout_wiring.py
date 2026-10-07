@@ -40,13 +40,13 @@ def test_tool_search_passes_configured_embedding_timeout_to_select_tools(
         return ["stop"]
 
     monkeypatch.setattr(
-        "jarvis.tools.builtin.tool_search.select_tools", fake_select_tools
+        "claire.tools.builtin.tool_search.select_tools", fake_select_tools
     )
 
     mock_config.llm_embedding_timeout_sec = 42.0
 
-    from jarvis.tools.base import ToolContext
-    from jarvis.tools.builtin.tool_search import ToolSearchTool
+    from claire.tools.base import ToolContext
+    from claire.tools.builtin.tool_search import ToolSearchTool
 
     tool = ToolSearchTool()
     ctx = ToolContext(
@@ -67,8 +67,8 @@ def test_tool_search_passes_configured_embedding_timeout_to_select_tools(
 @pytest.mark.parametrize(
     "module_path",
     [
-        "jarvis.reply.engine",
-        "jarvis.tools.builtin.tool_search",
+        "claire.reply.engine",
+        "claire.tools.builtin.tool_search",
     ],
 )
 def test_no_module_references_misspelt_attribute(module_path):

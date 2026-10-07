@@ -46,7 +46,7 @@ class TestPlannerUsesToolsForTrivialQueriesWhenRouterIncludesThem:
         "query",
         [
             "tell me a joke",
-            "tell me a joke, Jarvis",
+            "tell me a joke, Claire",
             "make me laugh",
             "tell me something funny",
         ],
@@ -54,7 +54,7 @@ class TestPlannerUsesToolsForTrivialQueriesWhenRouterIncludesThem:
     )
     def test_joke_query_plans_websearch(self, query):
         """Joke requests should plan webSearch when it's available."""
-        from jarvis.reply.planner import plan_query
+        from claire.reply.planner import plan_query
 
         plan = plan_query(
             cfg=planner_config(),
@@ -90,7 +90,7 @@ class TestPlannerUsesToolsForTrivialQueriesWhenRouterIncludesThem:
     def test_pure_greeting_still_uses_reply_only(self, query):
         """Pure greetings with no tool-relevant content still get a
         reply-only plan: no external information needed."""
-        from jarvis.reply.planner import plan_query
+        from claire.reply.planner import plan_query
 
         plan = plan_query(
             cfg=planner_config(),

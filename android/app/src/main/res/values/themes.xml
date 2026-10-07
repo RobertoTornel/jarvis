@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Material 3, dark, no action bar: every screen draws its own
+         MaterialToolbar so it can carry a title, a subtitle and a status chip.
+
+         Dark-only rather than DayNight on purpose.  The app is used in a dark room
+         and through a notification shade, and a second light scheme would be a
+         second palette nobody has ever seen.  The roles below are the whole colour
+         system; no layout hard-codes a colour except the four semantic state
+         colours. -->
+    <style name="AppTheme" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">@color/on_accent</item>
+        <item name="colorPrimaryContainer">@color/accent_dim</item>
+        <item name="colorOnPrimaryContainer">@color/text</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorOnSecondary">@color/on_accent</item>
+        <item name="colorSecondaryContainer">@color/surface_high</item>
+        <item name="colorOnSecondaryContainer">@color/text</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/text</item>
+        <item name="colorSurfaceVariant">@color/surface_alt</item>
+        <item name="colorOnSurfaceVariant">@color/text_dim</item>
+        <item name="colorOutline">@color/outline</item>
+        <item name="colorOutlineVariant">@color/outline</item>
+        <item name="colorError">@color/error</item>
+        <item name="colorOnError">@color/bg</item>
+
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text_dim</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <!-- The title line of a screen, next to the icon. -->
+    <style name="ToolbarTitle" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textColor">@color/text</item>
+    </style>
+
+    <style name="ToolbarSubtitle" parent="TextAppearance.Material3.LabelMedium">
+        <item name="android:textColor">@color/text_dim</item>
+    </style>
+
+    <!-- A state row in the status card: "Microphone   listening". -->
+    <style name="StateLabel" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/text_dim</item>
+    </style>
+
+    <style name="StateValue" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="SectionHeader" parent="TextAppearance.Material3.TitleSmall">
+        <item name="android:textColor">@color/accent</item>
+        <item name="android:letterSpacing">0.06</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="MetaText" parent="TextAppearance.Material3.LabelSmall">
+        <item name="android:textColor">@color/text_dim</item>
+    </style>
+
+    <!-- A conversation bubble.  The card is the bubble; the label above it says who
+         is talking, because colour alone is not an accessible signal. -->
+    <style name="BubbleYou" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">@color/bubble_you</item>
+        <item name="cardCornerRadius">16dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="contentPadding">0dp</item>
+    </style>
+
+    <style name="BubbleClaire" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">@color/bubble_claire</item>
+        <item name="cardCornerRadius">16dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="contentPadding">0dp</item>
+    </style>
+
+    <style name="BubbleMeta" parent="Widget.Material3.CardView.Filled">
+        <item name="cardBackgroundColor">@color/bubble_meta</item>
+        <item name="cardCornerRadius">12dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="contentPadding">0dp</item>
+    </style>
+
+    <!-- The small entry beside the header dot. -->
+    <style name="StateEntry" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/text_dim</item>
+    </style>
+
+    <!-- Rows in Settings. -->
+    <style name="SettingsLabel" parent="TextAppearance.Material3.BodyLarge">
+        <item name="android:textColor">@color/text</item>
+    </style>
+
+    <!-- The three hand-actions under the status card, side by side.  Twelve sp and a
+         one-line maximum, because a Material button's default 14sp plus an icon plus
+         its own 24dp horizontal padding does not fit a third of a 360dp-wide screen:
+         the first build wrapped "Photo" onto two lines and clipped it. -->
+    <style name="CompactAction" parent="Widget.Material3.Button.TonalButton">
+        <item name="android:textSize">12sp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">8dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="iconPadding">4dp</item>
+        <item name="iconSize">18dp</item>
+    </style>
+
+    <style name="SettingsHint" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textColor">@color/text_dim</item>
+    </style>
+
+    <!-- One group of settings.  Flat, outlined, and the same radius as the status card
+         on the main screen, so the two screens read as one app. -->
+    <style name="SettingsCard" parent="Widget.Material3.CardView.Outlined">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">8dp</item>
+        <item name="cardBackgroundColor">@color/surface</item>
+        <item name="cardCornerRadius">18dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="strokeColor">@color/outline</item>
+        <item name="strokeWidth">1dp</item>
+    </style>
+
+    <style name="SettingsField" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">10dp</item>
+        <item name="boxBackgroundColor">@color/surface_alt</item>
+    </style>
+
+    <style name="DialogTheme" parent="ThemeOverlay.Material3.MaterialAlertDialog">
+        <item name="colorSurface">@color/surface_alt</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/text_dim</item>
+    </style>
+</resources>

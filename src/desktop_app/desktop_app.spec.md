@@ -1,12 +1,12 @@
 # Desktop App Specification
 
-This document outlines the architecture and behavior of the Jarvis Desktop App - a cross-platform PyQt6 system tray application that provides a graphical interface for the Jarvis voice assistant.
+This document outlines the architecture and behavior of the Claire Desktop App - a cross-platform PyQt6 system tray application that provides a graphical interface for the Claire voice assistant.
 
 ## Overview
 
-The desktop app is a **separate package** from the core `jarvis` module. It depends on `jarvis` for assistant functionality but `jarvis` has no knowledge of or dependency on the desktop app. This separation allows:
+The desktop app is a **separate package** from the core `claire` module. It depends on `claire` for assistant functionality but `claire` has no knowledge of or dependency on the desktop app. This separation allows:
 
-- Running Jarvis headless (CLI/daemon only)
+- Running Claire headless (CLI/daemon only)
 - Building alternative UIs (web, mobile) without modifying core logic
 - Keeping PyQt6 dependencies isolated from the core package
 
@@ -15,7 +15,7 @@ The desktop app is a **separate package** from the core `jarvis` module. It depe
 ```
 src/desktop_app/
 ├── __init__.py          # Package exports, main() entry point
-├── app.py               # JarvisSystemTray, windows, startup flow
+├── app.py               # ClaireSystemTray, windows, startup flow
 ├── splash_screen.py     # Animated startup splash
 ├── setup_wizard.py      # First-run setup wizard
 ├── settings_window.py   # Auto-generated settings UI from config metadata
@@ -70,7 +70,7 @@ flowchart TD
 1. **Splash Screen**: Shows immediately to provide visual feedback while loading. It stays hidden throughout the unreachable-server warning and any setup wizard opened from that warning, then resumes when startup continues (whether the wizard is accepted or cancelled).
 2. **Provider-aware Ollama gating** (`_ollama_runtime_flags` in `app.py`): The Ollama server-start and model-verification steps run only when a local provider actually uses Ollama. A pure OpenAI-compatible setup (chat and embeddings both remote) skips them entirely. `get_required_models()` is provider-aware, so model verification pulls exactly the models that run locally: chat + intent-judge when chat is on Ollama, and the embedding model when embeddings are on Ollama. When chat is on Ollama, a missing model opens the setup wizard; when only embeddings are local (remote chat), a missing embedding model surfaces a clear non-blocking instruction (memory search falls back to keyword matching until it is pulled). The unsupported-chat-model check runs only on the Ollama chat path. `should_show_setup_wizard()` returns False for an OpenAI-compatible chat provider.
 3. **Ollama Auto-Start**: When Ollama is in use and not running, automatically starts it (up to 15s wait). If the wait times out, the setup wizard opens so the user can diagnose connectivity; cancelling the wizard exits the app. The desktop app records ownership only for an Ollama runtime it launches in this session. On app exit, it stops that owned runtime and leaves any pre-existing user-managed Ollama process running.
-3a. **OpenAI-compatible reachability check** (`_check_openai_compat_reachable` in `app.py`): Jarvis cannot start a third-party server the way it starts Ollama, so on a pure OpenAI-compatible setup it checks the server answers `GET /v1/models` and, if not, shows a one-off warning naming the address (never the API key) and pointing to Settings, then continues. The user only otherwise discovers a down server when their first request fails.
+3a. **OpenAI-compatible reachability check** (`_check_openai_compat_reachable` in `app.py`): Claire cannot start a third-party server the way it starts Ollama, so on a pure OpenAI-compatible setup it checks the server answers `GET /v1/models` and, if not, shows a one-off warning naming the address (never the API key) and pointing to Settings, then continues. The user only otherwise discovers a down server when their first request fails.
 4. **Single Instance Lock**: Prevents multiple copies from running simultaneously. If another instance is detected, shows a dialog offering to close the existing instance and start fresh.
 5. **Crash Detection**: Detects previous crashes and offers to submit bug reports
 
@@ -82,15 +82,15 @@ flowchart TD
 
 ## Main Components
 
-### JarvisSystemTray
+### ClaireSystemTray
 
 The central controller that manages:
 
 - **System tray icon** with context menu
-- **Daemon lifecycle** (start/stop the Jarvis voice assistant)
+- **Daemon lifecycle** (start/stop the Claire voice assistant)
 - **Window management** (log viewer, memory viewer, face window)
 - **Update checking** on startup and on-demand
-- **Runtime diagnostics** (`🩺 Runtime Status`): shows whether the assistant is listening, the daemon mode/PID, whether Low Power Mode is active, whether Ollama is needed/running, whether Jarvis owns the current Ollama runtime, active chat/embedding models, and configured MCP server count. The dialog is informational and never starts or stops services.
+- **Runtime diagnostics** (`🩺 Runtime Status`): shows whether the assistant is listening, the daemon mode/PID, whether Low Power Mode is active, whether Ollama is needed/running, whether Claire owns the current Ollama runtime, active chat/embedding models, and configured MCP server count. The dialog is informational and never starts or stops services.
 
 ### Windows
 
@@ -118,7 +118,7 @@ The central controller that manages:
 
 Window visibility is user-controlled: starting or stopping the assistant never shows or hides the log viewer or the face window. The windows open automatically once at app launch; after that the tray menu's `📝 View Logs` and `👤 Show Face` actions are the only controls over their visibility (the diary dialog shown while stopping is raised on top but leaves those windows' visibility untouched).
 
-**Face state follows the daemon lifecycle**: the face animates from states written by the daemon (`JarvisStateManager`, file-backed for cross-process use). Whenever the daemon goes down — the tray's Stop/Start Listening toggle, an unexpected exit, or the setup wizard pausing it — the tray resets the face to `ASLEEP` so it never looks awake while no daemon is running. Starting the daemon lets the daemon's own state writes take over again.
+**Face state follows the daemon lifecycle**: the face animates from states written by the daemon (`ClaireStateManager`, file-backed for cross-process use). Whenever the daemon goes down — the tray's Stop/Start Listening toggle, an unexpected exit, or the setup wizard pausing it — the tray resets the face to `ASLEEP` so it never looks awake while no daemon is running. Starting the daemon lets the daemon's own state writes take over again.
 
 ### Rejected speech feedback
 
@@ -145,13 +145,13 @@ The desktop installs a guard on Qt Cocoa tray activation callbacks after creatin
 
 ### Tray Menu: GPU Library Recovery (Windows)
 
-`cuda_recovery.py` exposes the `🎮 Reinstall GPU libraries` action. The tray adds it only when running on Windows, an NVIDIA driver is detected (`%SystemRoot%\System32\nvcuda.dll` exists), and the bundled `install_cuda.ps1` script is on disk. Clicking it confirms with the user, then re-runs `install_cuda.ps1` via `ShellExecuteW` with the `runas` verb so UAC elevates the process before it writes into `Program Files\Jarvis\cuda`. This is the only user-facing recovery path when the original Inno Setup install of cuBLAS/cuDNN fails — the installer's own task fires once per install and the script's marker file used to make subsequent reinstalls skip the CUDA step. The runtime probe in `jarvis.listening.listener._print_cuda_unavailable_hint` points users at this action by name when it falls back to CPU.
+`cuda_recovery.py` exposes the `🎮 Reinstall GPU libraries` action. The tray adds it only when running on Windows, an NVIDIA driver is detected (`%SystemRoot%\System32\nvcuda.dll` exists), and the bundled `install_cuda.ps1` script is on disk. Clicking it confirms with the user, then re-runs `install_cuda.ps1` via `ShellExecuteW` with the `runas` verb so UAC elevates the process before it writes into `Program Files\Claire\cuda`. This is the only user-facing recovery path when the original Inno Setup install of cuBLAS/cuDNN fails — the installer's own task fires once per install and the script's marker file used to make subsequent reinstalls skip the CUDA step. The runtime probe in `claire.listening.listener._print_cuda_unavailable_hint` points users at this action by name when it falls back to CPU.
 
 The Inno Setup script also runs a `VerifyCudaInstall` hook after the CUDA download task completes. The hook checks for the `.cuda_installed` marker (which `install_cuda.ps1` only writes after every expected DLL is present and SHA-verified) and surfaces a `MsgBox` pointing at `{app}\cuda\install.log` and the tray recovery action when the marker is missing. This is what makes a hidden install failure visible to the user instead of letting the installer report success on a half-installed CUDA tree.
 
 ### DictationHistoryWindow Behaviour
 
-- **Backing store**: File-backed via `DictationHistory` (`src/jarvis/dictation/history.py`); entries are newest-first with `id`, `text`, `timestamp`, `duration`. Disk is the source of truth — the window must not assume its in-memory instance is authoritative.
+- **Backing store**: File-backed via `DictationHistory` (`src/claire/dictation/history.py`); entries are newest-first with `id`, `text`, `timestamp`, `duration`. Disk is the source of truth — the window must not assume its in-memory instance is authoritative.
 - **Hidden windows are inert**: Signals from the dictation engine must not mutate the widget tree while the window is hidden; pending entries are surfaced on next open instead. The engine persists entries regardless, so no data is lost.
 - **On show, reload from disk and rebuild**: The window reads disk state on every show, because the daemon may be in a separate process (subprocess mode) or may have recorded entries while the window was hidden (bundled mode). In-memory state alone is not trusted.
 - **While visible, poll for external writes**: A short interval timer watches the history file's mtime and reloads on change so subprocess-mode dictations appear without requiring a re-open.
@@ -180,7 +180,7 @@ Animated loading screen shown during startup with:
 
 ## Daemon Integration
 
-The desktop app runs the Jarvis daemon in a **QThread** (bundled mode) or **subprocess** (development mode).
+The desktop app runs the Claire daemon in a **QThread** (bundled mode) or **subprocess** (development mode).
 
 ```
 ┌─────────────────────────────────────────┐
@@ -196,7 +196,7 @@ The desktop app runs the Jarvis daemon in a **QThread** (bundled mode) or **subp
 │                   ▼                      │
 │  ┌─────────────────────────────────┐    │
 │  │      DaemonThread (QThread)      │    │
-│  │  - Runs jarvis.daemon.main()     │    │
+│  │  - Runs claire.daemon.main()     │    │
 │  │  - Captures stdout/stderr        │    │
 │  │  - Emits logs to LogViewer       │    │
 │  └─────────────────────────────────┘    │
@@ -265,7 +265,7 @@ COLORS = {
 }
 ```
 
-Components use `JARVIS_THEME_STYLESHEET` for consistent styling across all dialogs and windows.
+Components use `CLAIRE_THEME_STYLESHEET` for consistent styling across all dialogs and windows.
 
 ## Update System
 
@@ -282,9 +282,9 @@ Updates are only available in bundled mode (PyInstaller builds).
 
 | Platform | Strategy |
 |----------|----------|
-| **macOS** | Extracts the update zip with `ditto -x -k` (Python's `zipfile` drops the symlinks Qt/Qt WebEngine frameworks rely on, producing a bundle macOS refuses to launch with "Jarvis.app can't be opened"; the release workflow creates the zip with the matching `ditto -c -k --keepParent`). Falls back to `zipfile.extractall` only when `/usr/bin/ditto` is missing — i.e. unit tests on Linux CI; production macOS always ships ditto, so the fallback never runs in the field. Then creates a shell script that waits for the current process (by PID via `kill -0`) to exit, moves the old `.app` aside to `Jarvis.app.backup` (one-generation rollback), moves the new bundle in, strips `com.apple.quarantine` so Gatekeeper doesn't re-prompt on unsigned builds, re-registers the swapped bundle with `lsregister -f` (LaunchServices caches the old inode across the `mv` and a bare `open` silently no-ops otherwise), relaunches with `open -n`, and falls back to execing the bundle's inner binary via `nohup` if `open` fails. Script output is captured to `~/Library/Logs/Jarvis/updater.log` (size-capped) so detached failures leave a diagnostic trail. The executable name is read from the new bundle's `CFBundleExecutable`, not hardcoded. No Finder/AppleScript automation. Pattern mirrors Squirrel.Mac's `ShipIt` helper. |
+| **macOS** | Extracts the update zip with `ditto -x -k` (Python's `zipfile` drops the symlinks Qt/Qt WebEngine frameworks rely on, producing a bundle macOS refuses to launch with "Claire.app can't be opened"; the release workflow creates the zip with the matching `ditto -c -k --keepParent`). Falls back to `zipfile.extractall` only when `/usr/bin/ditto` is missing — i.e. unit tests on Linux CI; production macOS always ships ditto, so the fallback never runs in the field. Then creates a shell script that waits for the current process (by PID via `kill -0`) to exit, moves the old `.app` aside to `Claire.app.backup` (one-generation rollback), moves the new bundle in, strips `com.apple.quarantine` so Gatekeeper doesn't re-prompt on unsigned builds, re-registers the swapped bundle with `lsregister -f` (LaunchServices caches the old inode across the `mv` and a bare `open` silently no-ops otherwise), relaunches with `open -n`, and falls back to execing the bundle's inner binary via `nohup` if `open` fails. Script output is captured to `~/Library/Logs/Claire/updater.log` (size-capped) so detached failures leave a diagnostic trail. The executable name is read from the new bundle's `CFBundleExecutable`, not hardcoded. No Finder/AppleScript automation. Pattern mirrors Squirrel.Mac's `ShipIt` helper. |
 | **Windows** | Creates a batch script that waits for the current process (by PID via `tasklist`) to exit, then runs the Inno Setup installer with `/SILENT` so the installer's own progress window provides visual feedback during install, then relaunches the upgraded exe. Rollback is handled by Inno Setup's own in-session rollback + retained uninstaller data. |
-| **Linux** | Creates a shell script that waits for the current process (by PID via `kill -0`) to exit, moves the old directory to `Jarvis.backup` for rollback, moves the new directory in, and relaunches |
+| **Linux** | Creates a shell script that waits for the current process (by PID via `kill -0`) to exit, moves the old directory to `Claire.backup` for rollback, moves the new directory in, and relaunches |
 
 ### Update Flow (Windows/Linux)
 
@@ -341,7 +341,7 @@ A Flask-based web interface for browsing conversation history:
 stack faulthandler cannot capture — it only dumps Python frames, which for
 the abort family (#584/#575/#576) shows nothing but the main thread parked
 in `app.exec()`. On macOS the OS still writes a full report with native
-frames to `~/Library/Logs/DiagnosticReports/Jarvis-*.ips`. On the next
+frames to `~/Library/Logs/DiagnosticReports/Claire-*.ips`. On the next
 launch, `collect_macos_crash_report()` finds the newest report newer than
 the previous crash log and appends its exception type, termination
 indicator and the crashed thread's top native frames to the crash-dialog
@@ -360,7 +360,7 @@ content and the report-issue body, so these aborts become diagnosable.
 |---------|-------|---------|-------|
 | Tray icon | Native menu bar | System tray | System tray |
 | Ollama start | `open -a Ollama` | `ollama serve` (hidden) | `ollama serve` |
-| Crash logs | `~/Library/Logs/Jarvis` | `%LOCALAPPDATA%\Jarvis` | `~/.jarvis` |
+| Crash logs | `~/Library/Logs/Claire` | `%LOCALAPPDATA%\Claire` | `~/.claire` |
 | Memory viewer | System browser* | Embedded WebEngine | Embedded WebEngine |
 
 *macOS bundled apps use system browser due to QtWebEngine sandbox issues.
@@ -369,10 +369,10 @@ content and the report-issue body, so these aborts become diagnosable.
 
 | File | macOS | Windows | Linux |
 |------|-------|---------|-------|
-| Config | `~/.config/jarvis/` | `%APPDATA%\jarvis\` | `~/.config/jarvis/` |
-| Database | `~/.local/share/jarvis/` | `%LOCALAPPDATA%\jarvis\` | `~/.local/share/jarvis/` |
-| Crash logs | `~/Library/Logs/Jarvis/` | `%LOCALAPPDATA%\Jarvis\` | `~/.jarvis/` |
-| Instance lock | `~/Library/Application Support/Jarvis/` | `%LOCALAPPDATA%\Jarvis\` | `~/.jarvis/` |
+| Config | `~/.config/claire/` | `%APPDATA%\claire\` | `~/.config/claire/` |
+| Database | `~/.local/share/claire/` | `%LOCALAPPDATA%\claire\` | `~/.local/share/claire/` |
+| Crash logs | `~/Library/Logs/Claire/` | `%LOCALAPPDATA%\Claire\` | `~/.claire/` |
+| Instance lock | `~/Library/Application Support/Claire/` | `%LOCALAPPDATA%\Claire\` | `~/.claire/` |
 
 ## Apple Silicon speech packaging
 

@@ -22,8 +22,15 @@ def _mock_input_devices(audio, devices):
 
 
 def _create_mock_config(**kwargs):
-    """Create a mock config object with default values for voice listener tests."""
+    """Create a mock config object with default values for voice listener tests.
+
+    ``stt_engine`` defaults to ``"faster_whisper"`` here because this module's
+    tests exercise the opt-in Whisper load path; Parakeet is the production
+    default and a Parakeet-configured listener never loads Whisper at all.
+    """
     mock_cfg = MagicMock()
+    mock_cfg.stt_engine = kwargs.get("stt_engine", "faster_whisper")
+    mock_cfg.stt_model_path = kwargs.get("stt_model_path", "")
     mock_cfg.whisper_model = kwargs.get("whisper_model", "small")
     mock_cfg.whisper_device = kwargs.get("whisper_device", "auto")
     mock_cfg.whisper_compute_type = kwargs.get("whisper_compute_type", "int8")
@@ -39,7 +46,7 @@ def _create_mock_config(**kwargs):
     mock_cfg.voice_device = kwargs.get("voice_device", None)
     mock_cfg.voice_debug = kwargs.get("voice_debug", False)
     mock_cfg.vad_frame_ms = kwargs.get("vad_frame_ms", 20)
-    from jarvis.config import get_default_config
+    from claire.config import get_default_config
     defaults = get_default_config()
     mock_cfg.max_utterance_ms = kwargs.get("max_utterance_ms", defaults["max_utterance_ms"])
     mock_cfg.tts_max_utterance_ms = kwargs.get("tts_max_utterance_ms", defaults["tts_max_utterance_ms"])
@@ -55,17 +62,17 @@ class TestWhisperComputeTypeFallback:
         mock_whisper_model = MagicMock()
 
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             # Mock query_devices to return a fake input device
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_compute_type="int8")
@@ -93,16 +100,16 @@ class TestWhisperComputeTypeFallback:
             return mock_whisper_model
 
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_compute_type="int8")
@@ -131,16 +138,16 @@ class TestWhisperComputeTypeFallback:
             return mock_whisper_model
 
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_compute_type="int8")
@@ -164,16 +171,16 @@ class TestWhisperComputeTypeFallback:
     def test_no_fallback_for_non_compute_type_errors(self):
         """When error is not about compute type, doesn't try fallback."""
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError("Model not found: invalid_model")
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_compute_type="int8")
@@ -195,14 +202,14 @@ class TestWhisperComputeTypeFallback:
             raise RuntimeError(f"Requested {compute_type} compute type, but not supported.")
 
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_compute_type="int8")
@@ -226,16 +233,16 @@ class TestWhisperComputeTypeFallback:
             return mock_whisper_model
 
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             # Config specifies float16 instead of int8
@@ -258,16 +265,16 @@ class TestWhisperComputeTypeFallback:
     def test_float32_config_no_fallback_needed(self):
         """When config is float32, tries float32 on auto then cpu."""
         # Mock sys.platform to skip Windows CUDA check
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError("Requested float32 compute type, but not supported.")
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             # Config specifies float32
@@ -292,13 +299,13 @@ class TestWindowsCudaDetection:
     """Tests for Windows CUDA detection logic."""
 
     def setup_method(self):
-        from jarvis.listening import listener
+        from claire.listening import listener
         listener._probe_cuda_available.cache_clear()
 
     def test_setup_nvidia_dll_path_adds_pip_package_dirs(self):
         """_setup_nvidia_dll_path adds NVIDIA pip package bin dirs to PATH."""
         import os
-        from jarvis.listening.listener import _setup_nvidia_dll_path
+        from claire.listening.listener import _setup_nvidia_dll_path
 
         original_path = os.environ.get("PATH", "")
 
@@ -337,11 +344,11 @@ class TestWindowsCudaDetection:
         """When neither cuBLAS nor cuDNN can be loaded, the probe forces CPU."""
         mock_ctypes = MagicMock()
         mock_ctypes.CDLL.side_effect = OSError("not found")
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "win32"
-            with patch("jarvis.listening.listener._setup_nvidia_dll_path"):
+            with patch("claire.listening.listener._setup_nvidia_dll_path"):
                 with patch.dict("sys.modules", {"ctypes": mock_ctypes}):
-                    from jarvis.listening.listener import _probe_windows_cuda_libraries
+                    from claire.listening.listener import _probe_windows_cuda_libraries
 
                     device, missing = _probe_windows_cuda_libraries("auto")
 
@@ -352,11 +359,11 @@ class TestWindowsCudaDetection:
         """When both libraries load, the probe leaves the device choice alone."""
         mock_ctypes = MagicMock()
         mock_ctypes.CDLL.return_value = MagicMock()
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "win32"
-            with patch("jarvis.listening.listener._setup_nvidia_dll_path"):
+            with patch("claire.listening.listener._setup_nvidia_dll_path"):
                 with patch.dict("sys.modules", {"ctypes": mock_ctypes}):
-                    from jarvis.listening.listener import _probe_windows_cuda_libraries
+                    from claire.listening.listener import _probe_windows_cuda_libraries
 
                     device, missing = _probe_windows_cuda_libraries("auto")
 
@@ -365,9 +372,9 @@ class TestWindowsCudaDetection:
 
     def test_probe_short_circuits_off_windows(self):
         """The probe is a no-op on non-Windows platforms regardless of device."""
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            from jarvis.listening.listener import _probe_windows_cuda_libraries
+            from claire.listening.listener import _probe_windows_cuda_libraries
 
             device, missing = _probe_windows_cuda_libraries("auto")
 
@@ -378,7 +385,7 @@ class TestWindowsCudaDetection:
         """When CUDA is missing on Windows, the hint must point users at the tray
         recovery action — not at "reinstall the app", which is a dead end when
         the original installer already wrote a (stale) marker file."""
-        from jarvis.listening.listener import _print_cuda_unavailable_hint
+        from claire.listening.listener import _print_cuda_unavailable_hint
 
         _print_cuda_unavailable_hint(["cuBLAS", "cuDNN"])
 
@@ -401,17 +408,17 @@ class TestLargeV3TurboFallback:
         """large-v3-turbo config falls back to medium when faster-whisper < 1.1.0."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
-                            with patch("jarvis.listening.listener._is_faster_whisper_turbo_supported", return_value=False):
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
+                            with patch("claire.listening.listener._is_faster_whisper_turbo_supported", return_value=False):
                                 _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                                 mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                                from jarvis.listening.listener import VoiceListener
+                                from claire.listening.listener import VoiceListener
 
                                 mock_cfg = _create_mock_config(whisper_model="large-v3-turbo")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -430,17 +437,17 @@ class TestLargeV3TurboFallback:
         """large-v3-turbo config is kept when faster-whisper >= 1.1.0."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
-                            with patch("jarvis.listening.listener._is_faster_whisper_turbo_supported", return_value=True):
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
+                            with patch("claire.listening.listener._is_faster_whisper_turbo_supported", return_value=True):
                                 _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                                 mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                                from jarvis.listening.listener import VoiceListener
+                                from claire.listening.listener import VoiceListener
 
                                 mock_cfg = _create_mock_config(whisper_model="large-v3-turbo")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -456,11 +463,11 @@ class TestRepetitiveHallucinationDetection:
 
     def _create_mock_listener(self):
         """Create a VoiceListener instance for testing."""
-        with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-            with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                with patch("jarvis.listening.listener.WhisperModel"):
-                    with patch("jarvis.listening.listener.webrtcvad", None):
-                        from jarvis.listening.listener import VoiceListener
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    with patch("claire.listening.listener.webrtcvad", None):
+                        from claire.listening.listener import VoiceListener
 
                         mock_db = MagicMock()
                         mock_cfg = MagicMock()
@@ -579,16 +586,16 @@ class TestCpuOptimisations:
         # Simulate CTranslate2 model exposing device as string
         mock_whisper_model.model.device = "cpu"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
-                            with patch("jarvis.listening.listener.os.cpu_count", return_value=8):
-                                from jarvis.listening.listener import VoiceListener
+                            with patch("claire.listening.listener.os.cpu_count", return_value=8):
+                                from claire.listening.listener import VoiceListener
 
                                 mock_cfg = _create_mock_config(whisper_device="cpu")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -601,16 +608,16 @@ class TestCpuOptimisations:
         mock_whisper_model = MagicMock()
         mock_whisper_model.model.device = "cpu"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
-                            with patch("jarvis.listening.listener.os.cpu_count", return_value=12):
-                                from jarvis.listening.listener import VoiceListener
+                            with patch("claire.listening.listener.os.cpu_count", return_value=12):
+                                from claire.listening.listener import VoiceListener
 
                                 mock_cfg = _create_mock_config(whisper_device="auto")
                                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -623,16 +630,16 @@ class TestCpuOptimisations:
         mock_whisper_model = MagicMock()
         mock_whisper_model.model.device = "cpu"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_cfg = _create_mock_config()
                             listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -648,16 +655,16 @@ class TestCpuOptimisations:
         mock_device.__str__ = lambda self: "cpu"
         mock_whisper_model.model.device = mock_device
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_cfg = _create_mock_config()
                             listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -677,10 +684,10 @@ class TestCpuOptimisations:
         mock_info = MagicMock()
         mock_whisper_model.transcribe.return_value = (iter([mock_segment]), mock_info)
 
-        with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-            with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                with patch("jarvis.listening.listener.WhisperModel"):
-                    from jarvis.listening.listener import VoiceListener
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    from claire.listening.listener import VoiceListener
 
                     mock_cfg = MagicMock()
                     mock_cfg.sample_rate = 16000
@@ -733,11 +740,11 @@ class TestRepetitiveHallucinationDetectionExtended:
 
     def _create_mock_listener(self):
         """Create a VoiceListener instance for testing."""
-        with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-            with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                with patch("jarvis.listening.listener.WhisperModel"):
-                    with patch("jarvis.listening.listener.webrtcvad", None):
-                        from jarvis.listening.listener import VoiceListener
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    with patch("claire.listening.listener.webrtcvad", None):
+                        from claire.listening.listener import VoiceListener
 
                         mock_db = MagicMock()
                         mock_cfg = MagicMock()
@@ -801,31 +808,31 @@ class TestMicPermissionHint:
 
     def test_windows_hint(self):
         """Returns Windows-specific hint on win32."""
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "win32"
-            from jarvis.listening.listener import _get_mic_permission_hint
+            from claire.listening.listener import _get_mic_permission_hint
             # Re-import won't re-evaluate, so call with patched sys
             # Need to call the function while sys is patched
         # The function reads sys.platform at call time
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "win32"
-            from jarvis.listening.listener import _get_mic_permission_hint
+            from claire.listening.listener import _get_mic_permission_hint
             result = _get_mic_permission_hint()
             assert "Windows Settings" in result
 
     def test_macos_hint(self):
         """Returns macOS-specific hint on darwin."""
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "darwin"
-            from jarvis.listening.listener import _get_mic_permission_hint
+            from claire.listening.listener import _get_mic_permission_hint
             result = _get_mic_permission_hint()
             assert "System Settings" in result
 
     def test_linux_hint(self):
         """Returns Linux-specific hint on linux."""
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            from jarvis.listening.listener import _get_mic_permission_hint
+            from claire.listening.listener import _get_mic_permission_hint
             result = _get_mic_permission_hint()
             assert "pactl" in result
 
@@ -837,18 +844,18 @@ class TestCrossPlatformDeviceLogging:
         """Device name is printed on Linux, not just Windows."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [
                                 {"name": "Linux PulseAudio Mic", "max_input_channels": 1}
                             ])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config()
@@ -866,18 +873,18 @@ class TestCrossPlatformDeviceLogging:
         """Device name is printed on macOS, not just Windows."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "darwin"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [
                                 {"name": "MacBook Pro Microphone", "max_input_channels": 1}
                             ])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config()
@@ -899,12 +906,12 @@ class TestCrossPlatformAudioHealthWarning:
         """Audio health warning fires on Linux when no audio received after 5s."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [
                                 {"name": "Test Mic", "max_input_channels": 1}
                             ])
@@ -916,7 +923,7 @@ class TestCrossPlatformAudioHealthWarning:
                             mock_stream.__exit__ = MagicMock(return_value=False)
                             mock_sd.InputStream.return_value = mock_stream
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
                             import queue as q
 
                             mock_db = MagicMock()
@@ -951,7 +958,7 @@ class TestCrossPlatformAudioHealthWarning:
                                     return _base
                                 return _base + 6
 
-                            with patch("jarvis.listening.listener.time") as mock_time:
+                            with patch("claire.listening.listener.time") as mock_time:
                                 mock_time.time.side_effect = advancing_time
                                 mock_time.monotonic.side_effect = [0, 6, 6, 6]
                                 mock_time.sleep = time.sleep
@@ -960,7 +967,7 @@ class TestCrossPlatformAudioHealthWarning:
                                 # counting deterministic (the warmup join would
                                 # consume mock values racy in a full-suite run).
                                 with patch(
-                                    "jarvis.listening.listener.VoiceListener._start_llm_warmup",
+                                    "claire.listening.listener.VoiceListener._start_llm_warmup",
                                     return_value=[],
                                 ):
                                     listener.run()
@@ -976,7 +983,7 @@ class TestResample:
     def test_identity_when_rates_match(self):
         """When src and dst rates are the same, returns the same object."""
         import numpy as _np
-        from jarvis.listening.listener import _resample
+        from claire.listening.listener import _resample
 
         audio = _np.ones(160, dtype=_np.float32)
         result = _resample(audio, 16000, 16000)
@@ -985,7 +992,7 @@ class TestResample:
     def test_downsample_48k_to_16k(self):
         """Downsampling from 48 kHz to 16 kHz produces correct length and dtype."""
         import numpy as _np
-        from jarvis.listening.listener import _resample
+        from claire.listening.listener import _resample
 
         src_rate, dst_rate = 48000, 16000
         duration = 1.0  # 1 second
@@ -999,7 +1006,7 @@ class TestResample:
     def test_upsample_8k_to_16k(self):
         """Upsampling from 8 kHz to 16 kHz produces correct length."""
         import numpy as _np
-        from jarvis.listening.listener import _resample
+        from claire.listening.listener import _resample
 
         src_rate, dst_rate = 8000, 16000
         duration = 0.5
@@ -1012,7 +1019,7 @@ class TestResample:
     def test_preserves_sine_wave_frequency(self):
         """A 440 Hz sine resampled from 48 kHz to 16 kHz keeps its peak near 440 Hz."""
         import numpy as _np
-        from jarvis.listening.listener import _resample
+        from claire.listening.listener import _resample
 
         src_rate, dst_rate = 48000, 16000
         freq = 440.0
@@ -1040,12 +1047,12 @@ class TestSampleRateFallback:
         mock_whisper_model = MagicMock()
         mock_whisper_model.transcribe.return_value = ([], None)
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = platform_name
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             import queue as q
 
                             # query_devices returns native rate info
@@ -1076,7 +1083,7 @@ class TestSampleRateFallback:
 
                             mock_sd.InputStream.side_effect = input_stream_side_effect
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(voice_device='Test Headset', whisper_device='cpu')
@@ -1101,10 +1108,10 @@ class TestSampleRateFallback:
                                 if get_calls[0] == 1:
                                     audio = np.zeros((17640, input_channels), dtype=np.float32)
                                     audio[:, -1] = .1 * input_channels
-                                    from jarvis.listening.listener import _CapturedAudio
+                                    from claire.listening.listener import _CapturedAudio
                                     return _CapturedAudio(audio, listener._audio_generation)
                                 if get_calls[0] == 2:
-                                    from jarvis.listening.listener import _CapturedAudio
+                                    from claire.listening.listener import _CapturedAudio
                                     return _CapturedAudio(np.zeros((4410, input_channels), dtype=np.float32), listener._audio_generation)
                                 listener._should_stop = True
                                 raise q.Empty()
@@ -1112,7 +1119,7 @@ class TestSampleRateFallback:
                             listener._audio_q = MagicMock()
                             listener._audio_q.get = fake_get
 
-                            with patch("jarvis.listening.listener.time") as mock_time:
+                            with patch("claire.listening.listener.time") as mock_time:
                                 mock_time.time.return_value = 0
                                 mock_time.monotonic.return_value = 0
                                 mock_time.sleep = time.sleep
@@ -1136,18 +1143,18 @@ class TestSampleRateFallback:
         """Permission errors do not trigger sample rate fallback."""
         mock_whisper_model = MagicMock()
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", return_value=mock_whisper_model):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", return_value=mock_whisper_model):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [
                                 {"name": "Test Mic", "max_input_channels": 1}
                             ])
                             mock_sd.InputStream.side_effect = Exception("Device access denied")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config()
@@ -1183,16 +1190,16 @@ class TestCorruptedWhisperCacheRecovery:
                 raise RuntimeError(error_msg)
             return mock_whisper_model
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1218,17 +1225,17 @@ class TestCorruptedWhisperCacheRecovery:
 
         error_msg = f"Unable to open file 'model.bin' in model '{snapshot_dir}'"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1266,16 +1273,16 @@ class TestCorruptedWhisperCacheRecovery:
                 raise RuntimeError(error_msg)
             return mock_whisper_model
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect):
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1292,17 +1299,17 @@ class TestCorruptedWhisperCacheRecovery:
         """When error path can't be parsed, fallback configs are still tried with manual hints."""
         error_msg = "Unable to open file 'model.bin' somehow"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1328,19 +1335,19 @@ class TestCorruptedWhisperCacheRecovery:
 
         error_msg = f"Unable to open file 'model.bin' in model '{snapshot_dir}'"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
                             # Make shutil.rmtree raise OSError
                             with patch("shutil.rmtree", side_effect=OSError("Permission denied")):
-                                from jarvis.listening.listener import VoiceListener
+                                from claire.listening.listener import VoiceListener
 
                                 mock_db = MagicMock()
                                 mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1363,17 +1370,17 @@ class TestCorruptedWhisperCacheRecovery:
 
         error_msg = f"Unable to open file 'model.bin' in model '{plain_dir}'"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1409,16 +1416,16 @@ class TestCorruptedWhisperCacheRecovery:
             # Config 2 ("auto", "float16"): third call succeeds
             return mock_whisper_model
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1451,17 +1458,17 @@ class TestWhisperRateLimitRetry:
                 raise RuntimeError("Got: HfHubHTTPError: 429 Too Many Requests for url: https://huggingface.co/api/models/Systran/faster-whisper-medium")
             return mock_whisper_model
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            with patch("jarvis.listening.listener.time.sleep"):  # Skip actual sleep
-                                from jarvis.listening.listener import VoiceListener
+                            with patch("claire.listening.listener.time.sleep"):  # Skip actual sleep
+                                from claire.listening.listener import VoiceListener
 
                                 mock_db = MagicMock()
                                 mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1478,18 +1485,18 @@ class TestWhisperRateLimitRetry:
         """WhisperModel loading gives up after exhausting 429 retries."""
         error_msg = "429 Too Many Requests for url: https://huggingface.co/api/models/Systran/faster-whisper-medium"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
-                            with patch("jarvis.listening.listener.time.sleep") as mock_sleep:
-                                from jarvis.listening.listener import VoiceListener
+                            with patch("claire.listening.listener.time.sleep") as mock_sleep:
+                                from claire.listening.listener import VoiceListener
 
                                 mock_db = MagicMock()
                                 mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1525,17 +1532,17 @@ class TestWhisperRateLimitRetry:
                 raise _FakeHfHubHTTPError()
             return mock_whisper_model
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel", side_effect=whisper_model_side_effect) as mock_class:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
                             mock_sd.InputStream.side_effect = Exception("Stop test here")
 
-                            with patch("jarvis.listening.listener.time.sleep"):
-                                from jarvis.listening.listener import VoiceListener
+                            with patch("claire.listening.listener.time.sleep"):
+                                from claire.listening.listener import VoiceListener
 
                                 mock_db = MagicMock()
                                 mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1552,17 +1559,17 @@ class TestWhisperRateLimitRetry:
         """Non-rate-limit errors are not retried."""
         error_msg = "Model not found: invalid_model"
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                    with patch("jarvis.listening.listener.WhisperModel") as mock_class:
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                    with patch("claire.listening.listener.WhisperModel") as mock_class:
                         mock_class.side_effect = RuntimeError(error_msg)
 
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [{"name": "Test Mic", "max_input_channels": 1}])
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_db = MagicMock()
                             mock_cfg = _create_mock_config(whisper_model="medium")
@@ -1585,15 +1592,15 @@ def _make_listener_for_warmup(
     low_power_mode: bool = False,
 ):
     """Construct a VoiceListener with enough stubs to exercise warmup only."""
-    with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-        with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-            with patch("jarvis.listening.listener.sd") as mock_sd:
+    with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+        with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+            with patch("claire.listening.listener.sd") as mock_sd:
                 _mock_input_devices(mock_sd, [
                     {"name": "Test Mic", "max_input_channels": 1}
                 ])
 
-                from jarvis.listening.listener import VoiceListener
-                from jarvis.listening.intent_judge import IntentJudge, IntentJudgeConfig
+                from claire.listening.listener import VoiceListener
+                from claire.listening.intent_judge import IntentJudge, IntentJudgeConfig
 
                 mock_cfg = _create_mock_config()
                 mock_cfg.ollama_chat_model = chat_model
@@ -1605,7 +1612,7 @@ def _make_listener_for_warmup(
                 mock_cfg.intent_judge_timeout_sec = 10.0
                 mock_cfg.intent_judge_thinking_enabled = False
                 mock_cfg.low_power_mode = low_power_mode
-                mock_cfg.wake_word = "jarvis"
+                mock_cfg.wake_word = "claire"
                 mock_cfg.wake_aliases = []
 
                 listener = VoiceListener(MagicMock(), mock_cfg, MagicMock(), MagicMock())
@@ -1628,9 +1635,9 @@ class TestLlmWarmup:
             chat_model="llama3.1", judge_model="gemma4:e2b"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ) as chat_warm, patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ) as judge_warm:
             threads = listener._start_llm_warmup()
             for t in threads:
@@ -1647,7 +1654,7 @@ class TestLlmWarmup:
         listener = _make_listener_for_warmup(
             chat_model="llama3.1", judge_model="llama3.1"
         )
-        with patch("jarvis.listening.listener.warm_up_chat_model", return_value=True) as warm:
+        with patch("claire.listening.listener.warm_up_chat_model", return_value=True) as warm:
             threads = listener._start_llm_warmup()
             for t in threads:
                 t.join(timeout=2.0)
@@ -1661,7 +1668,7 @@ class TestLlmWarmup:
         """Judge still warms when chat model is absent."""
         listener = _make_listener_for_warmup(chat_model="", judge_model="gemma4:e2b")
         with patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ) as warm:
             threads = listener._start_llm_warmup()
             for t in threads:
@@ -1685,9 +1692,9 @@ class TestLlmWarmup:
             chat_model="llama3.1", judge_model="gemma4:e2b"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=False
+            "claire.listening.listener.warm_up_chat_model", return_value=False
         ), patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=False
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=False
         ):
             threads = listener._start_llm_warmup()
             for t in threads:
@@ -1702,11 +1709,11 @@ class TestLlmWarmup:
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ) as chat_warm, patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ) as judge_warm, patch(
-            "jarvis.listening.listener.get_embedding_backend"
+            "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
             mock_embed_backend.embed.return_value = [0.1, 0.2, 0.3]
@@ -1727,11 +1734,11 @@ class TestLlmWarmup:
             chat_model="llama3.1", embed_model=""
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.listener.get_embedding_backend"
+            "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             threads = listener._start_llm_warmup()
             for t in threads:
@@ -1747,11 +1754,11 @@ class TestLlmWarmup:
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.listener.get_embedding_backend"
+            "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
             mock_embed_backend.embed.return_value = None
@@ -1769,11 +1776,11 @@ class TestLlmWarmup:
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.listener.get_embedding_backend"
+            "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_get_embed.side_effect = RuntimeError("backend init crashed")
 
@@ -1789,11 +1796,11 @@ class TestLlmWarmup:
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ), patch(
-            "jarvis.listening.listener.get_embedding_backend"
+            "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
             mock_embed_backend.embed.side_effect = ConnectionError("server down")
@@ -1813,9 +1820,9 @@ class TestLlmWarmup:
             low_power_mode=True,
         )
         with patch(
-            "jarvis.listening.listener.warm_up_chat_model", return_value=True
+            "claire.listening.listener.warm_up_chat_model", return_value=True
         ) as chat_warm, patch(
-            "jarvis.listening.intent_judge.warm_up_chat_model", return_value=True
+            "claire.listening.intent_judge.warm_up_chat_model", return_value=True
         ) as judge_warm:
             threads = listener._start_llm_warmup()
 
@@ -1833,22 +1840,22 @@ class TestWhisperWarmup:
         mock_whisper_model = MagicMock()
         mock_whisper_model.transcribe.return_value = (iter([]), MagicMock())
 
-        with patch("jarvis.listening.listener.sys") as mock_sys:
+        with patch("claire.listening.listener.sys") as mock_sys:
             mock_sys.platform = "linux"
-            with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-                with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
+            with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+                with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
                     with patch(
-                        "jarvis.listening.listener.WhisperModel",
+                        "claire.listening.listener.WhisperModel",
                         return_value=mock_whisper_model,
                     ):
-                        with patch("jarvis.listening.listener.sd") as mock_sd:
+                        with patch("claire.listening.listener.sd") as mock_sd:
                             _mock_input_devices(mock_sd, [
                                 {"name": "Test Mic", "max_input_channels": 1}
                             ])
                             # Skip actual audio streaming — we only care about init.
                             mock_sd.InputStream.side_effect = RuntimeError("stop here")
 
-                            from jarvis.listening.listener import VoiceListener
+                            from claire.listening.listener import VoiceListener
 
                             mock_cfg = _create_mock_config()
                             mock_cfg.ollama_chat_model = ""
@@ -1873,11 +1880,11 @@ class TestFilterNoisySegmentsNoSpeechProb:
     """Tests that _filter_noisy_segments rejects high no_speech_prob segments."""
 
     def _create_mock_listener(self):
-        with patch("jarvis.listening.listener.FASTER_WHISPER_AVAILABLE", True):
-            with patch("jarvis.listening.listener.MLX_WHISPER_AVAILABLE", False):
-                with patch("jarvis.listening.listener.WhisperModel"):
-                    with patch("jarvis.listening.listener.webrtcvad", None):
-                        from jarvis.listening.listener import VoiceListener
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    with patch("claire.listening.listener.webrtcvad", None):
+                        from claire.listening.listener import VoiceListener
 
                         mock_cfg = MagicMock()
                         mock_cfg.sample_rate = 16000
@@ -1960,7 +1967,7 @@ class TestIsWhisperHallucination:
         (0.99, 1.0, False),
     ])
     def test_gate_policy(self, no_speech_prob, threshold, expected):
-        from jarvis.listening.listener import is_whisper_hallucination
+        from claire.listening.listener import is_whisper_hallucination
         assert is_whisper_hallucination(no_speech_prob, threshold) is expected
 
     def test_mlx_and_faster_whisper_use_same_helper(self):
@@ -1971,7 +1978,7 @@ class TestIsWhisperHallucination:
         diverge the two.
         """
         import inspect
-        from jarvis.listening import listener as listener_mod
+        from claire.listening import listener as listener_mod
         src = inspect.getsource(listener_mod)
         # Both sites must call the shared helper.
         assert src.count("is_whisper_hallucination(") >= 3, (
@@ -1986,10 +1993,10 @@ class TestWeatherBannerExample:
 
     def _make_listener(self, **cfg_overrides):
         from unittest.mock import MagicMock
-        from jarvis.listening.listener import VoiceListener
+        from claire.listening.listener import VoiceListener
 
         cfg = MagicMock()
-        cfg.wake_word = cfg_overrides.get("wake_word", "jarvis")
+        cfg.wake_word = cfg_overrides.get("wake_word", "claire")
         cfg.location_enabled = cfg_overrides.get("location_enabled", True)
         cfg.location_auto_detect = cfg_overrides.get("location_auto_detect", True)
         cfg.location_ip_address = cfg_overrides.get("location_ip_address", None)
@@ -2002,9 +2009,9 @@ class TestWeatherBannerExample:
         """Plain 'How's the weather' example when auto-detect is on and database is present."""
         from unittest.mock import patch
         listener = self._make_listener(location_enabled=True, location_auto_detect=True)
-        with patch("jarvis.listening.listener.is_location_available", return_value=True):
-            result = listener._weather_example("Jarvis")
-        assert result == "\"How's the weather, Jarvis?\""
+        with patch("claire.listening.listener.is_location_available", return_value=True):
+            result = listener._weather_example("Claire")
+        assert result == "\"How's the weather, Claire?\""
 
     def test_plain_form_when_manual_ip_configured(self):
         """Plain form when auto-detect is off but a manual IP is set and database is present."""
@@ -2014,15 +2021,15 @@ class TestWeatherBannerExample:
             location_auto_detect=False,
             location_ip_address="1.2.3.4",
         )
-        with patch("jarvis.listening.listener.is_location_available", return_value=True):
-            result = listener._weather_example("Jarvis")
-        assert result == "\"How's the weather, Jarvis?\""
+        with patch("claire.listening.listener.is_location_available", return_value=True):
+            result = listener._weather_example("Claire")
+        assert result == "\"How's the weather, Claire?\""
 
     def test_city_placeholder_when_location_disabled(self):
         """City placeholder form when location is explicitly disabled."""
         listener = self._make_listener(location_enabled=False)
-        result = listener._weather_example("Jarvis")
-        assert result == "\"How's the weather in [your city], Jarvis?\""
+        result = listener._weather_example("Claire")
+        assert result == "\"How's the weather in [your city], Claire?\""
 
     def test_city_placeholder_when_no_location_source(self):
         """City placeholder form when auto-detect is off and no manual IP is set."""
@@ -2031,21 +2038,21 @@ class TestWeatherBannerExample:
             location_auto_detect=False,
             location_ip_address=None,
         )
-        result = listener._weather_example("Jarvis")
-        assert result == "\"How's the weather in [your city], Jarvis?\""
+        result = listener._weather_example("Claire")
+        assert result == "\"How's the weather in [your city], Claire?\""
 
     def test_city_placeholder_when_database_not_available(self):
         """City placeholder form when GeoLite2 database is missing even if config enables location."""
         from unittest.mock import patch
         listener = self._make_listener(location_enabled=True, location_auto_detect=True)
-        with patch("jarvis.listening.listener.is_location_available", return_value=False):
-            result = listener._weather_example("Jarvis")
-        assert result == "\"How's the weather in [your city], Jarvis?\""
+        with patch("claire.listening.listener.is_location_available", return_value=False):
+            result = listener._weather_example("Claire")
+        assert result == "\"How's the weather in [your city], Claire?\""
 
     def test_wake_title_reflected_in_example(self):
         """Wake word title is correctly used in the example string."""
         from unittest.mock import patch
-        with patch("jarvis.listening.listener.is_location_available", return_value=True):
+        with patch("claire.listening.listener.is_location_available", return_value=True):
             listener = self._make_listener(location_enabled=True, location_auto_detect=True)
             assert "Helix?" in listener._weather_example("Helix")
 
@@ -2058,7 +2065,7 @@ class TestBoundedWhisperCacheRecovery:
     @pytest.mark.parametrize("cache_name", ["models--Systran--medium", "models--local--int8-whisper"])
     def test_recreated_cache_survives_later_device_fallbacks(self, tmp_path, capsys, cache_name):
         """A failed recovery preserves downloaded files across device fallbacks."""
-        import jarvis.listening.listener as module
+        import claire.listening.listener as module
 
         snapshot = tmp_path / cache_name / "snapshots" / "revision"
         snapshot.mkdir(parents=True)
@@ -2096,7 +2103,7 @@ class TestBoundedWhisperCacheRecovery:
 
     def test_failed_recovery_reports_latest_error(self, tmp_path, capsys):
         """The final failure identifies the recovery error rather than a stale one."""
-        import jarvis.listening.listener as module
+        import claire.listening.listener as module
 
         snapshot = tmp_path / "models--Systran--medium" / "snapshots" / "revision"
         snapshot.mkdir(parents=True)
@@ -2122,5 +2129,5 @@ class TestBoundedWhisperCacheRecovery:
 @pytest.fixture(autouse=True)
 def cached_whisper_files(monkeypatch):
     """Model-loading tests use synthetic local files and never access the Hub."""
-    monkeypatch.setattr("jarvis.listening.model_download.prepare_faster_whisper_model",
+    monkeypatch.setattr("claire.listening.model_download.prepare_faster_whisper_model",
                         lambda name: name)

@@ -1,46 +1,63 @@
 """
-Regression tests for the Windows "Fatal Python error: Aborted" family
-(#462, #401, #422): PortAudio stream lifecycle calls made concurrently
-from independent threads.
+Regression tests for process-wide serialisation of PortAudio stream
+lifecycle calls (the "Fatal Python error: Aborted" crash family, #462,
+#401, #422).
 
-PortAudio documents stream open/close as not thread safe; on Windows an
-internal assertion failure aborts the whole process, which cannot be
-caught from Python. The defence is behavioural and testable on any
-platform:
+PortAudio documents opening and closing streams as NOT thread safe, and its
+Windows host APIs abort the whole process on internal assertion failures,
+which cannot be caught from Python. Claire touches PortAudio from several
+independent threads (the voice listener's run loop, the microphone
+permission check, TTS playback, the thinking-tune player), so every stream
+lifecycle call must run inside the process-wide ``portaudio_lock``.
 
-1. Every stream lifecycle call goes through the process-wide
-   ``portaudio_lock``, so two threads can never be inside PortAudio
-   lifecycle code at the same time.
-2. The dictation engine never opens streams on the pynput hook thread —
-   the hotkey callback returns immediately and stream work happens on a
-   worker thread (Windows silently unhooks slow hook callbacks, and the
-   hook thread has no COM/PortAudio affinity guarantees).
+That contract is enforced at one surviving chokepoint:
+``claire.utils.audio_capture.open_input_stream`` constructs its
+``sounddevice.InputStream`` inside ``with portaudio_lock if serialise else
+nullcontext():``. Driving that real function is what these tests protect.
 
-These tests install a fake ``sounddevice`` whose lifecycle entry points
-record concurrency and calling thread, then drive the real engine code.
+The tests install a fake ``sounddevice`` whose ``InputStream`` records
+concurrency and the calling thread (widened with a small sleep so overlap
+would be visible), then assert:
+
+1. ``serialise=True`` (the default) never lets two threads into the stream
+   constructor at once, so no two threads can be inside PortAudio lifecycle
+   code simultaneously.
+2. ``serialise=False`` is the documented escape hatch for the microphone
+   permission probe, whose open can hang indefinitely when Windows blocks
+   microphone access — hanging while holding the lock would freeze every
+   audio user in the process. Overlapping is allowed there.
+3. A rejected capture format (PaError -9998) negotiates another rate or
+   channel count instead of failing outright, while a non-format error
+   (device busy, access denied) still propagates on the first attempt.
 """
 
 import threading
 import time
 
-import jarvis.dictation.dictation_engine as de
-from jarvis.utils.audio_lock import portaudio_lock
+import pytest
+
+from claire.utils.audio_capture import open_input_stream
+from claire.utils.audio_lock import portaudio_lock
+
+
+class _PaError(Exception):
+    """Minimal stand-in for ``sounddevice.PaError``: args are (message, code)."""
 
 
 class _ConcurrencyProbe:
-    """Counts how many threads are inside a lifecycle call simultaneously."""
+    """Counts how many threads are inside a stream constructor at once."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self.active = 0
         self.max_active = 0
-        self.calls = []
+        self.opens = []  # (calling thread ident, samplerate, channels)
 
-    def enter(self, name):
+    def enter(self, samplerate, channels):
         with self._lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
-            self.calls.append((name, threading.get_ident()))
+            self.opens.append((threading.get_ident(), samplerate, channels))
         time.sleep(0.02)  # widen the overlap window
 
     def exit(self):
@@ -49,191 +66,170 @@ class _ConcurrencyProbe:
 
 
 class _FakeStream:
-    def __init__(self, probe, gate=None, **kwargs):
-        probe.enter("open")
-        if gate is not None:
-            gate.wait(timeout=5)  # let tests pin the open/stop interleaving
-        self._probe = probe
+    def __init__(self, samplerate, channels):
+        self.samplerate = samplerate
+        self.channels = channels
         self.closed = False
-        probe.exit()
-
-    def start(self):
-        self._probe.enter("start")
-        self._probe.exit()
-
-    def stop(self):
-        self._probe.enter("stop")
-        self._probe.exit()
 
     def close(self):
-        self._probe.enter("close")
         self.closed = True
-        self._probe.exit()
 
 
 class _FakeSounddevice:
-    def __init__(self, probe, open_gate=None):
-        self._probe = probe
-        self._open_gate = open_gate
+    """The slice of the ``sounddevice`` API ``open_input_stream`` touches.
 
-    def InputStream(self, **kwargs):
-        return _FakeStream(self._probe, gate=self._open_gate, **kwargs)
+    ``barrier`` holds every opener until the expected number of them arrive,
+    which turns "did two opens overlap?" into a deterministic question.
+    ``reject`` decides which formats raise ``error_factory()``.
+    """
+
+    def __init__(self, probe, *, barrier=None, reject=None, error_factory=None,
+                 default_samplerate=16000, max_input_channels=1):
+        self._probe = probe
+        self._barrier = barrier
+        self._reject = reject
+        self._error_factory = error_factory or (lambda: _PaError('Error opening InputStream', -9998))
+        self._default_samplerate = default_samplerate
+        self._max_input_channels = max_input_channels
+        self.attempts = []  # every (samplerate, channels) handed to InputStream
+
+    def InputStream(self, *, samplerate, channels, **kwargs):
+        self.attempts.append((samplerate, channels))
+        if self._reject is not None and self._reject(samplerate, channels):
+            raise self._error_factory()
+        self._probe.enter(samplerate, channels)
+        try:
+            if self._barrier is not None:
+                self._barrier.wait(timeout=2)
+            return _FakeStream(samplerate, channels)
+        finally:
+            self._probe.exit()
 
     def query_devices(self, *args, **kwargs):
-        return {"default_samplerate": 16000}
+        return {
+            'index': 0,
+            'name': 'Fake microphone',
+            'default_samplerate': self._default_samplerate,
+            'max_input_channels': self._max_input_channels,
+        }
 
 
-def _drain_worker_threads(baseline):
-    """Join threads spawned during a test so a late worker can't run against
-    the next test's monkeypatched fake sounddevice."""
-    for t in threading.enumerate():
-        if t not in baseline and t is not threading.current_thread():
-            t.join(timeout=5)
+def _assert_lock_was_released():
+    """A worker that leaked out still holding the lock would deadlock all audio."""
+    assert portaudio_lock.acquire(timeout=1), 'portaudio_lock was left held'
+    portaudio_lock.release()
 
 
-def _make_engine(monkeypatch, probe, open_gate=None):
-    fake_sd = _FakeSounddevice(probe, open_gate=open_gate)
-    monkeypatch.setattr(de, "sd", fake_sd)
-    engine = de.DictationEngine(
-        whisper_model_ref=lambda: object(),
-        whisper_backend_ref=lambda: "faster-whisper",
-        mlx_repo_ref=lambda: None,
-    )
-    return engine
-
-
-def test_hotkey_press_does_not_open_stream_on_calling_thread(monkeypatch):
-    """The (pynput) calling thread must return without touching PortAudio."""
-    baseline = set(threading.enumerate())
+def test_concurrent_opens_are_serialised_by_default():
+    """Two threads opening at the same moment must not overlap in PortAudio."""
     probe = _ConcurrencyProbe()
-    engine = _make_engine(monkeypatch, probe)
+    fake_sd = _FakeSounddevice(probe)
+    start = threading.Barrier(2)
+    results = []
+    errors = []
 
-    hook_thread_ident = [None]
+    def worker():
+        try:
+            start.wait(timeout=5)  # both threads reach the open together
+            stream, rate, channels = open_input_stream(
+                fake_sd, 16000, 30, {'device': 3},
+            )
+            results.append((stream, rate, channels))
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
 
-    def press():
-        hook_thread_ident[0] = threading.get_ident()
-        engine._start_recording()
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
 
-    t = threading.Thread(target=press)
-    t.start()
-    t.join(timeout=5)
-
-    # Wait for the worker to open the stream.
-    deadline = time.time() + 5
-    while time.time() < deadline and not any(n == "open" for n, _ in probe.calls):
-        time.sleep(0.01)
-
-    open_threads = [ident for name, ident in probe.calls if name in ("open", "start")]
-    assert open_threads, "stream was never opened"
-    assert hook_thread_ident[0] not in open_threads, (
-        "stream lifecycle ran on the hotkey callback thread"
-    )
-    engine._stop_recording(discard=True)
-    _drain_worker_threads(baseline)
-
-
-def test_stop_before_stream_opens_still_closes_stream(monkeypatch):
-    """Press/release faster than the stream opens: no leaked live stream."""
-    baseline = set(threading.enumerate())
-    probe = _ConcurrencyProbe()
-    open_gate = threading.Event()
-    engine = _make_engine(monkeypatch, probe, open_gate=open_gate)
-
-    engine._start_recording()
-    engine._stop_recording(discard=True)  # guaranteed before the open finishes
-    open_gate.set()  # now let the worker's stream open complete
-
-    # Whatever the interleaving, the engine must settle on: not recording,
-    # no stored stream, and any opened stream closed.
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        opened = [c for c in probe.calls if c[0] == "open"]
-        closed = [c for c in probe.calls if c[0] == "close"]
-        if not engine.is_recording and engine._stream is None and (not opened or closed):
-            break
-        time.sleep(0.01)
-
-    assert not engine.is_recording
-    assert engine._stream is None
-    opened = [c for c in probe.calls if c[0] == "open"]
-    closed = [c for c in probe.calls if c[0] == "close"]
-    assert not opened or closed, "stream opened after stop was never closed"
-    _drain_worker_threads(baseline)
-
-
-def test_stale_worker_from_superseded_press_never_stores_its_stream(monkeypatch):
-    """press → release → press again while the first open is stalled.
-
-    The first (stale) worker must not attach its stream to the second
-    session — that would leak a live microphone capture (#462 family).
-    """
-    baseline = set(threading.enumerate())
-    probe = _ConcurrencyProbe()
-    open_gate = threading.Event()
-    engine = _make_engine(monkeypatch, probe, open_gate=open_gate)
-
-    engine._start_recording()          # session 1, worker A stalls in open
-    deadline = time.time() + 5         # wait until A is pinned inside the open
-    while time.time() < deadline and not any(c[0] == "open" for c in probe.calls):
-        time.sleep(0.005)
-    assert any(c[0] == "open" for c in probe.calls), "worker A never reached open"
-    engine._stop_recording(discard=True)   # release while A is mid-open
-
-    # Second press with instant opens.
-    open_gate.set()
-    engine._start_recording()          # session 2
-
-    deadline = time.time() + 5
-    while time.time() < deadline and engine._stream is None:
-        time.sleep(0.01)
-    session_stream = engine._stream
-    assert session_stream is not None, "second session never got its stream"
-
-    # Wait for worker A to finish; it must have closed its own stream and
-    # left session 2's stream in place.
-    deadline = time.time() + 5
-    while time.time() < deadline and not any(c[0] == "close" for c in probe.calls):
-        time.sleep(0.01)
-    assert engine._stream is session_stream
-    opened = [c for c in probe.calls if c[0] == "open"]
-    closed = [c for c in probe.calls if c[0] == "close"]
-    assert len(opened) == 2
-    assert len(closed) >= 1, "stale worker's stream was never closed"
-
-    engine._stop_recording(discard=True)
-    _drain_worker_threads(baseline)
-
-
-def test_lifecycle_calls_are_serialised_with_portaudio_lock(monkeypatch):
-    """No lifecycle call may overlap another thread holding portaudio_lock."""
-    baseline = set(threading.enumerate())
-    probe = _ConcurrencyProbe()
-    engine = _make_engine(monkeypatch, probe)
-
-    stop = threading.Event()
-
-    def competitor():
-        # Simulates any other subsystem (listener, TTS, tune player) doing
-        # guarded lifecycle work in a tight loop.
-        while not stop.is_set():
-            with portaudio_lock:
-                probe.enter("competitor-lifecycle")
-                probe.exit()
-
-    t = threading.Thread(target=competitor, daemon=True)
-    t.start()
-    try:
-        for _ in range(5):
-            engine._start_recording()
-            deadline = time.time() + 5
-            while time.time() < deadline and engine._stream is None:
-                time.sleep(0.005)
-            engine._stop_recording(discard=True)
-    finally:
-        stop.set()
-        t.join(timeout=5)
-
+    assert not errors, f'concurrent opens raised: {errors!r}'
+    assert len(results) == 2
     assert probe.max_active == 1, (
-        f"PortAudio lifecycle calls overlapped (max concurrency {probe.max_active})"
+        'PortAudio stream lifecycle calls overlapped: '
+        f'{probe.max_active} threads were inside InputStream at once'
     )
-    _drain_worker_threads(baseline)
+    # Both opens ran on the thread that asked for them, and both the rate and
+    # the channel count are returned to the caller.
+    assert {ident for ident, _rate, _ch in probe.opens} == {t.ident for t in threads}
+    assert all((rate, channels) == (16000, 1) for _stream, rate, channels in results)
+    _assert_lock_was_released()
+
+
+def test_serialise_false_escape_hatch_allows_overlap():
+    """``serialise=False`` is the documented bypass for a hanging probe open."""
+    probe = _ConcurrencyProbe()
+    # The barrier only clears when both threads are inside the constructor, so
+    # this cannot pass if the lock is still being taken.
+    fake_sd = _FakeSounddevice(probe, barrier=threading.Barrier(2))
+    done = threading.Barrier(2)
+    errors = []
+
+    def worker():
+        try:
+            stream, rate, channels = open_input_stream(
+                fake_sd, 16000, 30, {'device': 7}, serialise=False,
+                log_category='mic-permission',
+            )
+            assert (rate, channels) == (16000, 1)
+            assert isinstance(stream, _FakeStream)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            done.wait(timeout=5)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors, f'unserialised opens raised: {errors!r}'
+    assert probe.max_active == 2, (
+        'serialise=False did not bypass portaudio_lock: '
+        f'peak concurrency was {probe.max_active}'
+    )
+
+
+def test_format_error_negotiates_another_rate_and_channel_count():
+    """A PaError -9998 on the first format retries with the fallbacks."""
+    probe = _ConcurrencyProbe()
+    fake_sd = _FakeSounddevice(
+        probe,
+        # Reject every mono format, forcing the wider-channel candidates.
+        reject=lambda _rate, channels: channels == 1,
+        error_factory=lambda: _PaError('Error opening InputStream', -9998),
+        default_samplerate=16000,
+        max_input_channels=2,
+    )
+
+    stream, rate, channels = open_input_stream(
+        fake_sd, 16000, 30, {'device': 5}, fallback_rate=44100,
+    )
+
+    assert isinstance(stream, _FakeStream)
+    # The original mono format is tried first, then the rate fallback, then the
+    # two-channel format on the device's native rate.
+    assert fake_sd.attempts[0] == (16000, 1)
+    assert (44100, 1) in fake_sd.attempts
+    assert (rate, channels) == (16000, 2)
+    assert fake_sd.attempts[-1] == (16000, 2)
+    _assert_lock_was_released()
+
+
+def test_non_format_error_is_not_retried():
+    """Access/device failures must surface immediately, not spin through formats."""
+    probe = _ConcurrencyProbe()
+    fake_sd = _FakeSounddevice(
+        probe,
+        reject=lambda _rate, _channels: True,
+        error_factory=lambda: RuntimeError('Device unavailable'),
+    )
+
+    with pytest.raises(RuntimeError, match='Device unavailable'):
+        open_input_stream(fake_sd, 16000, 30, {'device': 5}, fallback_rate=44100)
+
+    assert fake_sd.attempts == [(16000, 1)]
+    assert probe.opens == []
+    _assert_lock_was_released()

@@ -1,7 +1,7 @@
 """
-Jarvis Desktop App - System Tray Application
+Claire Desktop App - System Tray Application
 
-A cross-platform system tray app for controlling the Jarvis voice assistant.
+A cross-platform system tray app for controlling the Claire voice assistant.
 Supports Windows, Ubuntu (Linux), and macOS.
 """
 
@@ -29,7 +29,7 @@ from desktop_app.app import (
     check_model_support,
     show_unsupported_model_dialog,
     acquire_single_instance_lock,
-    JarvisSystemTray,
+    ClaireSystemTray,
     LogViewerWindow,
     MemoryViewerWindow,
     LogSignals,
@@ -46,7 +46,7 @@ __all__ = [
     'check_model_support',
     'show_unsupported_model_dialog',
     'acquire_single_instance_lock',
-    'JarvisSystemTray',
+    'ClaireSystemTray',
     'LogViewerWindow',
     'MemoryViewerWindow',
     'LogSignals',

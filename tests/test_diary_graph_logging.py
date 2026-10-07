@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.memory.graph_ops import GraphUpdateResult
+from claire.memory.graph_ops import GraphUpdateResult
 
 
 @pytest.mark.unit
@@ -31,16 +31,16 @@ class TestKnowledgeGraphConsoleLogging:
         ``graph_result`` is the ``GraphUpdateResult`` the patched
         ``update_graph_from_dialogue`` should return.
         """
-        from jarvis.memory.conversation import update_diary_from_dialogue_memory
+        from claire.memory.conversation import update_diary_from_dialogue_memory
 
         dialogue_memory.add_message("user", "I learned that bats are not blind")
         dialogue_memory.add_message("assistant", "Correct, they use echolocation in addition to sight.")
 
         with patch(
-            "jarvis.memory.conversation.generate_conversation_summary",
+            "claire.memory.conversation.generate_conversation_summary",
             return_value=("User asked about bats. Bats are not blind.", "bats, biology"),
         ), patch(
-            "jarvis.memory.graph_ops.update_graph_from_dialogue",
+            "claire.memory.graph_ops.update_graph_from_dialogue",
             return_value=graph_result,
         ):
             from types import SimpleNamespace

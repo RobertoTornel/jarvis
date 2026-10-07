@@ -1,5 +1,5 @@
 """
-Low-poly grid face widget for Jarvis with intelligent state management and organic idle behavior.
+Low-poly grid face widget for Claire with intelligent state management and organic idle behavior.
 
 Features:
 - Low-poly wireframe aesthetic with glowing effects
@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QApplication, QLabel
 from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QLinearGradient, QRadialGradient
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal, QObject
 
-from jarvis.debug import debug_log
+from claire.debug import debug_log
 
 
 class Expression(Enum):
@@ -53,29 +53,27 @@ class Expression(Enum):
     CONCERNED = "concerned"
 
 
-class JarvisState(Enum):
-    """Overall Jarvis state for face animation."""
+class ClaireState(Enum):
+    """Overall Claire state for face animation."""
     ASLEEP = "asleep"          # Daemon not started yet
     IDLE = "idle"              # Awake and ready, waiting for wake word
     LISTENING = "listening"    # Actively listening (collecting or hot window)
     THINKING = "thinking"      # Processing query
     SPEAKING = "speaking"      # Speaking response
-    DICTATING = "dictating"    # Hold-to-dictate recording active
-    DICTATION_PROCESSING = "dictation_processing"  # Transcribing & pasting captured dictation
 
 
-# Global Jarvis state - allows daemon to signal overall state to face widget
+# Global Claire state - allows daemon to signal overall state to face widget
 # Uses a file-based approach to work across processes (dev mode runs daemon as subprocess)
 import tempfile
 import os
 
-def _get_jarvis_state_file() -> str:
-    """Get the path to the Jarvis state file."""
-    return os.path.join(tempfile.gettempdir(), "jarvis_state")
+def _get_claire_state_file() -> str:
+    """Get the path to the Claire state file."""
+    return os.path.join(tempfile.gettempdir(), "claire_state")
 
 
-class JarvisStateManager(QObject):
-    """Global singleton for Jarvis state management.
+class ClaireStateManager(QObject):
+    """Global singleton for Claire state management.
 
     Uses a file-based approach to communicate across processes:
     - In dev mode, daemon runs as subprocess (different process)
@@ -89,23 +87,23 @@ class JarvisStateManager(QObject):
 
     def __init__(self):
         super().__init__()
-        self._state = JarvisState.ASLEEP  # Start asleep
+        self._state = ClaireState.ASLEEP  # Start asleep
         self._state_lock = threading.Lock()
-        self._state_file = _get_jarvis_state_file()
+        self._state_file = _get_claire_state_file()
         # Always start fresh in ASLEEP state on app launch
         # (state file is for cross-process communication during a session,
         # not for persisting state across app restarts)
-        self._write_state(JarvisState.ASLEEP)
+        self._write_state(ClaireState.ASLEEP)
 
     @property
-    def state(self) -> JarvisState:
+    def state(self) -> ClaireState:
         """Read current state (checks file for cross-process communication)."""
         # First check file (for cross-process), then fall back to memory
         try:
             if os.path.exists(self._state_file):
                 with open(self._state_file, 'r') as f:
                     content = f.read().strip()
-                    return JarvisState(content)
+                    return ClaireState(content)
         except (ValueError, OSError):
             # Invalid content or read error - fall back to in-memory state
             pass
@@ -113,7 +111,7 @@ class JarvisStateManager(QObject):
         with self._state_lock:
             return self._state
 
-    def _write_state(self, state: JarvisState) -> None:
+    def _write_state(self, state: ClaireState) -> None:
         """Write state to file for cross-process communication."""
         try:
             with open(self._state_file, 'w') as f:
@@ -122,8 +120,8 @@ class JarvisStateManager(QObject):
             # File write failed - state won't be shared across processes
             pass
 
-    def set_state(self, state: JarvisState) -> None:
-        """Set the Jarvis state (thread-safe, cross-process)."""
+    def set_state(self, state: ClaireState) -> None:
+        """Set the Claire state (thread-safe, cross-process)."""
         with self._state_lock:
             self._state = state
 
@@ -139,17 +137,17 @@ class JarvisStateManager(QObject):
 
 
 # Module-level singleton instance
-_jarvis_state_instance: Optional[JarvisStateManager] = None
-_jarvis_state_lock = threading.Lock()
+_claire_state_instance: Optional[ClaireStateManager] = None
+_claire_state_lock = threading.Lock()
 
 
-def get_jarvis_state() -> JarvisStateManager:
-    """Get the global Jarvis state singleton."""
-    global _jarvis_state_instance
-    with _jarvis_state_lock:
-        if _jarvis_state_instance is None:
-            _jarvis_state_instance = JarvisStateManager()
-        return _jarvis_state_instance
+def get_claire_state() -> ClaireStateManager:
+    """Get the global Claire state singleton."""
+    global _claire_state_instance
+    with _claire_state_lock:
+        if _claire_state_instance is None:
+            _claire_state_instance = ClaireStateManager()
+        return _claire_state_instance
 
 
 class LowPolyFaceWidget(QWidget):
@@ -161,7 +159,7 @@ class LowPolyFaceWidget(QWidget):
     """
     
     # Colors
-    PRIMARY_COLOR = QColor("#fbbf24")  # Amber/gold - matches Jarvis theme
+    PRIMARY_COLOR = QColor("#fbbf24")  # Amber/gold - matches Claire theme
     SECONDARY_COLOR = QColor("#f59e0b")  # Darker amber
     GLOW_COLOR = QColor("#fcd34d")  # Light amber for glow
     BG_COLOR = QColor("#0a0a0a")  # Near black background
@@ -171,8 +169,8 @@ class LowPolyFaceWidget(QWidget):
         super().__init__(parent)
         self.setMinimumSize(300, 400)
 
-        # Current Jarvis state
-        self._jarvis_state = JarvisState.ASLEEP  # Start asleep until daemon ready
+        # Current Claire state
+        self._claire_state = ClaireState.ASLEEP  # Start asleep until daemon ready
         self._mouth_openness = 0.0  # 0.0 = closed, 1.0 = fully open
         self._target_mouth_openness = 0.0
         self._blink_timer = 0
@@ -228,10 +226,9 @@ class LowPolyFaceWidget(QWidget):
         self._listening_started_at: Optional[float] = None  # Wall-clock start time
         self._listening_rings_spawned = 0  # How many rings spawned this session
         self._listening_rings: List[float] = []  # Active ring expansions (0.0 to 1.0)
-        self._dictation_pulse_phase = 0.0  # Steady pulse phase for DICTATING state
 
-        # Connect to global Jarvis state
-        self._state_manager = get_jarvis_state()
+        # Connect to global Claire state
+        self._state_manager = get_claire_state()
         self._state_manager.state_changed.connect(self._on_state_changed)
 
         # Animation timer
@@ -255,9 +252,9 @@ class LowPolyFaceWidget(QWidget):
         self._schedule_next_blink()
 
     def _on_state_changed(self, state_value: str):
-        """Handle Jarvis state change from global state."""
+        """Handle Claire state change from global state."""
         try:
-            self._jarvis_state = JarvisState(state_value)
+            self._claire_state = ClaireState(state_value)
         except ValueError:
             pass
 
@@ -425,25 +422,25 @@ class LowPolyFaceWidget(QWidget):
     
     def _animate(self):
         """Animation tick - update all animated properties."""
-        # Poll Jarvis state directly (more reliable than cross-thread signals)
-        prev_state = self._jarvis_state
+        # Poll Claire state directly (more reliable than cross-thread signals)
+        prev_state = self._claire_state
         try:
-            self._jarvis_state = self._state_manager.state
+            self._claire_state = self._state_manager.state
         except Exception:
             pass
         # Re-anchor the listening ring clock each time we enter LISTENING
         # so the first ring lands with the first audible click and later
         # rings stay phase-locked to wall time.
-        if (self._jarvis_state == JarvisState.LISTENING
-                and prev_state != JarvisState.LISTENING):
+        if (self._claire_state == ClaireState.LISTENING
+                and prev_state != ClaireState.LISTENING):
             self._listening_started_at = _time.monotonic()
             self._listening_rings_spawned = 0
 
         # Update activation level based on state
-        if self._jarvis_state == JarvisState.ASLEEP:
+        if self._claire_state == ClaireState.ASLEEP:
             self._target_activation = 0.0
         else:
-            # IDLE, LISTENING, THINKING, SPEAKING, DICTATING, or DICTATION_PROCESSING - all should be awake
+            # IDLE, LISTENING, THINKING, or SPEAKING - all should be awake
             self._target_activation = 1.0
 
         # Smooth activation transition
@@ -452,7 +449,7 @@ class LowPolyFaceWidget(QWidget):
 
         # Check if idle (when awake but not actively doing anything)
         # ONLY IDLE state gets idle activities - not listening, thinking, or speaking
-        is_idle = self._jarvis_state == JarvisState.IDLE and self._activation_level > 0.5
+        is_idle = self._claire_state == ClaireState.IDLE and self._activation_level > 0.5
 
         # Base layer: Breathing animation (always active when awake)
         self._breathing_time += 0.025
@@ -485,7 +482,7 @@ class LowPolyFaceWidget(QWidget):
             self._decay_activity_animations()
 
         # Reduce gaze when speaking
-        if self._jarvis_state == JarvisState.SPEAKING:
+        if self._claire_state == ClaireState.SPEAKING:
             self._gaze_x *= 0.95
             self._gaze_y *= 0.95
 
@@ -495,7 +492,7 @@ class LowPolyFaceWidget(QWidget):
         # the 44.1 kHz audio clock; wall time doesn't.
         pulse_cycle_s = 2.0
         ring_lifespan_s = 2.0
-        if self._jarvis_state == JarvisState.LISTENING and self._listening_started_at is not None:
+        if self._claire_state == ClaireState.LISTENING and self._listening_started_at is not None:
             elapsed = _time.monotonic() - self._listening_started_at
             target_spawned = int(elapsed / pulse_cycle_s) + 1  # First ring at t=0
             while self._listening_rings_spawned < target_spawned:
@@ -520,19 +517,15 @@ class LowPolyFaceWidget(QWidget):
                     new_rings.append(ring)
             self._listening_rings = new_rings
 
-        # Dictation pulse animation (during recording and post-recording processing)
-        if self._jarvis_state in (JarvisState.DICTATING, JarvisState.DICTATION_PROCESSING):
-            self._dictation_pulse_phase += 0.08  # Steady pulse speed
-
-        # Spinner animation (while thinking or post-dictation processing).
+        # Spinner animation (while thinking).
         # One full revolution per pad pulse cycle (2s = 60 frames at 30 FPS).
-        if self._jarvis_state in (JarvisState.THINKING, JarvisState.DICTATION_PROCESSING):
+        if self._claire_state == ClaireState.THINKING:
             self._spinner_angle += 6.0  # 6 deg/frame → one rev per 2s
             if self._spinner_angle >= 360:
                 self._spinner_angle -= 360
 
         # Soundwave animation (when speaking)
-        if self._jarvis_state == JarvisState.SPEAKING:
+        if self._claire_state == ClaireState.SPEAKING:
             # Animate waveform parameters for natural audio-like movement
             self._waveform_time += 0.12  # Speed of wave movement
             self._waveform_detail_offset += 0.08  # Speed of detail variations
@@ -606,9 +599,6 @@ class LowPolyFaceWidget(QWidget):
 
         # Draw listening ring echoes (behind the face)
         self._draw_listening_rings(painter, cx, cy, face_width, face_height)
-
-        # Draw dictation pulse ring (behind the face)
-        self._draw_dictation_pulse(painter, cx, cy, face_width, face_height)
 
         # Draw the face mesh
         self._draw_face_mesh(painter, cx, cy, face_width, face_height)
@@ -831,7 +821,7 @@ class LowPolyFaceWidget(QWidget):
             pupil_size = size * 0.3 * (1.0 - blink_factor)
 
             # Check if we should draw a spinner (thinking state)
-            if self._jarvis_state in (JarvisState.THINKING, JarvisState.DICTATION_PROCESSING):
+            if self._claire_state == ClaireState.THINKING:
                 # Draw spinning loader instead of pupil
                 painter.setPen(QPen(self.PRIMARY_COLOR, 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -1011,46 +1001,13 @@ class LowPolyFaceWidget(QWidget):
 
         painter.setOpacity(1.0)
 
-    def _draw_dictation_pulse(self, painter: QPainter, cx: float, cy: float,
-                              face_width: float, face_height: float):
-        """Draw a pulsing ring around the face during dictation / post-dictation processing."""
-        if self._jarvis_state not in (JarvisState.DICTATING, JarvisState.DICTATION_PROCESSING):
-            return
-
-        # Pulsing opacity and scale driven by a sine wave
-        pulse = (math.sin(self._dictation_pulse_phase) + 1.0) / 2.0  # 0..1
-        scale = 1.12 + pulse * 0.08  # 1.12..1.20 gentle breathing
-        opacity = (0.35 + pulse * 0.25) * self._activation_level
-
-        base_vertices = self._get_face_vertices(cx, cy, face_width, face_height)
-
-        scaled_vertices = []
-        for vx, vy in base_vertices:
-            dx, dy = vx - cx, vy - cy
-            scaled_vertices.append((cx + dx * scale, cy + dy * scale))
-
-        painter.setOpacity(opacity)
-        # Use a red-ish tint to differentiate from listening rings
-        dictation_colour = QColor(239, 68, 68)  # Warm red (#ef4444)
-        ring_pen = QPen(dictation_colour, 2.0)
-        ring_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(ring_pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        for i in range(len(scaled_vertices)):
-            p1 = scaled_vertices[i]
-            p2 = scaled_vertices[(i + 1) % len(scaled_vertices)]
-            painter.drawLine(QPointF(*p1), QPointF(*p2))
-
-        painter.setOpacity(1.0)
-
 
 class FaceWindow(QWidget):
-    """A standalone window containing the Jarvis face."""
+    """A standalone window containing the Claire face."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🤖 Jarvis")
+        self.setWindowTitle("🤖 Claire")
         self.setMinimumSize(320, 420)
         self.resize(350, 450)
 

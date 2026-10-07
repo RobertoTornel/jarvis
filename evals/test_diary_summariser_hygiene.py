@@ -52,7 +52,7 @@ class TestDiarySummariserHygieneLive:
     """Live tests that the summariser omits assistant failure narration."""
 
     def _summarise(self, chunks: list[str]) -> tuple[str, str]:
-        from jarvis.memory.conversation import generate_conversation_summary
+        from claire.memory.conversation import generate_conversation_summary
         summary, topics = generate_conversation_summary(
             recent_chunks=chunks,
             previous_summary=None,
@@ -111,12 +111,12 @@ class TestDiarySummariserHygieneLive:
             )
 
     def test_unrelated_topics_are_not_welded_into_one_clause(self):
-        """Regression for the Possessor/Jarvis field incident.
+        """Regression for the Possessor/Claire field incident.
 
         Two distinct topics (the 2020 Cronenberg film Possessor, and the
-        MCU AI character named Jarvis) in the same conversation must not
+        MCU AI character named Claire) in the same conversation must not
         be summarised as a single welded clause like "the movie Possessor
-        and the character Jarvis, identified as the MCU AI...". Downstream
+        and the character Claire, identified as the MCU AI...". Downstream
         enrichment will treat the appositive as describing both referents
         and mislead the next reply.
 
@@ -127,8 +127,8 @@ class TestDiarySummariserHygieneLive:
         chunks = [
             "User: Have you seen the movie Possessor?",
             "Assistant: I don't have specific information about that film. Would you like me to search the web?",
-            "User: No, unrelated — why are you called Jarvis?",
-            "Assistant: My name is a nod to the MCU character Jarvis, the AI created by Tony Stark and later embodied by Vision.",
+            "User: No, unrelated — why are you called Claire?",
+            "Assistant: My name is a nod to the MCU character Claire, the AI created by Tony Stark and later embodied by Vision.",
         ]
         summary, _ = self._summarise(chunks)
         print(f"\n  📔 Summary: {summary}")
@@ -151,13 +151,13 @@ class TestDiarySummariserHygieneLive:
         for s in sentences:
             low = s.lower()
             mentions_possessor = "possessor" in low
-            mentions_mcu_jarvis = any(t in low for t in mcu_tokens)
-            if mentions_possessor and mentions_mcu_jarvis:
+            mentions_mcu_claire = any(t in low for t in mcu_tokens)
+            if mentions_possessor and mentions_mcu_claire:
                 welded.append(s)
 
         if welded:
             pytest.xfail(
-                f"Small judge model {JUDGE_MODEL} welded Possessor with MCU-Jarvis "
+                f"Small judge model {JUDGE_MODEL} welded Possessor with MCU-Claire "
                 f"details in the same sentence: {welded}. Full summary: {summary}"
             )
 
@@ -165,7 +165,7 @@ class TestDiarySummariserHygieneLive:
         # is about separation, not suppression.
         lowered = summary.lower()
         assert "possessor" in lowered, f"Possessor topic dropped: {summary}"
-        assert "jarvis" in lowered, f"Jarvis topic dropped: {summary}"
+        assert "claire" in lowered, f"Claire topic dropped: {summary}"
 
     def test_preserves_legitimate_user_preferences(self):
         """Regression guard: the hygiene rule must not strip legitimate content

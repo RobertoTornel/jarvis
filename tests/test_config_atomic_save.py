@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from jarvis.config import _save_json
+from claire.config import _save_json
 
 
 def test_save_json_writes_new_contents_via_replace(tmp_path, monkeypatch):
@@ -95,7 +95,7 @@ def test_save_json_sets_permissions_to_0600_on_posix(tmp_path):
 
 def test_save_json_creates_missing_parent_directory(tmp_path):
     """A brand-new install has no config directory yet; the first save must create it."""
-    cfg_path = tmp_path / "newuser" / ".config" / "jarvis" / "config.json"
+    cfg_path = tmp_path / "newuser" / ".config" / "claire" / "config.json"
 
     ok = _save_json(cfg_path, {"llm_api_key": "first-save"})
 

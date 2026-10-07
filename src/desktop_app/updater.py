@@ -1,7 +1,10 @@
 """
-Auto-update functionality for Jarvis Desktop App.
+Auto-update functionality for Claire Desktop App.
 
-Checks GitHub Releases for new versions and handles the update process.
+Checks the *configured* update source for new versions and handles the
+update process. Claire is a fork, so no update source is configured by
+default: ``CLAIRE_UPDATE_REPO`` must be set to an "owner/repo" slug before
+any release is fetched (see the module constants below).
 """
 
 from __future__ import annotations
@@ -22,12 +25,26 @@ from typing import Optional
 import requests
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
-from jarvis import get_version
-from jarvis.debug import debug_log
+from claire import get_version
+from claire.debug import debug_log
 
 from .paths import get_log_dir
 
-GITHUB_REPO = "isair/jarvis"
+# Update source
+# -------------
+# Claire is a fork of another project, and an updater that hardcodes the
+# upstream repository would download and install a DIFFERENT product over
+# Claire. There is therefore no built-in update source: a fresh Claire never
+# updates itself from anywhere. Operators who want update checks must point
+# the CLAIRE_UPDATE_REPO environment variable (or, for tests/embedding, the
+# UPDATE_REPO module attribute) at the "owner/repo" slug that THEIR releases
+# are published under.
+DEFAULT_UPDATE_REPO = ""
+UPDATE_REPO_ENV_VAR = "CLAIRE_UPDATE_REPO"
+UPDATE_REPO = os.environ.get(UPDATE_REPO_ENV_VAR, DEFAULT_UPDATE_REPO).strip()
+# Reported verbatim to the user when no source is configured. Deliberately
+# phrased as a disabled feature, never as an available update (N10).
+UPDATE_DISABLED_MESSAGE = "Update checks disabled: no update source configured"
 # Absolute path to macOS's ditto tool. Exposed as a module attribute so
 # tests (which run on non-macOS CI runners without /usr/bin/ditto) can
 # substitute a path that exists.
@@ -45,7 +62,7 @@ def _extract_macos_bundle(zip_path: Path, dest_dir: Path) -> None:
     Uses ``ditto`` when available because PyInstaller's Qt/Qt WebEngine
     bundle contains symlinks (framework ``Versions/Current`` entries) that
     Python's ``zipfile`` silently flattens into regular files, producing a
-    bundle macOS refuses to launch with "Jarvis.app can't be opened". Falls
+    bundle macOS refuses to launch with "Claire.app can't be opened". Falls
     back to ``zipfile`` when ditto is absent so unit tests on non-macOS CI
     runners still exercise the rest of the installer.
     """
@@ -95,16 +112,40 @@ def _escape_shell_path(path: Path) -> str:
     """
     # Single quotes prevent interpretation, escape embedded single quotes
     return "'" + str(path).replace("'", "'\"'\"'") + "'"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+
+
+def get_update_repo() -> str:
+    """Return the configured update source as an "owner/repo" slug.
+
+    The CLAIRE_UPDATE_REPO environment variable wins whenever it is present,
+    so an explicitly empty value disables update checks even if UPDATE_REPO
+    (the module default, useful for embedding/tests) names a repository.
+    Returns "" when no update source is configured, which is the default: a
+    fork must never silently pull the upstream project's releases.
+    """
+    if UPDATE_REPO_ENV_VAR in os.environ:
+        return os.environ[UPDATE_REPO_ENV_VAR].strip()
+    return UPDATE_REPO.strip()
+
+
+def get_releases_api_url(repo: Optional[str] = None) -> str:
+    """Build the GitHub Releases API URL for ``repo``.
+
+    ``repo`` defaults to the configured update source; callers are expected
+    to have checked :func:`get_update_repo` for emptiness first (an empty
+    repo produces a URL that must not be fetched).
+    """
+    repo = get_update_repo() if repo is None else repo.strip()
+    return f"https://api.github.com/repos/{repo}/releases"
 
 
 def _get_update_state_path() -> Path:
     """Get path to update state file."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
     if xdg:
-        config_dir = Path(xdg) / "jarvis"
+        config_dir = Path(xdg) / "claire"
     else:
-        config_dir = Path.home() / ".config" / "jarvis"
+        config_dir = Path.home() / ".config" / "claire"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir / "update_state.json"
 
@@ -183,12 +224,12 @@ def get_platform_asset_name() -> str:
     if sys.platform == "darwin":
         arch = platform.machine()
         if arch == "arm64":
-            return "Jarvis-macOS-arm64.zip"
-        return "Jarvis-macOS-x64.zip"
+            return "Claire-macOS-arm64.zip"
+        return "Claire-macOS-x64.zip"
     elif sys.platform == "win32":
-        return "Jarvis-Windows-x64.zip"
+        return "Claire-Windows-x64.zip"
     else:
-        return "Jarvis-Linux-x64.tar.gz"
+        return "Claire-Linux-x64.tar.gz"
 
 
 def parse_version(tag: str) -> tuple[int, ...]:
@@ -248,7 +289,12 @@ def _make_release_info(release: dict, asset: dict) -> ReleaseInfo:
 
 
 def check_for_updates(channel: Optional[UpdateChannel] = None) -> UpdateStatus:
-    """Check GitHub Releases for available updates.
+    """Check the configured update source for available updates.
+
+    With no update source configured (the default), no network call is made
+    and the returned status says so honestly: ``update_available`` is False
+    and ``latest_release`` is None, so no update can be claimed or offered
+    (N10). A fork therefore never installs the upstream project over itself.
 
     Args:
         channel: Update channel to check. If None, uses current app's channel.
@@ -265,9 +311,20 @@ def check_for_updates(channel: Optional[UpdateChannel] = None) -> UpdateStatus:
             else UpdateChannel.STABLE
         )
 
+    repo = get_update_repo()
+    if not repo:
+        debug_log(UPDATE_DISABLED_MESSAGE, "updater")
+        return UpdateStatus(
+            update_available=False,
+            current_version=current_version,
+            current_channel=current_channel,
+            latest_release=None,
+            error=UPDATE_DISABLED_MESSAGE,
+        )
+
     try:
         response = requests.get(
-            GITHUB_API_URL,
+            get_releases_api_url(repo),
             params={"per_page": 100},
             headers={"Accept": "application/vnd.github.v3+json"},
             timeout=10,
@@ -414,7 +471,7 @@ def get_app_path() -> Path:
     """Get the path to the current application."""
     if getattr(sys, "frozen", False):
         if sys.platform == "darwin":
-            # Jarvis.app/Contents/MacOS/Jarvis -> Jarvis.app
+            # Claire.app/Contents/MacOS/Claire -> Claire.app
             return Path(sys.executable).parent.parent.parent
         elif sys.platform == "win32":
             return Path(sys.executable)
@@ -447,16 +504,16 @@ def install_update_macos(download_path: Path) -> bool:
     try:
         _extract_macos_bundle(download_path, temp_dir)
 
-        new_app_path = temp_dir / "Jarvis.app"
+        new_app_path = temp_dir / "Claire.app"
 
         if not new_app_path.exists():
-            raise FileNotFoundError("Jarvis.app not found in download")
+            raise FileNotFoundError("Claire.app not found in download")
 
         # Read the executable name from the new bundle's Info.plist rather
-        # than hardcoding "Jarvis" — if the bundle ever renames its
+        # than hardcoding "Claire" — if the bundle ever renames its
         # CFBundleExecutable, the fallback relaunch still targets the right
         # binary.
-        binary_name = "Jarvis"
+        binary_name = "Claire"
         info_plist = new_app_path / "Contents" / "Info.plist"
         if info_plist.is_file():
             try:
@@ -483,7 +540,7 @@ def install_update_macos(download_path: Path) -> bool:
         # cached, so a bare `open` can silently no-op. `lsregister -f` forces
         # a re-scan, `open -n` forces a fresh instance, and if that still
         # fails we exec the bundle's inner binary directly. Script output is
-        # appended to ~/Library/Logs/Jarvis/updater.log so future failures
+        # appended to ~/Library/Logs/Claire/updater.log so future failures
         # leave a trace — the script runs detached with no terminal.
         script_path = temp_dir / "update.sh"
         script_content = f'''#!/bin/bash
@@ -492,7 +549,7 @@ if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt {l
     : > "$LOG_FILE"
 fi
 exec >> "$LOG_FILE" 2>&1
-echo "=== Jarvis update $(date) ==="
+echo "=== Claire update $(date) ==="
 echo "Waiting for process {current_pid} to exit..."
 while kill -0 {current_pid} 2>/dev/null; do
     sleep 1
@@ -534,7 +591,7 @@ def install_update_windows(download_path: Path) -> bool:
     """Install update on Windows.
 
     Strategy:
-    1. Extract zip to temp location (contains Inno Setup installer as Jarvis.exe)
+    1. Extract zip to temp location (contains Inno Setup installer as Claire.exe)
     2. Create batch script to:
        - Wait for current process to actually exit (by PID)
        - Run the installer silently (upgrades in place to Program Files)
@@ -554,10 +611,10 @@ def install_update_windows(download_path: Path) -> bool:
         with zipfile.ZipFile(download_path, "r") as zf:
             zf.extractall(temp_dir)
 
-        new_exe_path = temp_dir / "Jarvis.exe"
+        new_exe_path = temp_dir / "Claire.exe"
 
         if not new_exe_path.exists():
-            raise FileNotFoundError("Jarvis.exe not found in download")
+            raise FileNotFoundError("Claire.exe not found in download")
 
         escaped_new_exe = _escape_batch_path(new_exe_path)
 
@@ -571,7 +628,7 @@ def install_update_windows(download_path: Path) -> bool:
         # step is still skipped under /SILENT (skipifsilent), so we relaunch
         # the upgraded exe ourselves.
         batch_content = f'''@echo off
-echo Updating Jarvis...
+echo Updating Claire...
 echo Waiting for process {current_pid} to exit...
 :wait_loop
 tasklist /fi "pid eq {current_pid}" 2>nul | find "{current_pid}" >nul
@@ -581,7 +638,7 @@ if not errorlevel 1 (
 )
 echo Process exited, running installer...
 "{escaped_new_exe}" /SILENT /SUPPRESSMSGBOXES /NORESTART
-echo Launching updated Jarvis...
+echo Launching updated Claire...
 start "" "{escaped_installed_exe}"
 rmdir /s /q "{escaped_temp}"
 '''
@@ -623,23 +680,23 @@ def install_update_linux(download_path: Path) -> bool:
         with tarfile.open(download_path, "r:gz") as tf:
             tf.extractall(temp_dir)
 
-        new_app_dir = temp_dir / "Jarvis"
+        new_app_dir = temp_dir / "Claire"
 
         if not new_app_dir.exists():
-            raise FileNotFoundError("Jarvis directory not found in download")
+            raise FileNotFoundError("Claire directory not found in download")
 
         # Escape paths using single quotes to prevent shell injection
         escaped_app_dir = _escape_shell_path(app_dir)
         escaped_backup = _escape_shell_path(app_dir.with_name(app_dir.name + ".backup"))
         escaped_new_app = _escape_shell_path(new_app_dir)
         escaped_temp = _escape_shell_path(temp_dir)
-        escaped_jarvis = _escape_shell_path(app_dir / "Jarvis")
+        escaped_claire = _escape_shell_path(app_dir / "Claire")
 
         script_path = temp_dir / "update.sh"
         # Keeping the previous directory as .backup gives the user a one-step
         # rollback if the new version fails to launch.
         script_content = f'''#!/bin/bash
-echo "Updating Jarvis..."
+echo "Updating Claire..."
 echo "Waiting for process {current_pid} to exit..."
 while kill -0 {current_pid} 2>/dev/null; do
     sleep 1
@@ -650,7 +707,7 @@ if [ -e {escaped_app_dir} ]; then
     mv {escaped_app_dir} {escaped_backup}
 fi
 mv {escaped_new_app} {escaped_app_dir}
-{escaped_jarvis} &
+{escaped_claire} &
 rm -rf {escaped_temp}
 '''
         script_path.write_text(script_content)

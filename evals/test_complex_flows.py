@@ -35,8 +35,8 @@ def _configure(mock_config):
 
 def _run_engine(query, mock_config, eval_db, eval_dialogue_memory, mock_tool_run):
     """Run the reply engine with a patched tool runner."""
-    from jarvis.reply.engine import run_reply_engine
-    with patch("jarvis.reply.engine.run_tool_with_retries", side_effect=mock_tool_run):
+    from claire.reply.engine import run_reply_engine
+    with patch("claire.reply.engine.run_tool_with_retries", side_effect=mock_tool_run):
         return run_reply_engine(
             db=eval_db, cfg=mock_config, tts=None,
             text=query, dialogue_memory=eval_dialogue_memory,
@@ -51,7 +51,7 @@ def _keyword_router(capture: ToolCallCapture, routes: dict, default: str = "No r
     matches. All other tool names return ``"OK"`` unless they appear as keys.
     """
     def _run(db, cfg, tool_name, tool_args, **kwargs):
-        from jarvis.tools.types import ToolExecutionResult
+        from claire.tools.types import ToolExecutionResult
         capture.record(tool_name, tool_args or {})
         if tool_name == "webSearch":
             q = (tool_args or {}).get("query", "").lower()
@@ -427,7 +427,7 @@ class TestMultiStepEntityQuery:
         capture = ToolCallCapture()
 
         def mock_tool_run(db, cfg, tool_name, tool_args, **kwargs):
-            from jarvis.tools.types import ToolExecutionResult
+            from claire.tools.types import ToolExecutionResult
             capture.record(tool_name, tool_args or {})
             if tool_name == "webSearch":
                 q = (tool_args or {}).get("query", "").lower()
@@ -452,8 +452,8 @@ class TestMultiStepEntityQuery:
             return ToolExecutionResult(success=True, reply_text="OK")
 
         query = "Who directed Possessor and what other films has that director made?"
-        with patch("jarvis.reply.engine.run_tool_with_retries", side_effect=mock_tool_run):
-            from jarvis.reply.engine import run_reply_engine
+        with patch("claire.reply.engine.run_tool_with_retries", side_effect=mock_tool_run):
+            from claire.reply.engine import run_reply_engine
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
                 text=query, dialogue_memory=eval_dialogue_memory,

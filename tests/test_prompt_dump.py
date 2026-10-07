@@ -1,5 +1,5 @@
 """
-Unit tests for the opt-in prompt dump (src/jarvis/reply/prompt_dump.py).
+Unit tests for the opt-in prompt dump (src/claire/reply/prompt_dump.py).
 
 The dump exists because PR #232's harness evals cannot reproduce the live
 Possessor→"Under the Skin" confab. We need a way to capture the *exact*
@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from jarvis.reply import prompt_dump
+from claire.reply import prompt_dump
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def tmp_home(tmp_path, monkeypatch):
 
 class TestGating:
     def test_disabled_by_default(self, tmp_home, monkeypatch):
-        monkeypatch.delenv("JARVIS_DUMP_PROMPTS", raising=False)
+        monkeypatch.delenv("CLAIRE_DUMP_PROMPTS", raising=False)
         result = prompt_dump.dump_reply_turn(
             session_id="abc12345",
             turn=1,
@@ -45,22 +45,22 @@ class TestGating:
         )
         assert result is None
         # No files created.
-        assert not (tmp_home / ".local" / "share" / "jarvis" / "prompts").exists()
+        assert not (tmp_home / ".local" / "share" / "claire" / "prompts").exists()
 
     @pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
     def test_enabled_by_truthy_env_values(self, tmp_home, monkeypatch, value):
-        monkeypatch.setenv("JARVIS_DUMP_PROMPTS", value)
+        monkeypatch.setenv("CLAIRE_DUMP_PROMPTS", value)
         assert prompt_dump.is_enabled()
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no"])
     def test_disabled_by_falsy_env_values(self, tmp_home, monkeypatch, value):
-        monkeypatch.setenv("JARVIS_DUMP_PROMPTS", value)
+        monkeypatch.setenv("CLAIRE_DUMP_PROMPTS", value)
         assert not prompt_dump.is_enabled()
 
 
 class TestDumpContents:
     def test_writes_full_payload(self, tmp_home, monkeypatch, capsys):
-        monkeypatch.setenv("JARVIS_DUMP_PROMPTS", "1")
+        monkeypatch.setenv("CLAIRE_DUMP_PROMPTS", "1")
         messages = [
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "Tell me about Possessor"},
@@ -78,7 +78,7 @@ class TestDumpContents:
         )
         assert path is not None
         assert path.exists()
-        assert path.parent == tmp_home / ".local" / "share" / "jarvis" / "prompts"
+        assert path.parent == tmp_home / ".local" / "share" / "claire" / "prompts"
         assert "deadbeef" in path.name
         assert "t02" in path.name
 
@@ -103,13 +103,13 @@ class TestDumpContents:
     def test_dump_failure_is_swallowed(self, tmp_home, monkeypatch):
         """A broken serialiser must not propagate — prompts dump is a
         diagnostic aid, never a hard dependency of reply generation."""
-        monkeypatch.setenv("JARVIS_DUMP_PROMPTS", "1")
+        monkeypatch.setenv("CLAIRE_DUMP_PROMPTS", "1")
 
         class Unserialisable:
             def __repr__(self):
                 raise RuntimeError("nope")
 
-        with patch("jarvis.reply.prompt_dump.json.dumps", side_effect=RuntimeError("boom")):
+        with patch("claire.reply.prompt_dump.json.dumps", side_effect=RuntimeError("boom")):
             result = prompt_dump.dump_reply_turn(
                 session_id="abc",
                 turn=1,

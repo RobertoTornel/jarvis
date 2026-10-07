@@ -1,7 +1,7 @@
 """Configured alias variants must not expand into unrelated ambient words."""
 import pytest
-from jarvis.config import get_default_config
-from jarvis.listening.wake_detection import is_wake_word_detected
+from claire.config import get_default_config
+from claire.listening.wake_detection import is_wake_word_detected
 
 pytestmark = pytest.mark.unit
 
@@ -9,8 +9,8 @@ pytestmark = pytest.mark.unit
 @pytest.mark.parametrize('text', [
     "Doesn't matter if her oppresses A, first joins",
     'the first person joins the game',
-    'jarvisian is a made-up word',
-    'the chavisville address',
+    'claireian is a made-up word',
+    'the claireville address',
 ])
 def test_ambient_words_do_not_trigger_default_wake_detection(text):
     cfg = get_default_config()
@@ -26,7 +26,7 @@ def test_each_configured_alias_remains_a_valid_address(alias):
 
 
 @pytest.mark.parametrize('name,alias,near_primary', [
-    ('jarvis', 'joris', 'jarvas'),
+    ('claire', 'clare', 'claira'),
     ('friday', 'computer', 'fridai'),
 ])
 def test_primary_approximation_and_exact_alias_remain_usable(name, alias, near_primary):
@@ -35,28 +35,28 @@ def test_primary_approximation_and_exact_alias_remain_usable(name, alias, near_p
 
 
 @pytest.mark.parametrize('text,name,alias', [
-    ('FRİDAY, hello', 'jarvis', 'friday'),
+    ('FRİDAY, hello', 'claire', 'friday'),
     ('ΓΕΙΑ, ΑΘΗΝΑ!', 'athena', 'αθηνα'),
-    ('你好，小助手！', 'jarvis', '小助手'),
-    ('Jarvis, hello', 'jarvis', ''),
+    ('你好，小助手！', 'claire', '小助手'),
+    ('Claire, hello', 'claire', ''),
 ])
 def test_unicode_punctuation_and_case_are_supported(text, name, alias):
     assert is_wake_word_detected(text, name, [alias])
 
 
 def test_empty_alias_cannot_wake_ambient_speech():
-    assert not is_wake_word_detected('ambient discussion', 'jarvis', [''])
+    assert not is_wake_word_detected('ambient discussion', 'claire', [''])
 
 
 @pytest.mark.parametrize('text,expected', [
-    ('jarvis explain jarvisian philosophy', 'explain jarvisian philosophy'),
-    ('jarvis tell me about chavisville', 'tell me about chavisville'),
+    ('claire explain claireian philosophy', 'explain claireian philosophy'),
+    ('claire tell me about claireville', 'tell me about claireville'),
 ])
 def test_query_extraction_keeps_names_inside_other_words(text, expected):
-    from jarvis.listening.wake_detection import extract_query_after_wake
+    from claire.listening.wake_detection import extract_query_after_wake
     cfg = get_default_config()
     assert extract_query_after_wake(text, cfg['wake_word'], cfg['wake_aliases']) == expected
 
 
 def test_explicit_fuzzy_threshold_is_respected():
-    assert not is_wake_word_detected('jarvas hello', 'jarvis', ['joris'], fuzzy_ratio=1.0)
+    assert not is_wake_word_detected('clair hello', 'claire', ['clare'], fuzzy_ratio=1.0)

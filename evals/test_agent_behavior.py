@@ -189,7 +189,7 @@ class TestContextUtilization:
     @pytest.mark.eval
     def test_location_context_in_search(self, mock_config, eval_db, eval_dialogue_memory):
         """Agent includes user's location in search queries when available."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "how's the weather?"
         user_location = "Berlin, Germany"
@@ -212,10 +212,10 @@ class TestContextUtilization:
                 return create_mock_llm_response("", [create_tool_call("webSearch", {"search_query": search})])
             return create_mock_llm_response("Weather in Berlin: 8°C, partly cloudy.")
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=(f"Location: {user_location}", None)), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=(f"Location: {user_location}", None)), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
 
             run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -245,7 +245,7 @@ class TestToolUsage:
     @pytest.mark.eval
     def test_simple_search_flow(self, mock_config, eval_db, eval_dialogue_memory):
         """Agent calls webSearch for information queries."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "what's happening in tech news today?"
         capture = ToolCallCapture()
@@ -261,9 +261,9 @@ class TestToolUsage:
                 return create_mock_llm_response("", [create_tool_call("webSearch", {"search_query": "tech news today"})])
             return create_mock_llm_response("Today in tech: Major AI announcements and new hardware releases.")
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
 
             response = run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -277,7 +277,7 @@ class TestToolUsage:
     @pytest.mark.eval
     def test_tool_chaining_search_then_fetch(self, mock_config, eval_db, eval_dialogue_memory):
         """Agent chains webSearch → fetchWebPage for detailed info."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "how's the weather this week?"
         # This test exercises tool-chaining behaviour; the context-aware router
@@ -304,9 +304,9 @@ class TestToolUsage:
                 "rain Fri-Sat around 10-11°C, improving Sunday."
             )
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": []}):
 
             response = run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -343,7 +343,7 @@ class TestMultiStepReasoning:
         Scenario: User asks about eating pizza
         Expected: Agent recalls health goals from memory AND checks today's intake
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "should I order pizza tonight?"
         # Bypass the context-aware tool router so fetchMeals is exposed to the
@@ -371,9 +371,9 @@ class TestMultiStepReasoning:
                 "You've been consistent this week, so one pizza night won't derail your progress!"
             )
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["health", "diet"]}):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["health", "diet"]}):
 
             response = run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -425,7 +425,7 @@ class TestMemoryEnrichment:
     ])
     def test_enrichment_extracts_correct_keywords(self, query: str, expected_keywords: list, mock_config):
         """Enrichment should extract keywords that find relevant memory context."""
-        from jarvis.reply.enrichment import extract_search_params_for_memory
+        from claire.reply.enrichment import extract_search_params_for_memory
         from helpers import voice_config
 
         mock_config = voice_config()
@@ -462,7 +462,7 @@ class TestMemoryEnrichment:
         the query generator should not emit implicit questions asking for that same
         information — we don't want to pull it from long-term memory redundantly.
         """
-        from jarvis.reply.enrichment import extract_search_params_for_memory
+        from claire.reply.enrichment import extract_search_params_for_memory
         from helpers import voice_config
 
         mock_config = voice_config()
@@ -505,7 +505,7 @@ class TestMemoryEnrichment:
         When enrichment finds relevant memory, it should be available to the
         LLM directly via the system prompt — no tool call required.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "what should I have for dinner?"
 
@@ -524,9 +524,9 @@ class TestMemoryEnrichment:
                 "how about a primavera pasta with seasonal vegetables?"
             )
 
-        with patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["dinner", "food", "preferences"]}), \
-             patch('jarvis.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_memory_results):
+        with patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["dinner", "food", "preferences"]}), \
+             patch('claire.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_memory_results):
 
             run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -549,7 +549,7 @@ class TestMemoryEnrichment:
         should read them from the system prompt and route to webSearch with an
         interest-flavoured query, rather than asking the user.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "what news might interest me?"
         capture = ToolCallCapture()
@@ -582,10 +582,10 @@ class TestMemoryEnrichment:
                 "Based on your interests in space and AI, here's today's news: SpaceX launched and a new AI model was released."
             )
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.chat_with_messages', side_effect=mock_chat), \
-             patch('jarvis.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["interests", "hobbies", "preferences"]}), \
-             patch('jarvis.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.chat_with_messages', side_effect=mock_chat), \
+             patch('claire.reply.engine.extract_search_params_for_memory', return_value={"keywords": ["interests", "hobbies", "preferences"]}), \
+             patch('claire.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
 
             response = run_reply_engine(db=eval_db, cfg=mock_config, tts=None, text=query, dialogue_memory=eval_dialogue_memory)
 
@@ -619,7 +619,7 @@ class TestLiveEndToEnd:
     @requires_judge_llm
     def test_weather_query_live(self, mock_config, eval_db, eval_dialogue_memory):
         """Live eval: Weather query with real LLM."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         query = "how's the weather this week?"
@@ -631,7 +631,7 @@ class TestLiveEndToEnd:
         def mock_get_location(**kwargs):
             return (f"Location: {test_location}", None)
 
-        with patch('jarvis.reply.engine.get_location_context_with_timezone', side_effect=mock_get_location):
+        with patch('claire.reply.engine.get_location_context_with_timezone', side_effect=mock_get_location):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
                 text=query, dialogue_memory=eval_dialogue_memory
@@ -662,7 +662,7 @@ class TestLiveEndToEnd:
         This tests that when memory enrichment provides user interests, the LLM
         uses them for personalized search rather than asking the user or ignoring them.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         query = "what news from today might interest me?"
@@ -682,9 +682,9 @@ class TestLiveEndToEnd:
             "fetchWebPage": "Full article about AI and space news...",
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: London, UK", None)), \
-             patch('jarvis.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: London, UK", None)), \
+             patch('claire.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
 
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -727,19 +727,19 @@ class TestLiveEndToEnd:
     @requires_judge_llm
     @pytest.mark.parametrize("query", [
         pytest.param(
-            "Recall my interests, then search the web for news on them, Jarvis.",
+            "Recall my interests, then search the web for news on them, Claire.",
             id="explicit-recall-then-search",
         ),
         pytest.param(
-            "Search the web for news that would interest me, Jarvis.",
+            "Search the web for news that would interest me, Claire.",
             id="news-that-would-interest-me",
         ),
         pytest.param(
-            "Find me news of interest to me, Jarvis.",
+            "Find me news of interest to me, Claire.",
             id="news-of-interest-to-me",
         ),
         pytest.param(
-            "What news today is interesting for me, Jarvis?",
+            "What news today is interesting for me, Claire?",
             id="news-interesting-for-me",
         ),
     ])
@@ -748,7 +748,7 @@ class TestLiveEndToEnd:
         Live eval: interest-flavoured phrasings must surface seeded interests.
 
         Field regression (2026-04-24, gemma4:e2b): user said "Recall my interests
-        and search the web for news on them, Jarvis." The intent judge paraphrased
+        and search the web for news on them, Claire." The intent judge paraphrased
         the utterance down to "search the web for news on my interests", dropping
         the explicit recall step. Enrichment then surfaced unrelated diary
         entries (weather chatter), the digest came back empty, and the model
@@ -761,7 +761,7 @@ class TestLiveEndToEnd:
         the search step, and the reply names at least one. The model must NOT
         bounce the question back.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         capture = ToolCallCapture()
@@ -782,9 +782,9 @@ class TestLiveEndToEnd:
             "fetchWebPage": "Full article about AI and space news...",
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: London, UK", None)), \
-             patch('jarvis.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: London, UK", None)), \
+             patch('claire.memory.conversation.search_conversation_memory_by_keywords', return_value=mock_enrichment_context):
 
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -897,7 +897,7 @@ class TestHelpfulness:
         self, query, mock_config, eval_db, eval_dialogue_memory
     ):
         """Live eval: agent should use tools for forecast queries, never deflect."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -910,8 +910,8 @@ class TestHelpfulness:
             "fetchWebPage": "Detailed 7-day forecast...",
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
 
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -950,7 +950,7 @@ class TestHelpfulness:
         self, query, mock_config, eval_db, eval_dialogue_memory
     ):
         """Live eval: agent should use tools for answerable queries, never deflect."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -963,8 +963,8 @@ class TestHelpfulness:
             "getWeather": "Current time info...",
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
 
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -1018,8 +1018,8 @@ class TestHelpfulness:
         lack the reasoning capacity to override the "it failed, don't retry"
         heuristic. This is marked as xfail for small models.
         """
-        from jarvis.reply.engine import run_reply_engine
-        from jarvis.reply.prompts import detect_model_size, ModelSize
+        from claire.reply.engine import run_reply_engine
+        from claire.reply.prompts import detect_model_size, ModelSize
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -1031,7 +1031,7 @@ class TestHelpfulness:
 
         def mock_tool_run(db, cfg, tool_name, tool_args, **kwargs):
             """First call returns error, second call succeeds."""
-            from jarvis.tools.types import ToolExecutionResult
+            from claire.tools.types import ToolExecutionResult
             capture.record(tool_name, tool_args or {})
             call_count["n"] += 1
 
@@ -1053,8 +1053,8 @@ class TestHelpfulness:
 
         capture = ToolCallCapture()
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Tbilisi, Georgia", None)):
 
             # Turn 1: Ask about weather in obscure location — tool will fail
             capture.clear()
@@ -1115,7 +1115,7 @@ class TestHelpfulness:
         that behaviour in so any regression (prompt drift, block framing, or
         silent drop like the earlier orphan-list bug) is caught.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -1151,7 +1151,7 @@ class TestHelpfulness:
                 "n-work",
                 "Work",
                 "The user is a software engineer at Equals Money and works "
-                "primarily on a local voice-assistant side-project called Jarvis.",
+                "primarily on a local voice-assistant side-project called Claire.",
             ),
         ]
 
@@ -1177,10 +1177,10 @@ class TestHelpfulness:
 
         query = "what do you know about my hobbies, interests, and work?"
 
-        with patch("jarvis.reply.engine.extract_search_params_for_memory", return_value=fake_extract), \
-             patch("jarvis.memory.graph.GraphMemoryStore", _FakeStore), \
-             patch("jarvis.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
-             patch("jarvis.reply.engine.get_location_context_with_timezone",
+        with patch("claire.reply.engine.extract_search_params_for_memory", return_value=fake_extract), \
+             patch("claire.memory.graph.GraphMemoryStore", _FakeStore), \
+             patch("claire.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
+             patch("claire.reply.engine.get_location_context_with_timezone",
                    return_value=("Location: Hackney, London, UK", "Europe/London")):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -1225,7 +1225,7 @@ class TestHelpfulness:
         fact_keywords = [
             "thai", "pad see ew", "ramen",
             "box", "trenches", "hackney", "gym",
-            "equals money", "software engineer", "jarvis",
+            "equals money", "software engineer", "claire",
         ]
         matched_facts = [kw for kw in fact_keywords if kw in response_lower]
         assert matched_facts, (
@@ -1244,12 +1244,12 @@ class TestHelpfulness:
         Live eval: asking the assistant to remember something must not trigger
         a 'I have no long-term memory across sessions' denial.
 
-        Jarvis *does* have persistent memory (the knowledge graph + diary), so
+        Claire *does* have persistent memory (the knowledge graph + diary), so
         replying with "I can't remember things between sessions" is a factually
         wrong hedge that small models slip into. This eval locks in the fix:
         system-prompt directive + banned phrasings.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -1258,10 +1258,10 @@ class TestHelpfulness:
 
         query = "please remember that I'm vegetarian"
 
-        with patch("jarvis.reply.engine.extract_search_params_for_memory",
+        with patch("claire.reply.engine.extract_search_params_for_memory",
                    return_value={"keywords": ["vegetarian", "diet"], "questions": []}), \
-             patch("jarvis.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
-             patch("jarvis.reply.engine.get_location_context_with_timezone",
+             patch("claire.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
+             patch("claire.reply.engine.get_location_context_with_timezone",
                    return_value=("Location: Hackney, London, UK", "Europe/London")):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -1310,7 +1310,7 @@ class TestHelpfulness:
         Locks in the system-prompt nudge that tells the model to use provided
         context on open-ended prompts instead of emitting a stock greeting.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
         from helpers import JUDGE_MODEL
 
         mock_config.ollama_base_url = "http://localhost:11434"
@@ -1362,10 +1362,10 @@ class TestHelpfulness:
 
         query = "say something"
 
-        with patch("jarvis.reply.engine.extract_search_params_for_memory", return_value=fake_extract), \
-             patch("jarvis.memory.graph.GraphMemoryStore", _FakeStore), \
-             patch("jarvis.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
-             patch("jarvis.reply.engine.get_location_context_with_timezone",
+        with patch("claire.reply.engine.extract_search_params_for_memory", return_value=fake_extract), \
+             patch("claire.memory.graph.GraphMemoryStore", _FakeStore), \
+             patch("claire.memory.conversation.search_conversation_memory_by_keywords", return_value=[]), \
+             patch("claire.reply.engine.get_location_context_with_timezone",
                    return_value=("Location: Hackney, London, UK", "Europe/London")):
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
@@ -1432,7 +1432,7 @@ class TestMalformedResponseAfterTools:
         an answer. The engine should catch this as malformed and produce an error
         message rather than surfacing the raw literal.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         query = "what is Britney Spears' most famous song?"
         capture = ToolCallCapture()
@@ -1457,9 +1457,9 @@ class TestMalformedResponseAfterTools:
             # Second turn: model produces the field-captured malformed output
             return create_mock_llm_response("tool_calls: []")
 
-        with patch("jarvis.reply.engine.run_tool_with_retries", side_effect=mock_tool_run), \
-             patch("jarvis.reply.engine.chat_with_messages", side_effect=mock_chat), \
-             patch("jarvis.reply.engine.extract_search_params_for_memory", return_value={"keywords": []}):
+        with patch("claire.reply.engine.run_tool_with_retries", side_effect=mock_tool_run), \
+             patch("claire.reply.engine.chat_with_messages", side_effect=mock_chat), \
+             patch("claire.reply.engine.extract_search_params_for_memory", return_value={"keywords": []}):
 
             response = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,

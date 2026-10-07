@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from jarvis.utils import fast_vector_store, vector_store
+from claire.utils import fast_vector_store, vector_store
 
 pytestmark = pytest.mark.unit
 

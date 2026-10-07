@@ -4,9 +4,9 @@ from unittest.mock import patch
 import pytest
 from evals.helpers import ToolCallCapture, voice_config
 from evals.tool_routing import requires_judge_llm
-from jarvis.reply import engine
-from jarvis.reply.prompts.model_variants import ModelSize
-from jarvis.tools.types import ToolExecutionResult
+from claire.reply import engine
+from claire.reply.prompts.model_variants import ModelSize
+from claire.tools.types import ToolExecutionResult
 
 pytestmark = [pytest.mark.eval, requires_judge_llm]
 

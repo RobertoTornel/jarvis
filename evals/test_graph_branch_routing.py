@@ -31,8 +31,8 @@ import pytest
 from evals.conftest import requires_judge_llm
 from evals.helpers import JUDGE_MODEL, MockConfig
 
-from jarvis.memory.graph import BRANCH_DIRECTIVES, BRANCH_USER, BRANCH_WORLD
-from jarvis.memory.graph_ops import extract_graph_memories
+from claire.memory.graph import BRANCH_DIRECTIVES, BRANCH_USER, BRANCH_WORLD
+from claire.memory.graph_ops import extract_graph_memories
 
 
 # =============================================================================

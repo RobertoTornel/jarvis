@@ -11,7 +11,7 @@ The Settings Window provides a graphical interface for editing `config.json` wit
 1. **Metadata-driven**: All fields are defined in a `FIELD_METADATA` registry. Adding a new config parameter to the settings UI requires only adding a `FieldMeta` entry — no widget code changes.
 2. **Minimal config files**: Only non-default values are written to `config.json`. Removing a field from the config reverts it to the default.
 3. **Preserves unknown keys**: Keys not managed by the UI (e.g. `mcps`, `_config_version`, future additions) are preserved when saving.
-4. **Theme-consistent**: Uses the shared Jarvis theme from `themes.py`.
+4. **Theme-consistent**: Uses the shared Claire theme from `themes.py`.
 
 ## Architecture
 

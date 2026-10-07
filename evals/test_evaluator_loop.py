@@ -1,16 +1,20 @@
 """
-Evaluator-Driven Agentic Loop Evaluations
+Agentic Loop End-to-End Evaluations
 
-Covers the evaluator's end-to-end behaviour against a real small model
-(gemma4:e2b by default): the per-turn terminal/continue decision, nudge
-injection, nudge cap enforcement, max-turn digest fallback, the
-toolSearchTool escape hatch, and multi-turn multi-tool complexity.
+Covers the agentic loop's end-to-end behaviour against a real small model
+(gemma4:e2b by default): premature-prose nudging, terminal-on-success,
+honest decline when no tool can help, the nudge cap, max-turn digest
+fallback, the toolSearchTool escape hatch, and multi-turn multi-tool
+complexity.
 
-These evals complement the mock-LLM unit tests in
-``tests/test_evaluator.py`` and ``tests/test_engine_tool_search_loop.py``
-by observing what a live small model actually does when looped through
-the evaluator. Tool *implementations* are mocked for determinism; the
-chat model and the evaluator model run for real.
+The evaluator that originally drove this loop was retired in favour of the
+task-list planner (``claire.reply.evaluator`` was removed on 2026-10-07), so
+these evals observe what a live small model does when looped through the
+current engine. Tool *implementations* are mocked for determinism; the chat
+model runs for real.
+
+Deterministic mock-LLM coverage lives in
+``tests/test_engine_tool_search_loop.py`` and ``tests/test_planner.py``.
 
 Run: ./scripts/run_evals.sh
 """
@@ -105,13 +109,14 @@ MOCK_MADRID_LIVE = (
 
 
 def _configure(mock_config):
-    """Pin the eval to the live small model with the evaluator enabled."""
+    """Pin the eval to the live small model for the agentic loop.
+
+    The retired evaluator's ``evaluator_enabled`` / ``evaluator_nudge_max``
+    knobs are deliberately NOT set: ``claire.reply.evaluator`` was removed
+    on 2026-10-07 and the planner owns the correction role now.
+    """
     mock_config.ollama_base_url = "http://localhost:11434"
     mock_config.ollama_chat_model = JUDGE_MODEL
-    # Evaluator on (default None for SMALL already enables it, but be explicit
-    # so failures are unambiguous if the model-size detection changes).
-    mock_config.evaluator_enabled = True
-    mock_config.evaluator_nudge_max = 2
     mock_config.tool_search_max_calls = 3
     return mock_config
 
@@ -129,7 +134,7 @@ def _make_tool_runner(capture: ToolCallCapture, responder):
     """Wrap a responder that maps (name, args) -> reply_text into a
     ``run_tool_with_retries`` replacement."""
 
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.tools.types import ToolExecutionResult
 
     def _runner(db, cfg, tool_name, tool_args, **kwargs):
         args = tool_args or {}
@@ -156,8 +161,8 @@ class TestPrematureProseNudge:
     @requires_judge_llm
     @pytest.mark.xfail(
         reason=(
-            "Plumbing verified in unit tests (tests/test_engine_tool_search_loop.py, "
-            "tests/test_evaluator.py). Live behaviour on gemma4:e2b is flaky: "
+            "Plumbing verified in unit tests (tests/test_engine_tool_search_loop.py). "
+            "Live behaviour on gemma4:e2b is flaky: "
             "the small model sometimes refuses in prose despite the nudge. "
             "Tracked for iterative prompt tuning; architecture ships as-is."
         ),
@@ -166,7 +171,7 @@ class TestPrematureProseNudge:
     def test_navigate_prose_gets_nudged_into_tool_call(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -181,10 +186,10 @@ class TestPrematureProseNudge:
         router = _make_router_stub(["chrome-devtools__navigate_page", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: Kensington, UK", None),
              ):
             reply = run_reply_engine(
@@ -219,7 +224,7 @@ class TestTerminalOnSuccessfulToolUse:
     def test_single_weather_call_terminates(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -232,10 +237,10 @@ class TestTerminalOnSuccessfulToolUse:
         router = _make_router_stub(["getWeather", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: Paris, France", None),
              ):
             reply = run_reply_engine(
@@ -288,7 +293,7 @@ class TestTerminalOnHonestCantDo:
     def test_no_email_tool_declines_honestly(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -304,10 +309,10 @@ class TestTerminalOnHonestCantDo:
         router = _make_router_stub(["getWeather", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             reply = run_reply_engine(
@@ -351,7 +356,7 @@ class TestNudgeCapEnforcement:
     @pytest.mark.eval
     @requires_judge_llm
     def test_nudge_cap_stops_loop(self, mock_config, eval_db, eval_dialogue_memory):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         mock_config.evaluator_nudge_max = 1  # tight cap so the test is fast
@@ -370,10 +375,10 @@ class TestNudgeCapEnforcement:
         router = _make_router_stub(["getWeather", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             reply = run_reply_engine(
@@ -414,7 +419,7 @@ class TestMaxTurnDigestCaveat:
     def test_max_turn_triggers_digest(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         mock_config.agentic_max_turns = 3
@@ -458,14 +463,14 @@ class TestMaxTurnDigestCaveat:
                 }
             }
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ), \
-             patch("jarvis.reply.engine.chat_with_messages", side_effect=_always_tool_call), \
-             patch("jarvis.reply.engine.digest_loop_for_max_turns", side_effect=_spy_digest):
+             patch("claire.reply.engine.chat_with_messages", side_effect=_always_tool_call), \
+             patch("claire.reply.engine.digest_loop_for_max_turns", side_effect=_spy_digest):
             reply = run_reply_engine(
                 db=eval_db, cfg=mock_config, tts=None,
                 text="Write me a very long essay about abstract algebra.",
@@ -513,7 +518,7 @@ class TestToolSearchToolEscapeHatch:
     def test_toolsearchtool_widens_then_navigate(
         self, mock_config, eval_db, eval_dialogue_memory
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -532,10 +537,10 @@ class TestToolSearchToolEscapeHatch:
         router = _make_router_stub(["webSearch", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: Kensington, UK", None),
              ):
             reply = run_reply_engine(
@@ -585,7 +590,7 @@ class TestComplexMultiTurnMultiTool:
         self, mock_config, eval_db, eval_dialogue_memory
     ):
         """Two distinct webSearch calls: entity lookup then filmography."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -604,10 +609,10 @@ class TestComplexMultiTurnMultiTool:
         router = _make_router_stub(["webSearch", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             reply = run_reply_engine(
@@ -647,7 +652,7 @@ class TestComplexMultiTurnMultiTool:
         self, mock_config, eval_db, eval_dialogue_memory
     ):
         """Two getWeather calls, different locations, reply mentions both."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -665,10 +670,10 @@ class TestComplexMultiTurnMultiTool:
         router = _make_router_stub(["getWeather", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             reply = run_reply_engine(
@@ -713,7 +718,7 @@ class TestComplexMultiTurnMultiTool:
         self, mock_config, eval_db, eval_dialogue_memory
     ):
         """Turn 2 resolves 'his' to the entity established in turn 1."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -731,10 +736,10 @@ class TestComplexMultiTurnMultiTool:
         router = _make_router_stub(["webSearch", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             # Turn 1: establish entity
@@ -796,7 +801,7 @@ class TestComplexMultiTurnMultiTool:
     ):
         """At least one webSearch must happen; a nudge-driven retry is
         acceptable, zero searches is not."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -812,10 +817,10 @@ class TestComplexMultiTurnMultiTool:
         router = _make_router_stub(["webSearch", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             reply = run_reply_engine(
@@ -851,7 +856,7 @@ class TestComplexMultiTurnMultiTool:
     ):
         """Turn 1: narrow router → toolSearchTool → navigate. Turn 2: a new
         action whose argument must be self-contained ('lo-fi')."""
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
         capture = ToolCallCapture()
@@ -873,10 +878,10 @@ class TestComplexMultiTurnMultiTool:
         router = _make_router_stub(["webSearch", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
-        with patch("jarvis.reply.engine.select_tools", side_effect=router), \
-             patch("jarvis.reply.engine.run_tool_with_retries", side_effect=runner), \
+        with patch("claire.reply.engine.select_tools", side_effect=router), \
+             patch("claire.reply.engine.run_tool_with_retries", side_effect=runner), \
              patch(
-                 "jarvis.reply.engine.get_location_context_with_timezone",
+                 "claire.reply.engine.get_location_context_with_timezone",
                  return_value=("Location: London, UK", None),
              ):
             capture.clear()
@@ -919,78 +924,9 @@ class TestComplexMultiTurnMultiTool:
 
 
 # =============================================================================
-# 8. Structured tool_call emission — the evaluator must not only nudge
-#    textually, it must emit a structured {name, arguments} that the engine can
-#    execute directly. This is the recovery path for small chat models that
-#    routinely ignore textual nudges.
+# Section 8 (Structured tool_call emission) was removed on 2026-10-07 along
+# with claire.reply.evaluator: its only subject was the retired evaluator's
+# structured nudge. The surviving behaviour — the engine executing a
+# structured tool_call directly — is covered deterministically by
+# tests/test_engine_tool_search_loop.py.
 # =============================================================================
-
-
-class TestStructuredToolCallEmission:
-    """The evaluator prompt now asks for a structured ``tool_call`` field
-    alongside the textual nudge. Verify that a live small-model evaluator
-    actually populates it when the intent is unambiguous."""
-
-    @pytest.mark.eval
-    @requires_judge_llm
-    @pytest.mark.xfail(
-        reason=(
-            "Prompt compliance depends on the live small evaluator model. "
-            "Deterministic coverage lives in tests/test_evaluator.py "
-            "(parse) and tests/test_engine_tool_search_loop.py (direct-exec). "
-            "Tracked for iterative prompt tuning; architecture ships as-is."
-        ),
-        strict=False,
-    )
-    def test_evaluator_emits_structured_tool_call_for_obvious_search(
-        self, mock_config
-    ):
-        from jarvis.reply.evaluator import evaluate_turn
-
-        _configure(mock_config)
-
-        result = evaluate_turn(
-            user_query="Give me an overview of China.",
-            assistant_response_summary=(
-                "I can look that up for you. Would you like me to search the "
-                "web for an overview of China?"
-            ),
-            available_tools=[
-                ("webSearch", "Search the web and return ranked results."),
-                ("stop", "Explicit end-of-turn sentinel."),
-            ],
-            turns_used=1,
-            cfg=mock_config,
-        )
-
-        print(f"\n📊 Structured tool_call emission:")
-        print(f"   terminal: {result.terminal}")
-        print(f"   nudge: {result.nudge!r}")
-        print(f"   tool_call: {result.tool_call!r}")
-
-        assert result.terminal is False, (
-            "Evaluator should continue: the agent offered prose instead of "
-            "calling webSearch. "
-            f"Got terminal={result.terminal}, reason={result.reason!r}."
-        )
-        assert isinstance(result.tool_call, dict), (
-            "Evaluator should emit a structured tool_call so the engine can "
-            "run the search directly without relying on the chat model to "
-            f"parse the textual nudge. Got tool_call={result.tool_call!r}."
-        )
-        assert result.tool_call.get("name") == "webSearch", (
-            f"Structured tool_call.name should be 'webSearch'. "
-            f"Got {result.tool_call!r}."
-        )
-        args = result.tool_call.get("arguments") or {}
-        assert isinstance(args, dict) and args, (
-            "Structured tool_call.arguments should be a non-empty dict with "
-            f"the intended query. Got {result.tool_call!r}."
-        )
-        arg_blob = " ".join(
-            str(v).lower() for v in args.values() if isinstance(v, str)
-        )
-        assert "china" in arg_blob, (
-            f"Structured tool_call.arguments should mention 'china'. "
-            f"Got {result.tool_call!r}."
-        )

@@ -3,7 +3,7 @@
 Setup script for GeoLite2 geolocation database.
 
 This script helps users set up the MaxMind GeoLite2 database required for
-location-based features in Jarvis.
+location-based features in Claire.
 
 Since MaxMind requires registration for free access to GeoLite2 data (as of 2019),
 this script provides instructions and utilities to help with the setup process.
@@ -22,7 +22,7 @@ sys.path.insert(0, str(src_dir))
 
 try:
     # Location utilities live under utils.location after refactor.
-    from jarvis.utils.location import (
+    from claire.utils.location import (
         _get_database_path,
         is_location_available,
         get_location_info,
@@ -30,18 +30,18 @@ try:
         _get_local_network_ip,
         _get_external_ip_automatically,
     )
-    from jarvis.config import load_settings
+    from claire.config import load_settings
     SETTINGS = load_settings()
-    JARVIS_AVAILABLE = True
+    CLAIRE_AVAILABLE = True
 except ImportError as e:
     print(
-        "Warning: Could not import Jarvis location utilities from 'jarvis.utils.location'.\n"
+        "Warning: Could not import Claire location utilities from 'claire.utils.location'.\n"
         f"  Import error: {e}\n"
         "  Make sure you're running from the repository root and that 'src' is on PYTHONPATH.\n"
         "  Example (zsh/bash): export PYTHONPATH=\"$(pwd)/src:$PYTHONPATH\"\n"
         "  Or install the project in editable mode once packaging is set up (pip install -e .)."
     )
-    JARVIS_AVAILABLE = False
+    CLAIRE_AVAILABLE = False
 
 
 def check_dependencies() -> bool:
@@ -65,8 +65,8 @@ def install_dependencies() -> bool:
 
 def get_database_info() -> dict:
     """Get information about the database location and status."""
-    if not JARVIS_AVAILABLE:
-        base_dir = Path.home() / ".local" / "share" / "jarvis" / "geoip"
+    if not CLAIRE_AVAILABLE:
+        base_dir = Path.home() / ".local" / "share" / "claire" / "geoip"
         db_path = base_dir / "GeoLite2-City.mmdb"
     else:
         db_path = _get_database_path()
@@ -84,7 +84,7 @@ def print_setup_instructions():
     db_info = get_database_info()
 
     print("\n" + "="*60)
-    print("📍 JARVIS GEOLOCATION SETUP")
+    print("📍 CLAIRE GEOLOCATION SETUP")
     print("="*60)
 
     print(f"Database location: {db_info['path']}")
@@ -94,7 +94,7 @@ def print_setup_instructions():
         size_mb = db_info['size'] / (1024 * 1024)
         print(f"Database size: {size_mb:.1f} MB")
 
-        if JARVIS_AVAILABLE:
+        if CLAIRE_AVAILABLE:
             print("\n🧪 Testing location detection...")
             try:
                 location = get_location_info(settings=SETTINGS)
@@ -121,13 +121,13 @@ def print_setup_instructions():
         print(f"   cp GeoLite2-City_*/GeoLite2-City.mmdb {db_info['path']}")
         print()
         print("5. Location detection is automatic!")
-        print("   Jarvis will attempt to detect your external IP using:")
+        print("   Claire will attempt to detect your external IP using:")
         print("   - UPnP (queries your local router)")
         print("   - Socket routing (minimal external contact)")
         print("   - Optional single DNS query (OpenDNS) if behind CGNAT (config: location_cgnat_resolve_public_ip=true)")
         print()
         print("   If automatic detection fails, manually configure:")
-        print("   Add to ~/.config/jarvis/config.json:")
+        print("   Add to ~/.config/claire/config.json:")
         print('   {')
         print('     "location_auto_detect": false,')
         print('     "location_ip_address": "YOUR_PUBLIC_IP_HERE"')
@@ -144,8 +144,8 @@ def print_setup_instructions():
 
 def test_location_features():
     """Test the location detection features."""
-    if not JARVIS_AVAILABLE:
-        print("❌ Cannot test: Jarvis modules not available")
+    if not CLAIRE_AVAILABLE:
+        print("❌ Cannot test: Claire modules not available")
         return False
 
     print("\n🔍 Testing location features...")
@@ -181,7 +181,7 @@ def test_location_features():
             advice = location.get("advice")
             if reason == "cgnat_not_found":
                 print("💡 Carrier-grade NAT (100.64.0.0/10) and IP not in GeoLite2. Cannot derive precise location.")
-                print("   Configure a real public IP in ~/.config/jarvis/config.json:")
+                print("   Configure a real public IP in ~/.config/claire/config.json:")
                 print("   { 'location_ip_address': 'YOUR_PUBLIC_IP', 'location_auto_detect': false }")
             elif reason == "not_found":
                 print("💡 IP not found in free GeoLite2 dataset. It may be new or CGNAT.")
@@ -210,7 +210,7 @@ def test_location_features():
 
 def create_test_config():
     """Create a test configuration file with location enabled."""
-    config_path = Path.home() / ".config" / "jarvis" / "config.json"
+    config_path = Path.home() / ".config" / "claire" / "config.json"
 
     if config_path.exists():
         print(f"✅ Config file already exists: {config_path}")
@@ -239,7 +239,7 @@ def create_test_config():
 
 def main():
     """Main setup function."""
-    print("🌍 Jarvis Geolocation Setup")
+    print("🌍 Claire Geolocation Setup")
 
     # Check dependencies
     if not check_dependencies():
@@ -269,11 +269,11 @@ def main():
     else:
         print("\n⏳ Database not found - follow the instructions above")
 
-    print("\n💡 Privacy Note: Jarvis respects your privacy by:")
+    print("\n💡 Privacy Note: Claire respects your privacy by:")
     print("   - Using UPnP (local router) and socket routing instead of third-party services")
     print("   - Working entirely with local databases")
     print("   - Giving you full control over IP detection methods")
-    print("\n💡 Tip: Set JARVIS_VOICE_DEBUG=1 to see location info in debug output")
+    print("\n💡 Tip: Set CLAIRE_VOICE_DEBUG=1 to see location info in debug output")
 
 
 if __name__ == "__main__":

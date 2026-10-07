@@ -27,7 +27,7 @@ import pytest
 from conftest import requires_judge_llm
 from helpers import JUDGE_MODEL
 
-from jarvis.memory.graph_ops import merge_node_data
+from claire.memory.graph_ops import merge_node_data
 
 
 # =============================================================================

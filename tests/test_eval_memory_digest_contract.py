@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from jarvis.reply import enrichment
+from claire.reply import enrichment
 
 pytestmark = pytest.mark.unit
 IDENTITY = 'TestMemoryDigestSurfacesIdentityFacts'

@@ -1,5 +1,5 @@
 """
-🎨 Jarvis UI Themes
+🎨 Claire UI Themes
 
 Shared stylesheets for Qt interfaces, matching the Memory Viewer's
 deep space theme with amber accents.
@@ -68,7 +68,7 @@ CHAT_THEME_STYLESHEET = f"""
 
 
 # Comprehensive Qt stylesheet matching the Memory Viewer's design
-JARVIS_THEME_STYLESHEET = """
+CLAIRE_THEME_STYLESHEET = """
     QWidget#download_card {
         background-color: #161920;
         border: 1px solid #27272a;
@@ -582,7 +582,7 @@ def _ensure_icons() -> dict[str, str]:
     """Write indicator SVGs to a temp directory, return {name: path} mapping."""
     global _icon_dir
     if _icon_dir is None:
-        _icon_dir = tempfile.mkdtemp(prefix="jarvis_theme_")
+        _icon_dir = tempfile.mkdtemp(prefix="claire_theme_")
 
     icons = {
         "check": _CHECKMARK_SVG,
@@ -601,7 +601,7 @@ def _ensure_icons() -> dict[str, str]:
 
 
 def apply_theme(widget) -> None:
-    """Apply the Jarvis theme to a Qt widget, including SVG-based indicator icons."""
+    """Apply the Claire theme to a Qt widget, including SVG-based indicator icons."""
     icons = _ensure_icons()
     icon_css = _ICON_STYLESHEET_TEMPLATE.format(**icons)
-    widget.setStyleSheet(JARVIS_THEME_STYLESHEET + icon_css)
+    widget.setStyleSheet(CLAIRE_THEME_STYLESHEET + icon_css)

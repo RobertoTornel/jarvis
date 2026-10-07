@@ -37,7 +37,7 @@ def _make_get_weather_runner(capture: ToolCallCapture):
     plus the canned forecast.
     Other locations fail. Non-weather tools return their own fixture data.
     """
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.tools.types import ToolExecutionResult
 
     def _runner(db, cfg, tool_name, tool_args, **kwargs):
         capture.record(tool_name, tool_args or {})
@@ -86,7 +86,7 @@ class TestFollowupSuppliesMissingToolArg:
     def test_short_followup_continues_previous_tool_chain(
         self, eval_db, eval_dialogue_memory,
     ):
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         cfg = voice_config()
         # Geoip disabled — the only way the model gets a location is
@@ -96,12 +96,12 @@ class TestFollowupSuppliesMissingToolArg:
         capture = ToolCallCapture()
 
         with patch(
-            "jarvis.reply.engine.run_tool_with_retries",
+            "claire.reply.engine.run_tool_with_retries",
             side_effect=_make_get_weather_runner(capture),
         ):
             turn1 = run_reply_engine(
                 db=eval_db, cfg=cfg, tts=None,
-                text="how's the weather tomorrow Jarvis?",
+                text="how's the weather tomorrow Claire?",
                 dialogue_memory=eval_dialogue_memory,
             )
             turn2 = run_reply_engine(

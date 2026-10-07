@@ -37,8 +37,8 @@ requires_voice_model = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def isolated_face_state(monkeypatch, tmp_path):
     from desktop_app import face_widget
-    monkeypatch.setattr(face_widget, '_get_jarvis_state_file', lambda: str(tmp_path / 'state'))
-    monkeypatch.setattr(face_widget, '_jarvis_state_instance', None)
+    monkeypatch.setattr(face_widget, '_get_claire_state_file', lambda: str(tmp_path / 'state'))
+    monkeypatch.setattr(face_widget, '_claire_state_instance', None)
     import sys
     listeners = []
     create = _create_listener
@@ -80,7 +80,7 @@ def _create_listener(**kwargs):
     mock_cfg.voice_debug = False
     mock_cfg.voice_min_energy = 0.0045
     mock_cfg.tune_enabled = False
-    mock_cfg.wake_word = "jarvis"
+    mock_cfg.wake_word = "claire"
     mock_cfg.wake_aliases = []
     mock_cfg.wake_fuzzy_ratio = 0.78
     mock_cfg.stop_commands = ["stop", "quiet"]
@@ -94,10 +94,10 @@ def _create_listener(**kwargs):
     mock_tts.is_speaking.return_value = kwargs.get("tts_speaking", False)
     mock_dialogue_memory = MagicMock()
 
-    with patch("jarvis.listening.listener.webrtcvad", None), \
-         patch("jarvis.listening.listener.sd", None), \
-         patch("jarvis.listening.listener.np", None):
-        from jarvis.listening.listener import VoiceListener
+    with patch("claire.listening.listener.webrtcvad", None), \
+         patch("claire.listening.listener.sd", None), \
+         patch("claire.listening.listener.np", None):
+        from claire.listening.listener import VoiceListener
         listener = VoiceListener(mock_db, mock_cfg, mock_tts, mock_dialogue_memory)
 
     # Verify real intent judge was created
@@ -258,7 +258,7 @@ class TestEchoReasoningDistrust:
     def test_user_query_not_confused_with_echo_after_tts(self, _print):
         """User asks about a completely different topic after TTS — not echo.
 
-        Scenario: TTS gave weather info, user asks 'Jarvis set a timer for 5 minutes'.
+        Scenario: TTS gave weather info, user asks 'Claire set a timer for 5 minutes'.
         Even though TTS was recent, the query is completely unrelated.
         """
         listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
@@ -270,7 +270,7 @@ class TestEchoReasoningDistrust:
         _wait_for_hot_window_active(listener)
 
         now = time.time()
-        user_text = "Jarvis set a timer for 5 minutes"
+        user_text = "Claire set a timer for 5 minutes"
         _add_buffer_segment(listener, user_text, now - 0.5, now)
 
         _process_transcript(
@@ -428,14 +428,14 @@ class TestProcessedSegmentFilteringIntegration:
         now = time.time()
 
         # First query — already processed
-        _add_buffer_segment(listener, "Jarvis what's the weather in London",
+        _add_buffer_segment(listener, "Claire what's the weather in London",
                            now - 10.0, now - 8.0)
         listener._transcript_buffer.mark_segment_processed(
-            "Jarvis what's the weather in London"
+            "Claire what's the weather in London"
         )
 
         # New query — current
-        user_text = "Jarvis tell me a joke"
+        user_text = "Claire tell me a joke"
         _add_buffer_segment(listener, user_text, now - 1.0, now)
 
         _process_transcript(
@@ -511,7 +511,7 @@ class TestHotWindowPrefersJudgeQuery:
         listener, _ = _create_listener(echo_tolerance=0.02)
 
         now = time.time()
-        user_text = "Jarvis what time is it"
+        user_text = "Claire what time is it"
         _add_buffer_segment(listener, user_text, now - 0.5, now)
 
         _process_transcript(
@@ -607,7 +607,7 @@ class TestMultiSegmentBufferIntegration:
                            now - 2.0, now - 1.0, is_during_tts=True)
 
         # User's wake word query — different topic
-        user_text = "Jarvis what about new movies this weekend"
+        user_text = "Claire what about new movies this weekend"
         _add_buffer_segment(listener, user_text, now - 0.5, now)
 
         _process_transcript(

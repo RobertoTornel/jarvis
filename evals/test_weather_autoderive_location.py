@@ -5,7 +5,7 @@ Field failures captured 2026-04-20 and 2026-04-21:
 
   - 2026-04-20 "what's the weather this week": the LLM replied "What location
     are you asking about?" without calling the tool.
-  - 2026-04-21 "How's the weather, Jarvis?": with ten prior diary entries
+  - 2026-04-21 "How's the weather, Claire?": with ten prior diary entries
     about weather loaded (~890 char digest), gemma produced malformed
     output and the engine shipped the canned fallback "I had trouble
     understanding that request." The tool was never invoked.
@@ -85,7 +85,7 @@ _WARM_WEATHER_DIARY = [
 
 def _run_weather_query(mock_config, eval_db, eval_dialogue_memory, query: str):
     from helpers import JUDGE_MODEL
-    from jarvis.reply.engine import run_reply_engine
+    from claire.reply.engine import run_reply_engine
 
     mock_config.ollama_base_url = "http://localhost:11434"
     mock_config.ollama_chat_model = JUDGE_MODEL
@@ -100,10 +100,10 @@ def _run_weather_query(mock_config, eval_db, eval_dialogue_memory, query: str):
     )
 
     with patch(
-        'jarvis.utils.location.get_location_info',
+        'claire.utils.location.get_location_info',
         return_value={"city": "Hackney", "region": "England", "country": "UK"},
     ), patch(
-        'jarvis.reply.engine.run_tool_with_retries',
+        'claire.reply.engine.run_tool_with_retries',
         side_effect=create_mock_tool_run(capture, {
             "getWeather": weather_payload,
         }),

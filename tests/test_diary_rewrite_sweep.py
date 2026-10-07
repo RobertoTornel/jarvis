@@ -25,16 +25,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.memory import conversation as cmod
-from jarvis.memory.conversation import rewrite_all_diary_summaries
-from jarvis.memory.db import Database
+from claire.memory import conversation as cmod
+from claire.memory.conversation import rewrite_all_diary_summaries
+from claire.memory.db import Database
 
 
 def _seed(db: Database, rows: list[tuple[str, str, str | None]]) -> None:
     """Seed (date_utc, summary, topics) tuples into the DB."""
     for date_utc, summary, topics in rows:
         db.upsert_conversation_summary(
-            date_utc=date_utc, summary=summary, topics=topics, source_app="jarvis",
+            date_utc=date_utc, summary=summary, topics=topics, source_app="claire",
         )
 
 
@@ -56,7 +56,7 @@ def _cfg(*, embedding_model: str = "") -> SimpleNamespace:
 
 class TestRewriteSweepBehaviour:
     def test_walks_every_row_and_rewrites_only_dirty_ones(self, tmp_path, monkeypatch):
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "The user asked X. The assistant could not help.", None),
             ("2026-04-15", "The user prefers Celsius.", None),
@@ -89,7 +89,7 @@ class TestRewriteSweepBehaviour:
         """A maintenance pass must not make cleaned rows look like new
         writes — the audit trail of when a row was *originally* authored
         is the only signal users have to verify diary provenance."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
         ])
@@ -113,7 +113,7 @@ class TestRewriteSweepBehaviour:
         """If the model returns empty (entire row was deflection), keep
         the original. Empty diary entries are worse than slightly-leaky
         ones — retrieval treats absence as 'no record'."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "The assistant could not help. The assistant offered to search.", None),
         ])
@@ -132,7 +132,7 @@ class TestRewriteSweepBehaviour:
         """Per-row failure must be fail-open. The sweep continues with
         the remaining rows so a transient model hiccup on one date does
         not abandon the rest of the diary."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
             ("2026-04-15", "User asked Y. The assistant could not help.", None),
@@ -160,7 +160,7 @@ class TestRewriteSweepBehaviour:
     def test_event_payload_contains_no_raw_summary_text(self, tmp_path, monkeypatch):
         """Privacy contract: per-row events must contain only counts,
         booleans, and the date — never any portion of the diary text."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         sentinel = "thisIsAUniqueSentinelStringThatMustNotLeak"
         _seed(db, [
             ("2026-04-10", f"User said {sentinel}. The assistant could not help.", None),
@@ -181,7 +181,7 @@ class TestRewriteSweepBehaviour:
     def test_error_field_is_class_name_only_never_message(self, tmp_path, monkeypatch):
         """Stringified exception messages can echo offending input back to
         the caller. The error field must be the class name only."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         sentinel = "secretDiaryTokenInExceptionMessage"
         _seed(db, [
             ("2026-04-10", f"User said {sentinel}. The assistant could not help.", None),
@@ -202,7 +202,7 @@ class TestRewriteSweepBehaviour:
         """If the LLM returns the input verbatim (clean row), no DB write
         happens and the embedding stays put. Equivalent of the topic
         optimiser's 'topics_changed=False → skip writeback' rule."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-15", "The user prefers Celsius.", None),
         ])
@@ -221,7 +221,7 @@ class TestRewriteSweepBehaviour:
         assert db.get_all_conversation_summaries()[0]["ts_utc"] == original_ts
 
     def test_handles_empty_diary_without_calling_llm(self, tmp_path, monkeypatch):
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
 
         called = {"n": 0}
 
@@ -238,7 +238,7 @@ class TestRewriteSweepBehaviour:
     def test_strips_markdown_fences_from_model_output(self, tmp_path, monkeypatch):
         """Some models wrap output in ```text fences despite instructions.
         The sweep must strip them so the persisted summary is plain text."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
         ])
@@ -258,7 +258,7 @@ class TestRewriteSweepBehaviour:
         one giant opening fence and consumed the whole response, tripping
         the empty-rewrite guard and dropping a perfectly good rewrite.
         The fix unwraps both single-line and multi-line fence shapes."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
         ])
@@ -279,7 +279,7 @@ class TestRewriteSweepBehaviour:
         """Models often emit ```text\\n...\\n``` despite being told no
         markdown. The language tag (anything between the opening ``` and
         the first newline) must be dropped along with the fence."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
         ])
@@ -298,7 +298,7 @@ class TestRewriteSweepBehaviour:
         markers before being passed to the model (treat-as-data framing).
         Some models echo those markers back. They must be stripped so the
         markers don't end up persisted in the diary."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "User asked X. The assistant could not help.", None),
         ])
@@ -322,7 +322,7 @@ class TestRewriteSweepBehaviour:
         """Idempotence: the LLM may return content with different leading/
         trailing whitespace. We compare stripped texts, so this should not
         trigger a writeback (no embedding refresh, ts_utc preserved)."""
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-15", "The user prefers Celsius.", None),
         ])
@@ -350,7 +350,7 @@ class TestRewriteSweepBehaviour:
 
         monkeypatch.setattr(cmod, "_direct_llm", fake_call)
 
-        db = Database(tmp_path / "jarvis.db")
+        db = Database(tmp_path / "claire.db")
         _seed(db, [
             ("2026-04-10", "Short summary.", None),
             ("2026-04-15", "word " * 300, None),  # ~1500 chars — long summary

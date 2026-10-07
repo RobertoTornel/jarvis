@@ -18,8 +18,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.jarvis.memory.conversation import DialogueMemory
-from src.jarvis.reply.engine import run_reply_engine
+from src.claire.memory.conversation import DialogueMemory
+from src.claire.reply.engine import run_reply_engine
 
 
 def _mock_cfg():
@@ -53,14 +53,14 @@ def _mock_cfg():
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.select_tools", return_value=[])
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.select_tools", return_value=[])
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_tool_router_cached_across_turns(
     mock_chat, mock_extract, mock_extractor, mock_plan, mock_select,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -87,13 +87,13 @@ def test_tool_router_cached_across_turns(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_router_fallback_to_all_tools_is_not_cached(
     mock_chat, mock_extract, mock_extractor, mock_plan,
     _mock_graph, _mock_warm, _mock_fmt,
@@ -110,7 +110,7 @@ def test_router_fallback_to_all_tools_is_not_cached(
     chat model produced an empty reply ("Sorry, I had trouble processing
     that"). Pre-#281 this didn't happen because the router re-rolled per turn.
     """
-    from src.jarvis.tools.registry import BUILTIN_TOOLS
+    from src.claire.tools.registry import BUILTIN_TOOLS
     full_catalogue = list(BUILTIN_TOOLS.keys())
 
     mock_chat.side_effect = [
@@ -124,7 +124,7 @@ def test_router_fallback_to_all_tools_is_not_cached(
     dm = DialogueMemory()
 
     with patch(
-        "src.jarvis.reply.engine.select_tools",
+        "src.claire.reply.engine.select_tools",
         return_value=full_catalogue,
     ) as mock_select:
         run_reply_engine(db=db, cfg=cfg, tts=None, text="navigate to youtube", dialogue_memory=dm)
@@ -137,15 +137,15 @@ def test_router_fallback_to_all_tools_is_not_cached(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.select_tools", return_value=["webSearch"])
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={"keywords": ["x"], "questions": []})
-@patch("src.jarvis.memory.conversation.search_conversation_memory_by_keywords", return_value=[])
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.select_tools", return_value=["webSearch"])
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={"keywords": ["x"], "questions": []})
+@patch("src.claire.memory.conversation.search_conversation_memory_by_keywords", return_value=[])
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_memory_extractor_cached_across_turns(
     mock_chat, mock_extract, _mock_search, mock_extractor,
     _mock_plan, _mock_select, _mock_graph, _mock_warm, _mock_fmt,
@@ -178,14 +178,14 @@ def test_memory_extractor_cached_across_turns(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="warm-block")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "u", "directives": "d"})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.select_tools", return_value=[])
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="warm-block")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "u", "directives": "d"})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.select_tools", return_value=[])
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_warm_profile_cached_across_turns(
     mock_chat, mock_extract, _mock_extractor, _mock_plan,
     _mock_select, _mock_graph, mock_build, _mock_fmt,
@@ -212,19 +212,19 @@ def test_warm_profile_cached_across_turns(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.select_tools", return_value=["webSearch"])
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.select_tools", return_value=["webSearch"])
 @patch(
-    "src.jarvis.reply.engine.plan_query",
+    "src.claire.reply.engine.plan_query",
     return_value=["searchMemory topic='justin bieber'", "reply"],
 )
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory",
+@patch("src.claire.reply.engine.extract_search_params_for_memory",
        return_value={"keywords": ["bieber"], "questions": []})
-@patch("src.jarvis.memory.conversation.search_conversation_memory_by_keywords", return_value=[])
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.conversation.search_conversation_memory_by_keywords", return_value=[])
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_planner_search_memory_overrides_recall_gate(
     mock_chat, mock_extract, _mock_search, mock_extractor,
     _mock_plan, _mock_select, _mock_graph, _mock_warm, _mock_fmt,
@@ -260,14 +260,14 @@ def test_planner_search_memory_overrides_recall_gate(
 
 
 @pytest.mark.unit
-@patch("src.jarvis.memory.graph_ops.format_warm_profile_block", return_value="")
-@patch("src.jarvis.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
-@patch("src.jarvis.memory.graph.GraphMemoryStore")
-@patch("src.jarvis.reply.engine.select_tools", return_value=[])
-@patch("src.jarvis.reply.engine.plan_query", return_value=[])
-@patch("src.jarvis.reply.engine.extract_search_params_for_memory", return_value={})
-@patch("src.jarvis.reply.engine.extract_text_from_response")
-@patch("src.jarvis.reply.engine.chat_with_messages")
+@patch("src.claire.memory.graph_ops.format_warm_profile_block", return_value="")
+@patch("src.claire.memory.graph_ops.build_warm_profile", return_value={"user": "", "directives": ""})
+@patch("src.claire.memory.graph.GraphMemoryStore")
+@patch("src.claire.reply.engine.select_tools", return_value=[])
+@patch("src.claire.reply.engine.plan_query", return_value=[])
+@patch("src.claire.reply.engine.extract_search_params_for_memory", return_value={})
+@patch("src.claire.reply.engine.extract_text_from_response")
+@patch("src.claire.reply.engine.chat_with_messages")
 def test_new_conversation_clears_cache_and_carryover(
     mock_chat, mock_extract, _mock_extractor, _mock_plan, mock_select,
     _mock_graph, _mock_warm, _mock_fmt,

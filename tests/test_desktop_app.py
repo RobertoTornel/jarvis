@@ -95,7 +95,7 @@ class TestOllamaRuntimeFlags:
 
 
 class TestOpenAICompatStartupCheck:
-    """At startup Jarvis can't launch a third-party LLM server, so it must
+    """At startup Claire can't launch a third-party LLM server, so it must
     check reachability and warn the user early rather than failing silently
     on the first request."""
 
@@ -149,7 +149,7 @@ class TestOpenAICompatStartupCheck:
             def list_models(self, timeout_sec=4.0):
                 return ["m-chat"]
 
-        with patch("jarvis.llm.get_llm_backend", return_value=_Backend()):
+        with patch("claire.llm.get_llm_backend", return_value=_Backend()):
             assert _check_openai_compat_reachable(cfg) is True
 
     def test_unreachable_when_listing_empty_or_raises(self):
@@ -161,10 +161,10 @@ class TestOpenAICompatStartupCheck:
             def list_models(self, timeout_sec=4.0):
                 return []
 
-        with patch("jarvis.llm.get_llm_backend", return_value=_Empty()):
+        with patch("claire.llm.get_llm_backend", return_value=_Empty()):
             assert _check_openai_compat_reachable(cfg) is False
 
-        with patch("jarvis.llm.get_llm_backend", side_effect=RuntimeError("boom")):
+        with patch("claire.llm.get_llm_backend", side_effect=RuntimeError("boom")):
             assert _check_openai_compat_reachable(cfg) is False
 
     def test_unreachable_message_names_url_not_key(self):
@@ -179,7 +179,7 @@ class TestOpenAICompatStartupCheck:
 
 
 class TestOllamaRuntimeOwnership:
-    """Jarvis only stops Ollama when this desktop session launched it."""
+    """Claire only stops Ollama when this desktop session launched it."""
 
     class FakeProcess:
         def __init__(self):
@@ -200,7 +200,7 @@ class TestOllamaRuntimeOwnership:
         def kill(self):
             self.killed = True
 
-    def test_stop_owned_runtime_noops_when_not_started_by_jarvis(self):
+    def test_stop_owned_runtime_noops_when_not_started_by_claire(self):
         from desktop_app.app import (
             OllamaRuntimeOwnership,
             _stop_owned_ollama_runtime,
@@ -208,7 +208,7 @@ class TestOllamaRuntimeOwnership:
 
         process = self.FakeProcess()
         ownership = OllamaRuntimeOwnership(
-            started_by_jarvis=False,
+            started_by_claire=False,
             launch_method="serve",
             process=process,
         )
@@ -227,7 +227,7 @@ class TestOllamaRuntimeOwnership:
 
         process = self.FakeProcess()
         ownership = OllamaRuntimeOwnership(
-            started_by_jarvis=True,
+            started_by_claire=True,
             launch_method="serve",
             process=process,
         )
@@ -253,7 +253,7 @@ class TestOllamaRuntimeOwnership:
             return MagicMock(returncode=0)
 
         ownership = OllamaRuntimeOwnership(
-            started_by_jarvis=True,
+            started_by_claire=True,
             launch_method="macos_app",
             process=None,
         )
@@ -269,14 +269,14 @@ class TestOllamaRuntimeOwnership:
         assert commands == [["osascript", "-e", 'tell application "Ollama" to quit']]
 
     def test_cleanup_on_exit_stops_owned_ollama_runtime(self):
-        from desktop_app.app import JarvisSystemTray, OllamaRuntimeOwnership
+        from desktop_app.app import ClaireSystemTray, OllamaRuntimeOwnership
 
         stopped = []
-        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray = ClaireSystemTray.__new__(ClaireSystemTray)
         tray.is_listening = False
         tray.daemon_process = None
         tray._ollama_runtime_ownership = OllamaRuntimeOwnership(
-            started_by_jarvis=True,
+            started_by_claire=True,
             launch_method="serve",
         )
         tray.memory_viewer = MagicMock()
@@ -291,7 +291,7 @@ class TestOllamaRuntimeOwnership:
 
 
 class TestRuntimeStatusSnapshot:
-    """The tray runtime status reports Jarvis, Ollama, and config state."""
+    """The tray runtime status reports Claire, Ollama, and config state."""
 
     def _settings(self, **overrides):
         values = {
@@ -321,7 +321,7 @@ class TestRuntimeStatusSnapshot:
             daemon_process=process,
             daemon_thread=None,
             ollama_runtime_ownership=OllamaRuntimeOwnership(
-                started_by_jarvis=True,
+                started_by_claire=True,
                 launch_method="serve",
             ),
             settings_loader=lambda: self._settings(),
@@ -334,7 +334,7 @@ class TestRuntimeStatusSnapshot:
         assert snapshot.ollama_needed is True
         assert snapshot.ollama_running is True
         assert snapshot.ollama_version == "0.9.1"
-        assert snapshot.ollama_owner == "Jarvis"
+        assert snapshot.ollama_owner == "Claire"
         assert snapshot.low_power_mode is False
         assert snapshot.mcp_count == 2
 
@@ -387,7 +387,7 @@ class TestRuntimeStatusSnapshot:
                 ollama_needed=True,
                 ollama_running=True,
                 ollama_version="0.9.1",
-                ollama_owner="Jarvis",
+                ollama_owner="Claire",
                 ollama_launch_method="serve",
                 low_power_mode=True,
                 llm_provider="ollama",
@@ -430,7 +430,7 @@ class TestGetCrashPaths:
         from desktop_app import get_crash_paths
 
         crash_log, crash_marker, previous_crash = get_crash_paths()
-        assert crash_log.name == "jarvis_desktop_crash.log"
+        assert crash_log.name == "claire_desktop_crash.log"
         assert crash_marker.name == ".crash_marker"
         assert previous_crash.name == "previous_crash.log"
 
@@ -443,7 +443,7 @@ class TestGetCrashPaths:
 
     @patch("sys.platform", "darwin")
     def test_macos_uses_library_logs(self):
-        """On macOS, should use ~/Library/Logs/Jarvis."""
+        """On macOS, should use ~/Library/Logs/Claire."""
         # Note: This is tricky because the function reads sys.platform at runtime
         from desktop_app import get_crash_paths
 
@@ -504,13 +504,13 @@ class TestCheckPreviousCrash:
     def _sandbox_crash_paths(self, tmp_path, monkeypatch):
         """Point crash log/marker paths at a temp dir.
 
-        The real log dir (LOCALAPPDATA\\Jarvis) belongs to a running Jarvis
+        The real log dir (LOCALAPPDATA\\Claire) belongs to a running Claire
         instance; tests must never write to, rename, or delete files there
         (they are locked while the app runs).
         """
         from desktop_app.paths import get_log_dir
 
-        log_dir = tmp_path / "jarvis_logs"
+        log_dir = tmp_path / "claire_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(
             "desktop_app.paths.get_log_dir",
@@ -593,18 +593,18 @@ class TestCheckPreviousCrash:
 class TestCheckModelSupport:
     """Tests for check_model_support() function."""
 
-    @patch("jarvis.config.load_config")
+    @patch("claire.config.load_config")
     def test_returns_none_for_supported_model(self, mock_load_config):
         """check_model_support() should return None for supported models."""
         from desktop_app import check_model_support
-        from jarvis.config import DEFAULT_CHAT_MODEL
+        from claire.config import DEFAULT_CHAT_MODEL
 
         mock_load_config.return_value = {"ollama_chat_model": DEFAULT_CHAT_MODEL}
 
         result = check_model_support()
         assert result is None
 
-    @patch("jarvis.config.load_config")
+    @patch("claire.config.load_config")
     def test_returns_model_name_for_unsupported_model(self, mock_load_config):
         """check_model_support() should return model name for unsupported models."""
         from desktop_app import check_model_support
@@ -614,11 +614,11 @@ class TestCheckModelSupport:
         result = check_model_support()
         assert result == "some-unsupported-model:7b"
 
-    @patch("jarvis.config.load_config")
+    @patch("claire.config.load_config")
     def test_matches_base_model_name(self, mock_load_config):
         """check_model_support() should match base model names without tags."""
         from desktop_app import check_model_support
-        from jarvis.config import SUPPORTED_CHAT_MODELS
+        from claire.config import SUPPORTED_CHAT_MODELS
 
         # Get a supported model and use just its base name
         supported_model = next(iter(SUPPORTED_CHAT_MODELS.keys()))
@@ -629,7 +629,7 @@ class TestCheckModelSupport:
         result = check_model_support()
         assert result is None  # Should be recognized as supported
 
-    @patch("jarvis.config.load_config")
+    @patch("claire.config.load_config")
     def test_handles_config_error_gracefully(self, mock_load_config):
         """check_model_support() should return None on config errors."""
         from desktop_app import check_model_support
@@ -639,7 +639,7 @@ class TestCheckModelSupport:
         result = check_model_support()
         assert result is None
 
-    @patch("jarvis.config.load_config")
+    @patch("claire.config.load_config")
     def test_uses_default_when_not_configured(self, mock_load_config):
         """check_model_support() should use default model when not in config."""
         from desktop_app import check_model_support
@@ -657,10 +657,10 @@ class TestModelSupportIntegration:
     def test_all_supported_models_pass_check(self):
         """All models in SUPPORTED_CHAT_MODELS should pass the support check."""
         from desktop_app import check_model_support
-        from jarvis.config import SUPPORTED_CHAT_MODELS
+        from claire.config import SUPPORTED_CHAT_MODELS
 
         for model_id in SUPPORTED_CHAT_MODELS:
-            with patch("jarvis.config.load_config") as mock_config:
+            with patch("claire.config.load_config") as mock_config:
                 mock_config.return_value = {"ollama_chat_model": model_id}
                 result = check_model_support()
                 assert result is None, f"Model {model_id} should be supported"
@@ -678,12 +678,13 @@ class TestLogViewerReportIssue:
         """Report issue should generate correct GitHub issue URL with redacted content."""
         import urllib.parse
         import webbrowser
-        from jarvis import get_version
-        from jarvis.utils.redact import redact
+        from claire import get_version
+        from claire.utils.redact import redact
+        from desktop_app.app import UPSTREAM_ISSUES_URL
 
         # Simulate what _report_issue does
         log_content = (
-            "Starting Jarvis...\n"
+            "Starting Claire...\n"
             "API token: sk-secret-key-12345\n"
             "User email: user@example.com\n"
             "Error: Something went wrong\n"
@@ -731,10 +732,10 @@ class TestLogViewerReportIssue:
             'body': body,
             'labels': 'bug'
         })
-        url = f"https://github.com/isair/jarvis/issues/new?{params}"
+        url = f"{UPSTREAM_ISSUES_URL}?{params}"
 
         # Parse and verify
-        assert url.startswith("https://github.com/isair/jarvis/issues/new?")
+        assert url.startswith(f"{UPSTREAM_ISSUES_URL}?")
         parsed = urllib.parse.urlparse(url)
         params_parsed = urllib.parse.parse_qs(parsed.query)
 
@@ -760,7 +761,7 @@ class TestLogViewerReportIssue:
 
         # Simulate realistic log: header + separator + init + separator + operational logs
         init_block = (
-            "🚀 Jarvis Log Viewer Ready\n"
+            "🚀 Claire Log Viewer Ready\n"
             f"{_LOG_SEPARATOR}\n"
             "\n"
             "✓ Daemon started\n"
@@ -786,7 +787,7 @@ class TestLogViewerReportIssue:
         assert "... (truncated) ..." in result
 
         # Verify init section is preserved (up to last separator)
-        assert "Jarvis Log Viewer Ready" in result
+        assert "Claire Log Viewer Ready" in result
         assert "Using chat model" in result
         assert "Voice listener thread started" in result
 
@@ -842,13 +843,13 @@ class TestLogViewerReportIssue:
 
         # Simulate realistic crash log: init section + separator + faulthandler dump
         init_block = (
-            "=== Jarvis Desktop App Crash Log ===\n"
+            "=== Claire Desktop App Crash Log ===\n"
             "Timestamp: 2026-04-13\n"
             "Platform: win32\n"
             "==================================================\n"
-            "\nStarting Jarvis Desktop App...\n"
+            "\nStarting Claire Desktop App...\n"
             "Creating QApplication...\n"
-            "🚀 Jarvis daemon started\n"
+            "🚀 Claire daemon started\n"
             f"{_LOG_SEPARATOR}\n"
         )
         # Faulthandler dump: Fatal error + current thread + many other threads + extension modules
@@ -878,7 +879,7 @@ class TestLogViewerReportIssue:
         assert "Fatal Python error: Segmentation fault" in result
         assert "critical_function" in result
         # Init section should be preserved
-        assert "Jarvis Desktop App Crash Log" in result
+        assert "Claire Desktop App Crash Log" in result
         # Extension modules should be summarised, not fully listed
         assert "mod_119.sub_119" not in result
 
@@ -951,7 +952,7 @@ class TestLogViewerReportIssue:
 
     def test_redaction_handles_multiple_sensitive_patterns(self):
         """Redaction should handle multiple types of sensitive data."""
-        from jarvis.utils.redact import redact
+        from claire.utils.redact import redact
 
         log_content = (
             "Config loaded:\n"
@@ -1023,7 +1024,7 @@ class TestDiaryIPCProtocol:
 
         # Common log patterns that should NOT be intercepted
         normal_logs = [
-            "Starting Jarvis daemon...",
+            "Starting Claire daemon...",
             "✓ Daemon started",
             "📝 Updating diary...",
             "🔄 Daemon shutting down...",
@@ -1097,7 +1098,7 @@ class TestSingleInstanceLock:
         """get_existing_instance_pid() should return the PID stored in the lock file."""
         from desktop_app.app import get_existing_instance_pid
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
         lock_file.write_bytes(b"12345")
 
         with patch("desktop_app.app.get_lock_file_path", return_value=lock_file):
@@ -1109,7 +1110,7 @@ class TestSingleInstanceLock:
         """get_existing_instance_pid() should return None for an empty lock file."""
         from desktop_app.app import get_existing_instance_pid
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
         lock_file.write_bytes(b"")
 
         with patch("desktop_app.app.get_lock_file_path", return_value=lock_file):
@@ -1121,7 +1122,7 @@ class TestSingleInstanceLock:
         """get_existing_instance_pid() should return None when the lock file is absent."""
         from desktop_app.app import get_existing_instance_pid
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
 
         with patch("desktop_app.app.get_lock_file_path", return_value=lock_file):
             pid = get_existing_instance_pid()
@@ -1137,7 +1138,7 @@ class TestSingleInstanceLock:
         """
         from desktop_app.app import get_existing_instance_pid
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
         existing_pid = 99999
         lock_file.write_bytes(str(existing_pid).encode())
 
@@ -1169,7 +1170,7 @@ class TestSingleInstanceLock:
         """acquire_single_instance_lock() should write the current process PID."""
         import desktop_app.app as app_module
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
         original_handle = app_module._lock_file_handle
 
         try:
@@ -1198,7 +1199,7 @@ class TestSingleInstanceLock:
         import desktop_app.app as app_module
         import subprocess
 
-        lock_file = tmp_path / "jarvis_desktop.lock"
+        lock_file = tmp_path / "claire_desktop.lock"
         original_handle = app_module._lock_file_handle
 
         try:
@@ -1315,15 +1316,15 @@ class TestCudaRecoveryAction:
 
         Windows argv parsing collapses 2n backslashes before a `"` into n
         backslashes plus a string terminator, so a path like
-        `C:\\Program Files\\Jarvis\\` quoted naively becomes
-        `"C:\\Program Files\\Jarvis\\"` which CommandLineToArgvW reads as
-        `C:\\Program Files\\Jarvis"` — quote eaten, next arg fused on. The
+        `C:\\Program Files\\Claire\\` quoted naively becomes
+        `"C:\\Program Files\\Claire\\"` which CommandLineToArgvW reads as
+        `C:\\Program Files\\Claire"` — quote eaten, next arg fused on. The
         canonical fix is to double trailing backslashes.
         """
         from desktop_app.cuda_recovery import _quote_arg
 
         # Trailing backslash + space gets doubled inside the quotes.
-        result = _quote_arg(r"C:\Program Files\Jarvis\\")
+        result = _quote_arg(r"C:\Program Files\Claire\\")
         assert result.endswith('\\\\\\\\"'), (
             f"trailing backslashes must be doubled before the closing quote; got {result!r}"
         )
@@ -1443,14 +1444,14 @@ class TestDaemonSmokeTest:
 
         # Mock all heavy dependencies so the smoke test path runs without
         # needing a real database, Whisper model, TTS engine, etc.
-        with patch("jarvis.daemon.load_settings") as mock_load, \
-             patch("jarvis.daemon.Database") as mock_db, \
-             patch("jarvis.daemon.initialize_mcp_tools", return_value=({}, {})), \
-             patch("jarvis.daemon.DialogueMemory") as mock_dm, \
-             patch("jarvis.daemon.get_location_context", return_value="Location: Test"), \
-             patch("jarvis.daemon.create_tts_engine") as mock_tts, \
-             patch("jarvis.daemon.VoiceListener") as mock_vl, \
-             patch("jarvis.memory.graph.GraphMemoryStore") as mock_graph:
+        with patch("claire.daemon.load_settings") as mock_load, \
+             patch("claire.daemon.Database") as mock_db, \
+             patch("claire.daemon.initialize_mcp_tools", return_value=({}, {})), \
+             patch("claire.daemon.DialogueMemory") as mock_dm, \
+             patch("claire.daemon.get_location_context", return_value="Location: Test"), \
+             patch("claire.daemon.create_tts_engine") as mock_tts, \
+             patch("claire.daemon.VoiceListener") as mock_vl, \
+             patch("claire.memory.graph.GraphMemoryStore") as mock_graph:
 
             from tests.conftest import MockConfig
             mock_load.return_value = MockConfig(db_path=":memory:")
@@ -1476,11 +1477,11 @@ class TestDaemonSmokeTest:
             captured = io.StringIO()
             with patch("sys.stdout", captured):
                 import threading
-                from jarvis.daemon import main, _stop_voice_feedback_worker
+                from claire.daemon import main, _stop_voice_feedback_worker
                 try:
                     main(smoke_test=True)
                     assert not any(
-                        thread.name == "jarvis-voice-feedback" and thread.is_alive()
+                        thread.name == "claire-voice-feedback" and thread.is_alive()
                         for thread in threading.enumerate()
                     ), "Smoke completion must leave no notification worker running"
                 finally:
@@ -1504,15 +1505,15 @@ class TestDaemonSmokeTest:
         class StopBeforeMainLoop(Exception):
             pass
 
-        with patch("jarvis.daemon.load_settings") as mock_load, \
-             patch("jarvis.daemon.Database") as mock_db, \
-             patch("jarvis.daemon.initialize_mcp_tools", return_value=({}, {})), \
-             patch("jarvis.daemon.DialogueMemory") as mock_dm, \
-             patch("jarvis.daemon.get_location_context", return_value="Location: Test"), \
-             patch("jarvis.daemon.create_tts_engine") as mock_tts, \
-             patch("jarvis.daemon.VoiceListener") as mock_vl, \
-             patch("jarvis.memory.graph.GraphMemoryStore") as mock_graph, \
-             patch("jarvis.daemon.time.sleep", side_effect=StopBeforeMainLoop()):
+        with patch("claire.daemon.load_settings") as mock_load, \
+             patch("claire.daemon.Database") as mock_db, \
+             patch("claire.daemon.initialize_mcp_tools", return_value=({}, {})), \
+             patch("claire.daemon.DialogueMemory") as mock_dm, \
+             patch("claire.daemon.get_location_context", return_value="Location: Test"), \
+             patch("claire.daemon.create_tts_engine") as mock_tts, \
+             patch("claire.daemon.VoiceListener") as mock_vl, \
+             patch("claire.memory.graph.GraphMemoryStore") as mock_graph, \
+             patch("claire.daemon.time.sleep", side_effect=StopBeforeMainLoop()):
 
             from tests.conftest import MockConfig
             mock_load.return_value = MockConfig(db_path=":memory:")
@@ -1536,7 +1537,7 @@ class TestDaemonSmokeTest:
 
             captured = io.StringIO()
             with patch("sys.stdout", captured):
-                from jarvis.daemon import main
+                from claire.daemon import main
                 try:
                     main(smoke_test=False)
                 except StopBeforeMainLoop:
@@ -1562,7 +1563,7 @@ class TestDesktopSmokeTest:
         mock_qapp.instance.return_value = mock_qapp
 
         with patch("PyQt6.QtWidgets.QApplication", mock_qapp), \
-             patch("jarvis.daemon.main") as mock_daemon_main:
+             patch("claire.daemon.main") as mock_daemon_main:
 
             from desktop_app.app import _smoke_test_main
             result = _smoke_test_main()
@@ -1579,7 +1580,7 @@ class TestDesktopSmokeTest:
         mock_qapp.instance.return_value = mock_qapp
 
         with patch("PyQt6.QtWidgets.QApplication", mock_qapp), \
-             patch("jarvis.daemon.main") as mock_daemon_main:
+             patch("claire.daemon.main") as mock_daemon_main:
 
             mock_daemon_main.return_value = None
 
@@ -1602,7 +1603,7 @@ class TestDesktopSmokeTest:
         mock_qapp.instance.return_value = mock_qapp
 
         with patch("PyQt6.QtWidgets.QApplication", mock_qapp), \
-             patch("jarvis.daemon.main", side_effect=RuntimeError("Simulated init failure")):
+             patch("claire.daemon.main", side_effect=RuntimeError("Simulated init failure")):
 
             from desktop_app.app import _smoke_test_main
             result = _smoke_test_main()
@@ -1615,7 +1616,7 @@ class TestDesktopSmokeTest:
 
         # The smoke test flag detection is a simple string check in sys.argv.
         # We test it by patching _smoke_test_main to verify it is called.
-        with patch("desktop_app.app.sys.argv", ["Jarvis.exe", "--smoke-test"]), \
+        with patch("desktop_app.app.sys.argv", ["Claire.exe", "--smoke-test"]), \
              patch("desktop_app.app._smoke_test_main", return_value=42) as mock_smoke:
 
             from desktop_app.app import main
@@ -1640,7 +1641,7 @@ class TestRuntimeStatusDialog:
             ollama_needed=True,
             ollama_running=True,
             ollama_version="0.9.1",
-            ollama_owner="Jarvis",
+            ollama_owner="Claire",
             ollama_launch_method="serve",
             low_power_mode=True,
             llm_provider="ollama",
@@ -1662,7 +1663,7 @@ class TestRuntimeStatusDialog:
         assert by_key["PID"] == "12345"
         assert by_key["Low Power Mode"] == "On"
         assert by_key["Running"] == "Yes (0.9.1)"
-        assert by_key["Owner"] == "Jarvis"
+        assert by_key["Owner"] == "Claire"
         assert by_key["Chat"] == "gemma4:e2b"
         assert by_key["Embeddings"] == "ollama / nomic-embed-text"
         assert by_key["Configured servers"] == "2"
@@ -1709,10 +1710,10 @@ class TestTrayMenuLayout:
     line in the same section of the menu."""
 
     def _tray_menu(self, qapp):
-        from desktop_app.app import JarvisSystemTray
+        from desktop_app.app import ClaireSystemTray
         from PyQt6.QtWidgets import QSystemTrayIcon
 
-        tray = JarvisSystemTray.__new__(JarvisSystemTray)
+        tray = ClaireSystemTray.__new__(ClaireSystemTray)
         tray.tray_icon = QSystemTrayIcon()
         tray.create_menu()
         return tray.menu
@@ -1747,7 +1748,7 @@ class TestListeningWindowVisibility:
     def _tray_for_start(self, monkeypatch):
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.is_bundled = False
         tray.daemon_process = None
         tray.daemon_thread = None
@@ -1798,7 +1799,7 @@ class TestListeningWindowVisibility:
     def _tray_for_stop_bundled(self, monkeypatch):
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.is_bundled = True
         tray.is_listening = True
         tray.daemon_process = None
@@ -1819,8 +1820,8 @@ class TestListeningWindowVisibility:
 
         fake_dialog = MagicMock()
         monkeypatch.setattr(app_mod, "DiaryUpdateDialog", MagicMock(return_value=fake_dialog))
-        monkeypatch.setattr("jarvis.daemon.set_diary_update_callbacks", MagicMock())
-        monkeypatch.setattr("jarvis.daemon.request_stop", MagicMock())
+        monkeypatch.setattr("claire.daemon.set_diary_update_callbacks", MagicMock())
+        monkeypatch.setattr("claire.daemon.request_stop", MagicMock())
         monkeypatch.setattr(app_mod.time, "sleep", MagicMock())
         return tray, fake_dialog
 
@@ -1837,7 +1838,7 @@ class TestListeningWindowVisibility:
     def _tray_for_stop_subprocess(self, monkeypatch):
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.is_bundled = False
         tray.is_listening = True
         tray.daemon_thread = None
@@ -1864,44 +1865,44 @@ class TestListeningWindowVisibility:
         return tray, fake_dialog
 
     def _patch_face_state(self, monkeypatch):
-        """Monkeypatch get_jarvis_state with a mock state manager.
+        """Monkeypatch get_claire_state with a mock state manager.
 
         The face reset goes through the module-level singleton factory
         (not the tray's face_window widget), so tests assert on the state
         manager that factory returns.
         """
         import desktop_app.face_widget as face_widget_mod
-        from desktop_app.face_widget import JarvisState
+        from desktop_app.face_widget import ClaireState
 
         fake_state = MagicMock()
         monkeypatch.setattr(
             face_widget_mod,
-            "get_jarvis_state",
+            "get_claire_state",
             MagicMock(return_value=fake_state),
         )
-        return fake_state, JarvisState
+        return fake_state, ClaireState
 
     def test_stop_daemon_bundled_puts_face_asleep(self, qapp, monkeypatch):
         """Stopping via the tray toggle puts the face back to sleep (bundled)."""
         tray, fake_dialog = self._tray_for_stop_bundled(monkeypatch)
-        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        fake_state, ClaireState = self._patch_face_state(monkeypatch)
         tray.stop_daemon(show_diary_dialog=True)
         assert tray.is_listening is False
-        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+        fake_state.set_state.assert_called_once_with(ClaireState.ASLEEP)
 
     def test_stop_daemon_subprocess_puts_face_asleep(self, qapp, monkeypatch):
         """Stopping via the tray toggle puts the face back to sleep (subprocess)."""
         tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
-        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        fake_state, ClaireState = self._patch_face_state(monkeypatch)
         tray.stop_daemon(show_diary_dialog=True)
         assert tray.is_listening is False
-        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+        fake_state.set_state.assert_called_once_with(ClaireState.ASLEEP)
 
     def test_check_daemon_status_subprocess_crash_puts_face_asleep(self, qapp, monkeypatch):
         """An unexpected subprocess exit also puts the face back to sleep."""
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.is_bundled = False
         tray.is_listening = True
         tray.daemon_thread = None
@@ -1918,10 +1919,10 @@ class TestListeningWindowVisibility:
         tray._set_chat_daemon_status = MagicMock()
         tray._chat_submit_fn = lambda text: None
 
-        fake_state, JarvisState = self._patch_face_state(monkeypatch)
+        fake_state, ClaireState = self._patch_face_state(monkeypatch)
         tray.check_daemon_status()
         assert tray.is_listening is False
-        fake_state.set_state.assert_called_once_with(JarvisState.ASLEEP)
+        fake_state.set_state.assert_called_once_with(ClaireState.ASLEEP)
 
     def test_stop_daemon_subprocess_does_not_hide_windows(self, qapp, monkeypatch):
         tray, fake_dialog = self._tray_for_stop_subprocess(monkeypatch)
@@ -1937,7 +1938,7 @@ class TestListeningWindowVisibility:
         """The launch hook opens the log and face windows once at startup."""
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.log_viewer = MagicMock()
         tray.face_window = MagicMock()
 

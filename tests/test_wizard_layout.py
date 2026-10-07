@@ -10,7 +10,7 @@ from desktop_app import setup_wizard as ui
 
 @pytest.mark.parametrize("page_type", [
     ui.OpenAICompatiblePage, ui.ModelsPage, ui.ProviderChoicePage,
-    ui.DictationPage, ui.SearchProvidersPage,
+    ui.SearchProvidersPage,
     ui.WelcomePage, ui.OllamaInstallPage, ui.OllamaServerPage,
     ui.WhisperSetupPage, ui.LocationPage, ui.MCPPage, ui.CompletePage,
 ])
@@ -20,7 +20,7 @@ def test_controls_fit_on_short_display(qapp, monkeypatch, page_type, width, heig
     monkeypatch.setattr(page_type, "initializePage", lambda self: None)
     wizard = QWizard()
     wizard.setWizardStyle(QWizard.WizardStyle.ModernStyle)
-    wizard.setStyleSheet(ui.JARVIS_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
+    wizard.setStyleSheet(ui.CLAIRE_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
     page = page_type()
     wizard.addPage(page)
     wizard.resize(width, height)
@@ -73,7 +73,7 @@ def test_wizard_initial_size_fits_available_screen(qapp, monkeypatch):
 def test_expanded_memory_estimates_remain_usable(qapp, monkeypatch, width, height):
     monkeypatch.setattr(ui.OpenAICompatiblePage, "initializePage", lambda self: None)
     wizard = QWizard()
-    wizard.setStyleSheet(ui.JARVIS_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
+    wizard.setStyleSheet(ui.CLAIRE_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
     page = ui.OpenAICompatiblePage()
     wizard.addPage(page)
     wizard.resize(width, height)
@@ -108,7 +108,7 @@ def test_whisper_install_buttons_fit_status_text(qapp, monkeypatch, installed):
         is_mlx_whisper_installed=installed,
     ))
     wizard = QWizard()
-    wizard.setStyleSheet(ui.JARVIS_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
+    wizard.setStyleSheet(ui.CLAIRE_THEME_STYLESHEET + ui.WIZARD_STYLESHEET)
     page = ui.WhisperSetupPage()
     wizard.addPage(page)
     wizard.resize(700, 600)

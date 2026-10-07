@@ -2,27 +2,27 @@
 
 The persona should match the user's configured wake word so renaming the
 wake word to e.g. "Friday" produces a butler named Friday, not one still
-hardcoded to Jarvis.
+hardcoded to Claire.
 """
 
-from jarvis.system_prompt import build_system_prompt
+from claire.system_prompt import build_system_prompt
 
 
 class TestBuildSystemPrompt:
-    def test_default_name_is_jarvis(self):
+    def test_default_name_is_claire(self):
         prompt = build_system_prompt()
-        assert "named Jarvis" in prompt
+        assert "named Claire" in prompt
 
-    def test_custom_name_replaces_jarvis(self):
+    def test_custom_name_replaces_claire(self):
         prompt = build_system_prompt("Friday")
         assert "named Friday" in prompt
-        assert "named Jarvis" not in prompt
+        assert "named Claire" not in prompt
 
     def test_lowercase_wake_word_is_capitalised(self):
         prompt = build_system_prompt("friday".capitalize())
         assert "named Friday" in prompt
 
-    def test_blank_name_falls_back_to_jarvis(self):
-        assert "named Jarvis" in build_system_prompt("")
-        assert "named Jarvis" in build_system_prompt("   ")
-        assert "named Jarvis" in build_system_prompt(None)  # type: ignore[arg-type]
+    def test_blank_name_falls_back_to_claire(self):
+        assert "named Claire" in build_system_prompt("")
+        assert "named Claire" in build_system_prompt("   ")
+        assert "named Claire" in build_system_prompt(None)  # type: ignore[arg-type]

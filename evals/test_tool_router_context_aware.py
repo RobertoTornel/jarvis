@@ -7,7 +7,7 @@ location, recent dialogue), correctly returns 'none' for queries fully
 answerable from that context — instead of embed-matching an adjacent tool.
 
 Motivating field incident (2026-04-20):
-  User asked "what time is it, Jarvis?". The router, having no view of the
+  User asked "what time is it, Claire?". The router, having no view of the
   assistant's live context, picked `getWeather` as the closest temporal tool
   on the catalogue. With only `getWeather, stop` in the allowed list, the
   main model dutifully called getWeather and the reply parroted the weather
@@ -53,7 +53,7 @@ class TestRouterReturnsNoneWhenContextAnswers:
     """Router must opt out when the answer is already visible in context."""
 
     def test_time_query_with_time_in_context_returns_none(self):
-        selected = _route("what time is it, Jarvis?", _TIME_LOCATION_HINT)
+        selected = _route("what time is it, Claire?", _TIME_LOCATION_HINT)
         real = [t for t in selected if t != "stop"]
         print(f"\n  Selected: {selected}")
         if real:

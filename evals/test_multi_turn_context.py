@@ -98,7 +98,7 @@ class TestTopicSwitching:
         This tests the exact bug scenario where llama3.2:3b called getWeather
         for a store hours query because it got anchored on the previous tool.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
@@ -108,8 +108,8 @@ class TestTopicSwitching:
             "webSearch": MOCK_STORE_HOURS_SEARCH,
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, Royal Kensington and Chelsea, United Kingdom", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, Royal Kensington and Chelsea, United Kingdom", None)):
 
             # Turn 1: Weather query
             capture.clear()
@@ -171,7 +171,7 @@ class TestTopicSwitching:
         Tests the reverse direction - ensuring the model doesn't stay stuck
         on webSearch when weather is asked.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
@@ -181,8 +181,8 @@ class TestTopicSwitching:
             "webSearch": MOCK_NEWS_SEARCH,
         })
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
             # Turn 1: News search
             capture.clear()
@@ -248,15 +248,15 @@ class TestFollowUpContext:
 
         The model should use the weather context to inform the umbrella advice.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
         capture = ToolCallCapture()
         mock_tool_run = create_mock_tool_run(capture, {"getWeather": MOCK_WEATHER_RESPONSE})
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
             # Turn 1: Weather query
             capture.clear()
@@ -352,14 +352,14 @@ class TestSelfContainedToolArguments:
         - Turn 2: "What are his most famous songs?" -> webSearch argument
                   MUST contain "Harry Styles" (pronoun resolved from context).
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
         capture = ToolCallCapture()
 
         def mock_tool_run(db, cfg, tool_name, tool_args, **kwargs):
-            from jarvis.tools.types import ToolExecutionResult
+            from claire.tools.types import ToolExecutionResult
             capture.record(tool_name, tool_args or {})
             if tool_name == "webSearch":
                 args_str = str(tool_args).lower() if tool_args else ""
@@ -368,8 +368,8 @@ class TestSelfContainedToolArguments:
                 return ToolExecutionResult(success=True, reply_text=MOCK_HARRY_STYLES_SEARCH)
             return ToolExecutionResult(success=True, reply_text="OK")
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
             # Turn 1: establish entity
             capture.clear()
@@ -444,7 +444,7 @@ class TestMultiTurnExtended:
 
         Each turn should select the appropriate tool.
         """
-        from jarvis.reply.engine import run_reply_engine
+        from claire.reply.engine import run_reply_engine
 
         mock_config = voice_config()
 
@@ -452,7 +452,7 @@ class TestMultiTurnExtended:
         all_turns = []
 
         def mock_tool_run(db, cfg, tool_name, tool_args, **kwargs):
-            from jarvis.tools.types import ToolExecutionResult
+            from claire.tools.types import ToolExecutionResult
             capture.record(tool_name, tool_args or {})
 
             if tool_name == "getWeather":
@@ -466,8 +466,8 @@ class TestMultiTurnExtended:
                     return ToolExecutionResult(success=True, reply_text=MOCK_NEWS_SEARCH)
             return ToolExecutionResult(success=True, reply_text="OK")
 
-        with patch('jarvis.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
-             patch('jarvis.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
+        with patch('claire.reply.engine.run_tool_with_retries', side_effect=mock_tool_run), \
+             patch('claire.reply.engine.get_location_context_with_timezone', return_value=("Location: Kensington, UK", None)):
 
             queries = [
                 ("How's the weather today?", "getWeather"),

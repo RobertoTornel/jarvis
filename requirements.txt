@@ -1,41 +1,87 @@
+# Claire - runtime dependencies (Linux only).
+#
+# Single source of truth for the daemon, the desktop app and the packaging
+# scripts (pyproject.toml declares no runtime deps on purpose). The target is a
+# stock Linux x86_64 desktop with an optional GPU, so no platform-gated
+# closures are kept here: every entry below is expected to install as-is on
+# Linux, and any platform-specific extras belong in the optional section at
+# the bottom of this file.
+
+# --- Core runtime ----------------------------------------------------------
 python-dotenv==1.0.1
-flask>=3.0.0
+setuptools<81
+numpy<2.0.0
 requests==2.32.3
 urllib3>=2.8.0,<3
+
+# --- Web, research, OCR ----------------------------------------------------
+flask>=3.0.0
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 html2text>=2020.1.16
 playwright>=1.40.0
-numpy<2.0.0
-faster-whisper==1.0.3
-setuptools<81
-sounddevice==0.4.7
 pytesseract==0.3.13
 Pillow==10.4.0
+geoip2==4.8.0
+miniupnpc==2.2.8
+
+# --- Audio I/O and matching ------------------------------------------------
+sounddevice==0.4.7
+pygame>=2.1.0
 webrtcvad==2.0.10
 rapidfuzz==3.6.1
-pynput>=1.7.6
-geoip2==4.8.0
-tzdata==2026.1; sys_platform == "win32"
-miniupnpc==2.2.8
-pytest==8.3.2
-pytest-repeat==0.9.3
-mcp==1.13.1
-chatterbox-tts==0.1.2
+
+# --- Voice: local speech recognition (STT) ---------------------------------
+faster-whisper==1.0.3
+# Streaming zipformer recogniser from k2-fsa: low-latency partial/wake decoding.
+sherpa-onnx>=1.13.0,<2
+# ONNX Runtime executes the Parakeet v2 / zipformer ONNX graphs directly.
+# It already arrives transitively (faster-whisper, piper-tts), but it is pinned
+# explicitly because the ONNX loaders depend on it by contract and must not
+# disappear if a transitive dependency drops it.
+onnxruntime>=1.18.0
+
+# --- Voice: local speech synthesis (TTS) -----------------------------------
 piper-tts>=1.3.0
-pygame>=2.1.0
+chatterbox-tts==0.1.2
+
+# --- Voice: cloud speech synthesis (Fish Audio) ----------------------------
+# Official Fish Audio Python SDK (import name ``fishaudio``), used instead of
+# hand-rolled HTTP calls against the REST API. Needs an API key at runtime.
+fish-audio-sdk>=1.3.0
+
+# --- Secrets ---------------------------------------------------------------
+# OS keychain (Secret Service / GNOME Keyring / KWallet) for the secrets
+# migration away from plaintext values in the config file.
+keyring>=25.0.0
+
+# --- Vector search ---------------------------------------------------------
 faiss-cpu>=1.7.4
 
-# NVIDIA CUDA libraries for GPU-accelerated speech recognition on Windows
-nvidia-cublas-cu12>=12.8.0; sys_platform == "win32"
-nvidia-cudnn-cu12>=9.0.0; sys_platform == "win32"
+# --- MCP -------------------------------------------------------------------
+mcp==1.13.1
 
-# MLX Whisper for Apple Silicon Macs (much faster than CPU-based faster-whisper)
-mlx-whisper>=0.4.0; sys_platform == "darwin" and platform_machine == "arm64"
-
-# Desktop app dependencies
+# --- Desktop app -----------------------------------------------------------
 PyQt6>=6.6.0
 PyQt6-WebEngine>=6.6.0
 psutil>=5.9.0
-# Note: 6.13.0+ has VC runtime pre-loading fix for Windows
+pynput>=1.7.6
 pyinstaller>=6.13.0
+
+# --- Dev and tests ---------------------------------------------------------
+pytest==8.3.2
+pytest-repeat==0.9.3
+
+
+# ===========================================================================
+# OPTIONAL - everything below is NOT installed by default.
+# ===========================================================================
+
+# --- NVIDIA NeMo (Parakeet ASR tooling) ------------------------------------
+# Intentionally commented out. nemo_toolkit[asr] pulls a very large,
+# CUDA-oriented stack (PyTorch + Lightning + NVIDIA wheels) and is only needed
+# for training, fine-tuning or NVIDIA-specific inference paths. Stock Parakeet
+# v2 checkpoints must also work through the plain ONNX loader, which is why
+# onnxruntime and sherpa-onnx above are the supported runtime route. Uncomment
+# only when you deliberately want the NeMo toolchain installed.
+# nemo_toolkit[asr]>=2.0.0

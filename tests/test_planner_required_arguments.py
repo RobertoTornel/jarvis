@@ -4,7 +4,7 @@ import json
 import pytest
 
 from evals.helpers import voice_config
-from jarvis.reply import planner
+from claire.reply import planner
 
 pytestmark = pytest.mark.unit
 
@@ -76,8 +76,8 @@ def test_freeform_schema_keeps_values_but_still_requires_declared_fields(monkeyp
 
 
 def test_incomplete_plan_returns_to_chat_before_any_invalid_dispatch(monkeypatch, mock_config, db, dialogue_memory):
-    from jarvis.reply import engine
-    from jarvis.tools.types import ToolExecutionResult
+    from claire.reply import engine
+    from claire.tools.types import ToolExecutionResult
 
     mock_config.llm_chat_model = 'gemma4:e2b'
     mock_config.location_enabled = False
@@ -104,7 +104,7 @@ def test_incomplete_plan_returns_to_chat_before_any_invalid_dispatch(monkeypatch
     monkeypatch.setattr(engine, 'run_tool_with_retries', run_tool)
     monkeypatch.setattr('requests.post', lambda *args, **kwargs: pytest.fail('🗺️ Dispatch regression must not contact a model'))
     result = engine.run_reply_engine(
-        db=db, cfg=mock_config, tts=None, text='Search for a document index, Jarvis.',
+        db=db, cfg=mock_config, tts=None, text='Search for a document index, Claire.',
         dialogue_memory=dialogue_memory,
     )
     assert result == 'The catalogue includes a document guide.'

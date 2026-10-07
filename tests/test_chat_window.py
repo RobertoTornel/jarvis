@@ -4,11 +4,11 @@ These verify the contract in ``src/desktop_app/chat_window.spec.md``:
 
 - The window has a transcript area, an input box, a send button, and a stop
   button (visible only while a query is in flight).
-- Sending submits text via ``jarvis.daemon.submit_text_query`` and appends the
+- Sending submits text via ``claire.daemon.submit_text_query`` and appends the
   user's message to the transcript.
 - Daemon callback signals (start/complete/busy) update the transcript and the
   status indicator on the Qt main thread.
-- The stop button calls ``jarvis.daemon.cancel_active_chat_query``.
+- The stop button calls ``claire.daemon.cancel_active_chat_query``.
 - Closing hides the window; it does not quit the daemon.
 - Styling uses the shared theme stylesheet (no hardcoded colour literals in
   the widget classes).
@@ -111,12 +111,12 @@ class TestChatWindowStructure:
         win = ChatWindow()
         assert not win.stop_button.isVisible()
 
-    def test_window_title_mentions_jarvis(self, qapp):
+    def test_window_title_mentions_claire(self, qapp):
         from desktop_app.chat_window import ChatWindow
 
         win = ChatWindow()
         title = win.windowTitle()
-        assert "Jarvis" in title
+        assert "Claire" in title
 
 
 @pytest.mark.unit
@@ -128,7 +128,7 @@ class TestChatWindowSend:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow()
@@ -140,7 +140,7 @@ class TestChatWindowSend:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.input_widget.setPlainText("hello there")
@@ -152,7 +152,7 @@ class TestChatWindowSend:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.input_widget.setPlainText("clear me after send")
@@ -164,7 +164,7 @@ class TestChatWindowSend:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow()
@@ -177,7 +177,7 @@ class TestChatWindowSend:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow(daemon_available=False)
@@ -198,7 +198,7 @@ class TestChatWindowCallbacks:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.input_widget.setPlainText("hi")
@@ -212,7 +212,7 @@ class TestChatWindowCallbacks:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.show()
@@ -230,7 +230,7 @@ class TestChatWindowCallbacks:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.input_widget.setPlainText("second query")
@@ -253,13 +253,13 @@ class TestChatWindowStop:
 
         called = []
         monkeypatch.setattr(
-            "jarvis.daemon.cancel_active_chat_query", lambda: called.append(True)
+            "claire.daemon.cancel_active_chat_query", lambda: called.append(True)
         )
         # request_stop must NOT be called because it tears down the whole
         # voice assistant.
         request_stop_called = []
         monkeypatch.setattr(
-            "jarvis.daemon.request_stop",
+            "claire.daemon.request_stop",
             lambda: request_stop_called.append(True),
         )
         win = ChatWindow()
@@ -276,7 +276,7 @@ class TestChatWindowStop:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.cancel_active_chat_query", lambda: None
+            "claire.daemon.cancel_active_chat_query", lambda: None
         )
         win = ChatWindow()
         win.show()
@@ -298,7 +298,7 @@ class TestChatWindowLifecycle:
         from PyQt6.QtGui import QCloseEvent
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.show()
@@ -306,7 +306,7 @@ class TestChatWindowLifecycle:
         # The daemon stop function must NOT be called on close.
         stop_called = []
         monkeypatch.setattr(
-            "jarvis.daemon.request_stop", lambda: stop_called.append(True)
+            "claire.daemon.request_stop", lambda: stop_called.append(True)
         )
         win.closeEvent(QCloseEvent())
         assert stop_called == []
@@ -324,7 +324,7 @@ class TestChatWindowSubmitFn:
         win = ChatWindow(submit_fn=lambda text: calls.append(text))
         # The bundled path must NOT be touched when submit_fn is set.
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("must use submit_fn")),
         )
         win.input_widget.setPlainText("via stdin")
@@ -354,21 +354,21 @@ class TestDesktopAppChatDispatch:
 
     def _make_tray(self):
         import desktop_app.app as app_mod
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.chat_window = None
         tray._chat_submit_fn = None
         tray.is_listening = True
         return tray
 
     def test_on_chat_ipc_line_creates_window_lazily(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         assert tray.chat_window is None
         tray._on_chat_ipc_line(f'{CHAT_IPC_PREFIX}{{"type":"complete","data":"hi"}}')
         assert tray.chat_window is not None
 
     def test_dispatch_complete_appends_reply(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         tray._on_chat_ipc_line(f'{CHAT_IPC_PREFIX}{{"type":"complete","data":"hello back"}}')
         tray.chat_window.show()
@@ -376,7 +376,7 @@ class TestDesktopAppChatDispatch:
         assert "hello back" in tray.chat_window.transcript_text()
 
     def test_dispatch_start_sets_thinking(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         tray._on_chat_ipc_line(f'{CHAT_IPC_PREFIX}{{"type":"start","data":"a query"}}')
         tray.chat_window.show()
@@ -384,7 +384,7 @@ class TestDesktopAppChatDispatch:
         assert tray.chat_window.stop_button.isVisible()
 
     def test_dispatch_busy_appends_notice(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         tray._on_chat_ipc_line(f'{CHAT_IPC_PREFIX}{{"type":"busy","data":null}}')
         tray.chat_window.show()
@@ -393,7 +393,7 @@ class TestDesktopAppChatDispatch:
         assert "busy" in text
 
     def test_dispatch_malformed_line_is_swallowed(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         # Must not raise; window is created lazily but no reply text lands.
         tray._on_chat_ipc_line(f"{CHAT_IPC_PREFIX}not json")
@@ -406,12 +406,12 @@ class TestDesktopAppChatDispatch:
 
     def test_process_ipc_line_returns_true_for_malformed_chat(self, qapp):
         from desktop_app.chat_window import ChatWindow
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         win = ChatWindow()
         assert win.process_ipc_line(f"{CHAT_IPC_PREFIX}not json") is True
 
     def test_late_ipc_line_creates_unavailable_window_when_daemon_stopped(self, qapp):
-        from jarvis.daemon import CHAT_IPC_PREFIX
+        from claire.daemon import CHAT_IPC_PREFIX
         tray = self._make_tray()
         tray.is_listening = False
 
@@ -424,10 +424,10 @@ class TestDesktopAppChatDispatch:
         """The stdin-bridge callable writes a __CHAT_QUERY__: JSON line."""
         import io
         import json
-        from jarvis.daemon import CHAT_QUERY_IPC_PREFIX
+        from claire.daemon import CHAT_QUERY_IPC_PREFIX
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
 
         # Fake a subprocess.Popen with a writable stdin pipe.
         sink = io.StringIO()
@@ -452,10 +452,10 @@ class TestDesktopAppChatDispatch:
         line (prefix + JSON payload)."""
         import io
         import json
-        from jarvis.daemon import CHAT_REWIND_IPC_PREFIX
+        from claire.daemon import CHAT_REWIND_IPC_PREFIX
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         sink = io.StringIO()
         fake_proc = type("P", (), {"stdin": sink})()
         tray.daemon_process = fake_proc
@@ -478,7 +478,7 @@ class TestDesktopAppChatDispatch:
     def test_show_chat_marks_window_unavailable_when_daemon_stopped(self, qapp):
         import desktop_app.app as app_mod
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.chat_window = None
         tray._chat_submit_fn = None
         tray.is_listening = False
@@ -492,7 +492,7 @@ class TestDesktopAppChatDispatch:
         import desktop_app.app as app_mod
         from desktop_app.chat_window import ChatWindow
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.chat_window = ChatWindow(daemon_available=False)
         tray._chat_submit_fn = lambda text: None
         tray.is_listening = True
@@ -591,7 +591,7 @@ class TestDesktopAppChatStatus:
         import desktop_app.app as app_mod
         from desktop_app.chat_window import ChatWindow
 
-        tray = app_mod.JarvisSystemTray.__new__(app_mod.JarvisSystemTray)
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
         tray.chat_window = ChatWindow()
         tray.chat_window.show()
         tray._chat_submit_fn = lambda text: None
@@ -614,7 +614,7 @@ class TestChatWindowInputKeys:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow()
@@ -636,7 +636,7 @@ class TestChatWindowInputKeys:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow()
@@ -656,7 +656,7 @@ class TestChatWindowInputKeys:
 
         calls = []
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: calls.append(text),
         )
         win = ChatWindow()
@@ -727,7 +727,7 @@ class TestChatWindowCloseHidesNotDestroys:
         from PyQt6.QtGui import QCloseEvent
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = ChatWindow()
         win.show()
@@ -754,7 +754,7 @@ class TestChatWindowHotWindowReplay:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         hot_window = [
             {"role": "user", "content": "what is the weather"},
@@ -776,7 +776,7 @@ class TestChatWindowHotWindowReplay:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         monkeypatch.setattr(
             "desktop_app.chat_window.get_hot_window_messages",
@@ -797,7 +797,7 @@ class TestChatWindowHotWindowReplay:
         from desktop_app.chat_window import ChatWindow
 
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         monkeypatch.setattr(
             "desktop_app.chat_window.get_hot_window_messages", lambda: []
@@ -833,12 +833,12 @@ class TestChatWindowSmsLook:
         win.show()
         qapp.processEvents()
         texts = [label.text() for label in win.findChildren(QLabel)]
-        assert "Jarvis" in texts
+        assert "Claire" in texts
         assert "Online" in texts
 
     def test_header_shows_typing_while_query_in_flight(self, qapp, monkeypatch):
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         win.show()
@@ -859,7 +859,7 @@ class TestChatWindowSmsLook:
             ],
         )
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         win.show()
@@ -876,10 +876,10 @@ class TestChatWindowSmsLook:
 
     def test_user_bubble_right_assistant_left(self, qapp, monkeypatch):
         """SMS layout: the user's bubble sits on the right half of the
-        window, Jarvis's reply on the left half."""
+        window, Claire's reply on the left half."""
         from PyQt6.QtWidgets import QLabel
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         win.show()
@@ -902,10 +902,10 @@ class TestChatWindowSmsLook:
 
     def test_bubbles_show_plain_text_without_role_prefixes(self, qapp, monkeypatch):
         """The bubbles carry the message bodies only; position and colour
-        convey the sender, so there is no 'You:' / 'Jarvis:' prefix."""
+        convey the sender, so there is no 'You:' / 'Claire:' prefix."""
         from PyQt6.QtWidgets import QLabel
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         win.input_widget.setPlainText("no prefix")
@@ -918,12 +918,12 @@ class TestChatWindowSmsLook:
             if label.objectName() == "bubble"
         ]
         assert texts == ["no prefix", "plain reply"]
-        assert all("You:" not in t and "Jarvis:" not in t for t in texts)
+        assert all("You:" not in t and "Claire:" not in t for t in texts)
 
     def test_bubbles_carry_timestamps(self, qapp, monkeypatch):
         from PyQt6.QtWidgets import QLabel
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         win.input_widget.setPlainText("timed")
@@ -968,11 +968,11 @@ class TestChatRewind:
         rewinds = []
         submits = []
         monkeypatch.setattr(
-            "jarvis.daemon.rewind_chat_to_user",
+            "claire.daemon.rewind_chat_to_user",
             lambda idx: rewinds.append(idx) or True,
         )
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query",
+            "claire.daemon.submit_text_query",
             lambda text, **kw: submits.append(text),
         )
         win = self._window(qapp)
@@ -997,10 +997,10 @@ class TestChatRewind:
         """After a rewind + regenerate, the message ordinal stays stable so
         a subsequent send continues the conversation correctly."""
         monkeypatch.setattr(
-            "jarvis.daemon.rewind_chat_to_user", lambda idx: True
+            "claire.daemon.rewind_chat_to_user", lambda idx: True
         )
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         self._send(win, "one")
@@ -1037,11 +1037,11 @@ class TestChatRewind:
     def test_rewind_noops_while_query_in_flight(self, qapp, monkeypatch):
         rewinds = []
         monkeypatch.setattr(
-            "jarvis.daemon.rewind_chat_to_user",
+            "claire.daemon.rewind_chat_to_user",
             lambda idx: rewinds.append(idx) or True,
         )
         monkeypatch.setattr(
-            "jarvis.daemon.submit_text_query", lambda text, **kw: None
+            "claire.daemon.submit_text_query", lambda text, **kw: None
         )
         win = self._window(qapp)
         self._send(win, "question")  # leaves _query_in_flight True

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Three sensitivities rather than a slider: the detector's parameters have to
+         move together (the noise multiplier and the absolute floor, and on the noisy
+         setting also the hangover), and a slider that only moved one of them would
+         offer a range of settings that are mostly wrong. -->
+    <string-array name="sensitivity_levels">
+        <item>@string/sensitivity_quiet</item>
+        <item>@string/sensitivity_normal</item>
+        <item>@string/sensitivity_noisy</item>
+    </string-array>
+
+    <!-- Which engine speaks.  Index 0 is the owner's requested path: the app calls
+         Fish Audio itself.  Index 1 is the phone's own text-to-speech, kept as the
+         fallback that works with no key and no network. -->
+    <string-array name="tts_backends">
+        <item>@string/tts_backend_fish</item>
+        <item>@string/tts_backend_device</item>
+    </string-array>
+
+    <!-- Continuous-location cadence.  The values are in the array order and are read
+         by SettingsActivity; 0 is not offered because "continuously" with no fix is
+         not a mode. -->
+    <integer-array name="location_intervals">
+        <item>30</item>
+        <item>60</item>
+        <item>300</item>
+        <item>900</item>
+    </integer-array>
+    <string-array name="location_interval_labels">
+        <item>30 seconds</item>
+        <item>1 minute</item>
+        <item>5 minutes</item>
+        <item>15 minutes</item>
+    </string-array>
+
+    <!-- Autonomous photo cadence.  The first entry is the off state and is the
+         default: a periodic camera is opt-in. -->
+    <integer-array name="capture_periods">
+        <item>0</item>
+        <item>15</item>
+        <item>30</item>
+        <item>60</item>
+        <item>180</item>
+    </integer-array>
+    <string-array name="capture_period_labels">
+        <item>@string/periodic_off</item>
+        <item>@string/periodic_15</item>
+        <item>@string/periodic_30</item>
+        <item>@string/periodic_60</item>
+        <item>@string/periodic_180</item>
+    </string-array>
+</resources>

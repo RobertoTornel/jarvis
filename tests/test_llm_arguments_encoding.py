@@ -17,7 +17,7 @@ class TestToolCallArgumentsWireFormat:
     """Verifies that tool_calls arguments are JSON-encoded strings on the wire."""
 
     def _make_backend(self):
-        from jarvis.llm.openai_compatible import OpenAICompatibleBackend
+        from claire.llm.openai_compatible import OpenAICompatibleBackend
 
         return OpenAICompatibleBackend(base_url="http://localhost:11434")
 

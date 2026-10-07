@@ -1,5 +1,5 @@
 """
-Generate simple icons for the Jarvis desktop app.
+Generate simple icons for the Claire desktop app.
 This creates idle and listening state icons.
 """
 

@@ -1,0 +1,120 @@
+# Claire - systemd USER unit (Linux only).
+#
+#   install:  mkdir -p ~/.config/systemd/user
+#             cp deploy/claire.service ~/.config/systemd/user/claire.service
+#             systemctl --user daemon-reload
+#             systemctl --user enable --now claire
+#   logs:     journalctl --user -u claire -f
+#   health:   ~/jarvis_cloud/.venv/bin/python -m claire.platform.service --self-check
+#
+# WHY A *USER* UNIT AND NOT A SYSTEM UNIT (the classic failure)
+# ------------------------------------------------------------
+# Claire is a voice assistant: she needs the microphone, the speakers and (for
+# the screen senses) the graphical session. Those belong to the *login session*
+# of a human, not to the machine. A system unit (`/etc/systemd/system/claire.service`,
+# run by PID 1 as root) starts before any user session exists, has no
+# DBUS_SESSION_BUS_ADDRESS, no XDG_RUNTIME_DIR, no PipeWire/PulseAudio and no
+# X/Wayland display. PortAudio then either finds no device or finds a device it
+# cannot open, and the failure surfaces as "no microphone" or silence -- which
+# looks like a Claire bug and is not one. `User=`/`Group=` in a system unit does
+# not fix this: it changes the uid, not the session, and it never grants access
+# to another user's session bus or X server.
+#
+# So this is a user unit, started by the *user's* systemd instance inside the
+# session, where the bus, the audio server and the display are all present.
+# Consequence, stated honestly: Claire runs while that user is logged in. For
+# "always on" without an active login, use `loginctl enable-linger <user>` AND
+# keep the audio/display parts off -- a lingering user manager has no session
+# bus either, so voice and screen senses are unavailable by definition.
+#
+# KEYS ARE NOT IN THIS FILE
+# -------------------------
+# This unit is world-readable (/etc/systemd/user is fine, but the file may be
+# copied, backed up or pasted into a bug report). It therefore contains NO
+# inline secret: keys come from EnvironmentFile below, which is 0600 and owned by
+# the user. Never add `Environment=OMNIROUTE_API_KEY=...` here.
+
+[Unit]
+Description=Claire - always-on Linux voice assistant
+Documentation=file://%h/jarvis_cloud/src/claire/platform/service.spec.md
+# The session bus, audio server and display must already be up: Claire needs all
+# three, and starting before them is the failure described above.
+After=graphical-session.target pipewire.service wireplumber.service network-online.target
+Wants=network-online.target
+PartOf=graphical-session.target
+# Restart backoff with a limit, so a crash-looping Claire is rate-limited by
+# systemd instead of spinning forever. Check `systemctl --user status claire`
+# (or journalctl) once the burst is exhausted.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# The checkout path: adjust if you cloned Claire somewhere else. `%h` is the
+# user's home directory (systemd specifier, not a shell variable).
+WorkingDirectory=%h/jarvis_cloud
+# The package is not pip-installed in a bare checkout, so the src layout needs
+# to be on the import path. If you ran `pip install -e .`, this line can go and
+# ExecStart can use the console script instead: ExecStart=%h/jarvis_cloud/.venv/bin/claire
+Environment=PYTHONPATH=%h/jarvis_cloud/src
+# Journald is not a terminal; do not let Python block-buffer the log.
+Environment=PYTHONUNBUFFERED=1
+# Keys live in a 0600 file that only this user can read - never inline here.
+# The leading '-' keeps the unit startable when the keys are held in the OS
+# keychain instead; a *missing* key is then named with its fix by Claire's own
+# self-check (`python -m claire.platform.service --self-check`) and by the
+# provider call that needs it, so it is loud, not silent.
+EnvironmentFile=-%h/.config/claire/claire.env
+ExecStart=%h/jarvis_cloud/.venv/bin/python -m claire
+# SIGINT, not SIGTERM: Claire treats it as "finish the turn, close the audio
+# stream, exit", which is what keeps the microphone out of a wedged state.
+KillSignal=SIGINT
+TimeoutStopSec=20
+# Restart only on failure (crash / non-zero exit), with a sane delay: immediate
+# restarts turn one bad config into a hot loop. Combined with the StartLimit
+# above, systemd gives up after 5 starts in 300s and says so in the journal.
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claire
+
+# Hardening that costs nothing here: the service writes to the user's own data
+# directories only, and it needs no privileges at all.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# ...except the directories Claire must write to. Widen these if you moved
+# $CLAIRE_VAULT_DIR / the schedule database.
+#
+# %h/.cache is here for the speech-recognition fallback, not for the primary
+# recogniser. The authoritative engine reads a local model and needs no cache,
+# but Whisper - the documented degraded fallback for when that engine cannot
+# load - downloads from HuggingFace and writes its cache under ~/.cache. With
+# ProtectHome=read-only and no path granted here, that download fails with
+# "Read-only file system: /home/<user>/.cache/huggingface" and Claire loses the
+# safety net that exists precisely for the case it was needed.
+# %h/.cache/claire holds the phone photo store behind POST /see. Without it
+# that route fails with "photo_store_failed: [Errno 30] Read-only file system".
+ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cache/huggingface %h/.cache/numba
+
+# numba caches compiled helpers next to whatever source file defines them unless
+# it is told otherwise. The NeMo Parakeet model reaches librosa, and librosa
+# JIT-compiles; with ProtectHome=read-only the venv is read-only, so the cache
+# write fails and the failure surfaces as an unrelated-looking import error:
+#
+#   RuntimeError("cannot cache function '__o_fold': no locator available for
+#   file '.../librosa/core/notation.py'")
+#   -> NeMo: Can't instantiate abstract class ASRModel ...
+#   -> "Voice transcript degraded: produced no authoritative Parakeet transcript"
+#
+# The authoritative recogniser silently fell back to Whisper and Claire ran
+# degraded, with nothing in the banner to say so. Pointing the cache at a
+# writable directory fixes it; this was verified under the same sandbox.
+Environment=NUMBA_CACHE_DIR=%h/.cache/numba
+
+[Install]
+# A user unit is enabled in the user's manager, so the target is default.target
+# (there is no multi-user.target in a user session).
+WantedBy=default.target

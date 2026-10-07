@@ -13,7 +13,7 @@ is set on a hand-built cfg — config load always resolves ``fast_model``.
 
 import pytest
 
-from jarvis.llm import resolve_model, Tier
+from claire.llm import resolve_model, Tier
 
 
 class _Cfg:

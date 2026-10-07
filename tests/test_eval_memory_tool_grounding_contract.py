@@ -29,7 +29,7 @@ def load_case(monkeypatch, case):
 
 
 def tool_turn(engine, cfg, text, city, result):
-    args = {} if 'tomorrow Jarvis' in text else {'location': city}
+    args = {} if 'tomorrow Claire' in text else {'location': city}
     engine.run_tool_with_retries(db=None, cfg=cfg, tool_name='getWeather', tool_args=args)
     return result
 
@@ -37,8 +37,8 @@ def tool_turn(engine, cfg, text, city, result):
 @pytest.mark.parametrize('case', CASES)
 @pytest.mark.parametrize('provider', ['ollama', 'openai_compatible'])
 def test_memory_tool_eval_reaches_selected_transport_and_tiers(monkeypatch, case, provider):
-    from jarvis.llm import Tier, get_llm_backend, resolve_model
-    from jarvis.reply import engine
+    from claire.llm import Tier, get_llm_backend, resolve_model
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, case)
     base, model = 'http://127.0.0.1:11439', 'selected-memory-tool-model'
@@ -72,7 +72,7 @@ def test_memory_tool_eval_reaches_selected_transport_and_tiers(monkeypatch, case
 
 @pytest.mark.parametrize('missing', [None, '', '   '])
 def test_followup_eval_rejects_a_missing_first_answer(monkeypatch, missing):
-    from jarvis.reply import engine
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, CASES[2])
     answers = iter([missing, forecast])
@@ -85,7 +85,7 @@ def test_followup_eval_rejects_a_missing_first_answer(monkeypatch, missing):
 
 @pytest.mark.parametrize('case', CASES)
 def test_memory_tool_eval_rejects_a_city_without_weather_facts(monkeypatch, case):
-    from jarvis.reply import engine
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, case)
     monkeypatch.setattr(engine, 'run_reply_engine', lambda *, cfg, text, **kwargs:
@@ -97,7 +97,7 @@ def test_memory_tool_eval_rejects_a_city_without_weather_facts(monkeypatch, case
 
 @pytest.mark.parametrize('case', CASES)
 def test_weather_fixture_rejects_an_unrelated_location(monkeypatch, case):
-    from jarvis.reply import engine
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, case)
     results = []
@@ -118,7 +118,7 @@ def test_weather_fixture_rejects_an_unrelated_location(monkeypatch, case):
 
 
 def test_followup_eval_accepts_clarifying_without_a_failed_tool_call(monkeypatch):
-    from jarvis.reply import engine
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, CASES[2])
     answers = iter(['Which city should I check?', forecast])
@@ -137,7 +137,7 @@ def test_followup_eval_accepts_clarifying_without_a_failed_tool_call(monkeypatch
 @pytest.mark.parametrize('case', CASES)
 def test_memory_tool_eval_rejects_an_unrelated_matching_number(monkeypatch, case):
     import re
-    from jarvis.reply import engine
+    from claire.reply import engine
 
     run, forecast = load_case(monkeypatch, case)
     value = re.search(r'(\d+)°C', forecast).group(1)

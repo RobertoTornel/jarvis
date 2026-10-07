@@ -2,7 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 import pytest
-from jarvis.reply.planner import plan_query, resolve_next_tool_call
+from claire.reply.planner import plan_query, resolve_next_tool_call
 
 pytestmark=pytest.mark.unit
 

@@ -2,11 +2,9 @@
 Regression tests for the most-reported desktop crash (#503 and friends).
 
 When the PortAudio shared library is missing (common on Linux),
-``import sounddevice`` raises **OSError**, not ImportError. Similarly,
-``pynput`` can raise non-ImportError exceptions on headless Linux (no X
-display). Modules that treat audio as optional must survive both,
-otherwise the setup wizard's dictation page import chain kills the whole
-app at first launch.
+``import sounddevice`` raises **OSError**, not ImportError. Modules that
+treat audio as optional must survive that, otherwise importing them kills
+the whole app at first launch.
 
 These tests import the modules in a subprocess where the dependency
 raises at import time, and assert the modules still load with the
@@ -62,37 +60,10 @@ def _assert_ok(result: subprocess.CompletedProcess) -> None:
     assert "OK" in result.stdout
 
 
-def test_dictation_engine_imports_without_portaudio():
-    """Dictation engine must load (audio disabled) when PortAudio is absent."""
-    extra = (
-        "from jarvis.dictation.dictation_engine import format_hotkey_display\n"
-        "assert format_hotkey_display('ctrl+alt')"
-    )
-    result = _run(
-        "jarvis.dictation.dictation_engine",
-        dep="sounddevice",
-        error='OSError("PortAudio library not found")',
-        attr="sd",
-        extra=extra,
-    )
-    _assert_ok(result)
-
-
-def test_dictation_engine_imports_with_broken_pynput():
-    """Dictation engine must load (hotkey disabled) when pynput fails to import."""
-    result = _run(
-        "jarvis.dictation.dictation_engine",
-        dep="pynput",
-        error='RuntimeError("no X display available")',
-        attr="pynput_keyboard",
-    )
-    _assert_ok(result)
-
-
 def test_listener_imports_without_portaudio():
     """Voice listener module must load (audio disabled) when PortAudio is absent."""
     result = _run(
-        "jarvis.listening.listener",
+        "claire.listening.listener",
         dep="sounddevice",
         error='OSError("PortAudio library not found")',
         attr="sd",

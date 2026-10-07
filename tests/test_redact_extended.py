@@ -4,7 +4,7 @@ carryover and recall-gate debug logs cannot leak credentials.
 
 import pytest
 
-from src.jarvis.utils.redact import redact, scrub_secrets
+from src.claire.utils.redact import redact, scrub_secrets
 
 
 @pytest.mark.unit
@@ -39,6 +39,12 @@ class TestVendorAccessKeys:
 
     def test_openai_key_redacted(self):
         token = "sk-" + "A" * 40
+        out = redact(token)
+        assert token not in out
+        assert "[REDACTED_OPENAI_KEY]" in out
+
+    def test_openai_proj_key_redacted(self):
+        token = "sk-proj-" + "A" * 40
         out = redact(token)
         assert token not in out
         assert "[REDACTED_OPENAI_KEY]" in out

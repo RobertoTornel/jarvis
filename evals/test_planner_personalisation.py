@@ -49,7 +49,7 @@ class TestPlannerEmitsSearchMemoryForPersonalisedQueries:
         ids=lambda q: q[:40],
     )
     def test_personalised_query_plans_memory_lookup_first(self, query):
-        from jarvis.reply.planner import (
+        from claire.reply.planner import (
             plan_query, plan_requires_memory, is_search_memory_step,
         )
 
@@ -98,7 +98,7 @@ class TestPlannerEmitsSearchMemoryForPersonalisedQueries:
         """Negative case: pure general-knowledge queries must NOT trigger
         a searchMemory directive. Every extra searchMemory is a wasted
         memory-enrichment LLM call downstream."""
-        from jarvis.reply.planner import plan_query, plan_requires_memory
+        from claire.reply.planner import plan_query, plan_requires_memory
 
         plan = plan_query(
             cfg=planner_config(),
@@ -135,7 +135,7 @@ class TestPlannerMemoryPreparationWithoutExternalTools:
         ],
     )
     def test_memory_decision_is_independent_of_external_tool_availability(self, query, needs_memory):
-        from jarvis.reply.planner import plan_query, plan_requires_memory, is_search_memory_step
+        from claire.reply.planner import plan_query, plan_requires_memory, is_search_memory_step
 
         plan = plan_query(planner_config(), query, '', [], timeout_sec=20.)
         assert plan, f'No preparation plan for {query!r}'

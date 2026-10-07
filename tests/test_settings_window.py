@@ -23,7 +23,7 @@ from desktop_app.settings_window import (
     _MCPEditDialog,
 )
 from desktop_app.mcp_catalogue import CATALOGUE_BY_NAME
-from jarvis.config import get_default_config
+from claire.config import get_default_config
 
 
 class TestFieldMetadata:
@@ -297,7 +297,7 @@ class TestConfigSaveLogic:
             cfg_path = Path(f.name)
 
         try:
-            from jarvis.config import _save_json, _load_json
+            from claire.config import _save_json, _load_json
 
             # Simulate: all values match defaults, so nothing should be written
             config = {}
@@ -320,7 +320,7 @@ class TestConfigSaveLogic:
             cfg_path = Path(f.name)
 
         try:
-            from jarvis.config import _save_json, _load_json
+            from claire.config import _save_json, _load_json
 
             config = {
                 "ollama_chat_model": "gemma4:e4b",
@@ -343,7 +343,7 @@ class TestConfigSaveLogic:
             cfg_path = Path(f.name)
 
         try:
-            from jarvis.config import _save_json, _load_json
+            from claire.config import _save_json, _load_json
 
             existing = _load_json(cfg_path)
             # Simulate settings save: add a changed value, keep existing keys
@@ -462,12 +462,12 @@ class TestMCPCatalogueDialogLogic:
 
     def test_is_node_available_returns_true_when_found(self):
         """_is_node_available returns True when _resolve_command succeeds."""
-        with patch("jarvis.tools.external.mcp_client._resolve_command", return_value="/usr/bin/npx"):
+        with patch("claire.tools.external.mcp_client._resolve_command", return_value="/usr/bin/npx"):
             assert _MCPCatalogueDialog._is_node_available() is True
 
     def test_is_node_available_returns_false_when_missing(self):
         """_is_node_available returns False when _resolve_command raises."""
-        with patch("jarvis.tools.external.mcp_client._resolve_command", side_effect=FileNotFoundError("not found")):
+        with patch("claire.tools.external.mcp_client._resolve_command", side_effect=FileNotFoundError("not found")):
             assert _MCPCatalogueDialog._is_node_available() is False
 
 
@@ -481,7 +481,7 @@ class TestMCPConfigSaveLogic:
             cfg_path = Path(f.name)
 
         try:
-            from jarvis.config import _save_json, _load_json
+            from claire.config import _save_json, _load_json
 
             config = {
                 "mcps": {
@@ -507,7 +507,7 @@ class TestMCPConfigSaveLogic:
             cfg_path = Path(f.name)
 
         try:
-            from jarvis.config import _save_json, _load_json
+            from claire.config import _save_json, _load_json
 
             # Simulate: mcps is empty so should not be written
             config = {"tts_enabled": False}

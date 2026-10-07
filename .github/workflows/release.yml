@@ -104,12 +104,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Download every platform artifact that build-stable produced in
-          # this run. Fail loudly if any are missing — publishing a release
-          # without its binaries is worse than a failed job.
+          # Download the Linux artifact that build-stable produced in this
+          # run. Fail loudly if it is missing — publishing a release without
+          # its binaries is worse than a failed job.
           set -euo pipefail
           missing=0
-          for name in Jarvis-Windows Jarvis-macOS-arm64 Jarvis-macOS-x64 Jarvis-Linux; do
+          for name in Claire-Linux; do
             echo "Downloading $name..."
             if ! gh run download ${{ github.run_id }} --repo ${{ github.repository }} \
               --name "$name" \
@@ -126,14 +126,13 @@ jobs:
       - name: 📋 List available artifacts
         run: |
           echo "Available artifacts:"
-          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | sort || echo "(none)"
+          find artifacts -type f -name "*.tar.gz" | sort || echo "(none)"
 
       - name: 📎 Attach binaries to release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.semantic-release.outputs.new_release_git_tag }}
           files: |
-            artifacts/**/*.zip
             artifacts/**/*.tar.gz
           fail_on_unmatched_files: false
           append_body: true
@@ -147,10 +146,7 @@ jobs:
             ### 📦 Downloads
             | Platform | File | Notes |
             |----------|------|-------|
-            | **Windows** | `Jarvis-Windows-x64.zip` | Extract → Run `Jarvis.exe` |
-            | **macOS (Apple Silicon)** | `Jarvis-macOS-arm64.zip` | Extract → Move to Applications → Right-click → Open |
-            | **macOS (Intel)** | `Jarvis-macOS-x64.zip` | Extract → Move to Applications → Right-click → Open |
-            | **Linux** | `Jarvis-Linux-x64.tar.gz` | `tar -xzf` → Run `./Jarvis/Jarvis` |
+            | **Linux (x64)** | `Claire-Linux-x64.tar.gz` | `tar -xzf` → Run `./Claire/Claire` |
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -164,7 +160,7 @@ jobs:
           # can update to stable through their normal update flow. The next
           # develop push re-publishes "latest" with a fresh develop build, so
           # the window closes by itself.
-          FILES=$(find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | tr '\n' ' ')
+          FILES=$(find artifacts -type f -name "*.tar.gz" | tr '\n' ' ')
           if [ -z "$FILES" ]; then
             echo "::warning::No artifacts to mirror to 'latest'"
             exit 0
@@ -256,7 +252,7 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> $GITHUB_OUTPUT
 
-      - name: 📥 Download all artifacts
+      - name: 📥 Download Linux artifact
         uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -264,7 +260,7 @@ jobs:
       - name: 📋 List available artifacts
         run: |
           echo "Available artifacts:"
-          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) | sort || echo "(none)"
+          find artifacts -type f -name "*.tar.gz" | sort || echo "(none)"
 
       - name: 📝 Create/Update Latest Release
         uses: softprops/action-gh-release@v3
@@ -272,7 +268,6 @@ jobs:
           tag_name: latest
           name: Latest Development Build
           files: |
-            artifacts/**/*.zip
             artifacts/**/*.tar.gz
           fail_on_unmatched_files: false
           draft: false
@@ -293,10 +288,7 @@ jobs:
             ### 📦 Downloads
             | Platform | File | Notes |
             |----------|------|-------|
-            | **Windows** | `Jarvis-Windows-x64.zip` | Extract → Run `Jarvis.exe` |
-            | **macOS (Apple Silicon)** | `Jarvis-macOS-arm64.zip` | Extract → Move to Applications → Right-click → Open |
-            | **macOS (Intel)** | `Jarvis-macOS-x64.zip` | Extract → Move to Applications → Right-click → Open |
-            | **Linux** | `Jarvis-Linux-x64.tar.gz` | `tar -xzf` → Run `./Jarvis/Jarvis` |
+            | **Linux (x64)** | `Claire-Linux-x64.tar.gz` | `tar -xzf` → Run `./Claire/Claire` |
 
             **Branch**: develop
             **Commit**: ${{ github.sha }}

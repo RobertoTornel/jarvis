@@ -2,7 +2,7 @@
 
 import pytest
 
-from jarvis.reply.compound_query import (
+from claire.reply.compound_query import (
     CJK_MIN_CLAUSE_CHARS,
     DEFAULT_MIN_CLAUSE_CHARS,
     MIN_CLAUSE_CHARS,

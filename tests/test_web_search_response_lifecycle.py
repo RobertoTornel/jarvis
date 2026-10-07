@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from jarvis.tools.builtin import web_search
+from claire.tools.builtin import web_search
 
 pytestmark = pytest.mark.unit
 

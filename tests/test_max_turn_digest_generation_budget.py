@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from evals.helpers import voice_config
-from jarvis.reply.enrichment import digest_loop_for_max_turns
+from claire.reply.enrichment import digest_loop_for_max_turns
 
 pytestmark = pytest.mark.unit
 

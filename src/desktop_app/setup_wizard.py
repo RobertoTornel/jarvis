@@ -1,5 +1,5 @@
 """
-Jarvis Setup Wizard
+Claire Setup Wizard
 
 A setup wizard that checks for Ollama installation, running server, and required models.
 Guides users through the setup process with automated actions where possible.
@@ -22,9 +22,9 @@ from urllib.parse import urlsplit
 
 import requests
 
-from jarvis.debug import debug_log
-from jarvis.config import SUPPORTED_CHAT_MODELS, DEFAULT_CHAT_MODEL
-from jarvis.utils.vram import (
+from claire.debug import debug_log
+from claire.config import SUPPORTED_CHAT_MODELS, DEFAULT_CHAT_MODEL
+from claire.utils.vram import (
     detect_total_vram_mb,
     get_recommended_model_id,
     required_vram_mb,
@@ -92,7 +92,7 @@ def check_mlx_whisper_status() -> MLXWhisperStatus:
 
 
 # Import config early (no PyQt6 dependency) - needed for detection functions
-from jarvis.config import load_settings, get_default_config, default_config_path
+from claire.config import load_settings, get_default_config, default_config_path
 
 
 class SetupStatus(Enum):
@@ -175,7 +175,7 @@ def check_ollama_server() -> Tuple[bool, Optional[str]]:
     except Exception:
         base_url = "http://127.0.0.1:11434"
 
-    from jarvis.llm import check_version
+    from claire.llm import check_version
     return check_version(base_url, timeout=5.0)
 
 
@@ -384,12 +384,12 @@ try:
     from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QPainter
 
     from desktop_app.qt_worker import KeepAliveWorker
-    from desktop_app.themes import JARVIS_THEME_STYLESHEET, WIZARD_STYLESHEET, COLORS, _ensure_icons, _ICON_STYLESHEET_TEMPLATE
+    from desktop_app.themes import CLAIRE_THEME_STYLESHEET, WIZARD_STYLESHEET, COLORS, _ensure_icons, _ICON_STYLESHEET_TEMPLATE
     from desktop_app.mcp_catalogue import get_wizard_entries, MCPEntry
 
     # Import location utilities with crash protection for Windows native modules
     try:
-        from jarvis.utils.location import (
+        from claire.utils.location import (
             get_location_info,
             get_location_context,
             is_location_available,
@@ -430,7 +430,7 @@ except ImportError:
         return None
 
     # Stub location utilities that depend on themes
-    JARVIS_THEME_STYLESHEET = ""
+    CLAIRE_THEME_STYLESHEET = ""
     COLORS = {}
     get_location_info = lambda *a, **k: {}
     get_location_context = lambda *a, **k: "Location: Unknown"
@@ -512,7 +512,7 @@ class ScrollableWizardPage(QWizardPage):
             "WhisperSetupPage": 0, "ProviderChoicePage": 1,
             "WelcomePage": 1, "OpenAICompatiblePage": 1,
             "OllamaInstallPage": 1, "OllamaServerPage": 1, "ModelsPage": 1,
-            "DictationPage": 2, "MCPPage": 2, "SearchProvidersPage": 2,
+            "MCPPage": 2, "SearchProvidersPage": 2,
             "LocationPage": 2, "CompletePage": 3,
         }[type(self).__name__]
         header = QHBoxLayout()
@@ -550,7 +550,7 @@ class SetupWizard(QWizard):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🚀 Jarvis Setup Wizard")
+        self.setWindowTitle("🚀 Claire Setup Wizard")
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
         available = self.screen().availableGeometry()
         self.setMinimumSize(min(700, available.width() - 40),
@@ -569,7 +569,6 @@ class SetupWizard(QWizard):
         self.ollama_server_page = OllamaServerPage(self)
         self.models_page = ModelsPage(self)
         self.mlx_whisper_page = WhisperSetupPage(self)
-        self.dictation_page = DictationPage(self)
         self.mcp_page = MCPPage(self)
         self.search_providers_page = SearchProvidersPage(self)
         self.location_page = LocationPage(self)
@@ -582,7 +581,6 @@ class SetupWizard(QWizard):
         self.ollama_install_page_id = self.addPage(self.ollama_install_page)
         self.ollama_server_page_id = self.addPage(self.ollama_server_page)
         self.models_page_id = self.addPage(self.models_page)
-        self.dictation_page_id = self.addPage(self.dictation_page)
         self.mcp_page_id = self.addPage(self.mcp_page)
         self.search_providers_page_id = self.addPage(self.search_providers_page)
         self.location_page_id = self.addPage(self.location_page)
@@ -595,7 +593,7 @@ class SetupWizard(QWizard):
         # Custom button labels
         self.setButtonText(QWizard.WizardButton.NextButton, "Next →")
         self.setButtonText(QWizard.WizardButton.BackButton, "← Back")
-        self.setButtonText(QWizard.WizardButton.FinishButton, "🎉 Start Jarvis")
+        self.setButtonText(QWizard.WizardButton.FinishButton, "🎉 Start Claire")
         self.setButtonText(QWizard.WizardButton.CancelButton, "Exit")
         self.setButtonLayout([
             QWizard.WizardButton.CancelButton, QWizard.WizardButton.Stretch,
@@ -642,10 +640,10 @@ class SetupWizard(QWizard):
         return self._location_working
 
     def _apply_theme(self):
-        """Apply the shared Jarvis theme with SVG indicator icons."""
+        """Apply the shared Claire theme with SVG indicator icons."""
         icons = _ensure_icons()
         icon_css = _ICON_STYLESHEET_TEMPLATE.format(**icons)
-        self.setStyleSheet(JARVIS_THEME_STYLESHEET + icon_css + """
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET + icon_css + """
             /* Additional wizard-specific overrides */
             QLabel#title {
                 color: #fbbf24;
@@ -704,7 +702,7 @@ class WelcomePage(ScrollableWizardPage):
         # Header
         header_layout = QVBoxLayout()
 
-        title = QLabel("Welcome to your Jarvis")
+        title = QLabel("Welcome to your Claire")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(title)
@@ -930,7 +928,7 @@ class ProviderChoicePage(ScrollableWizardPage):
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Two ways to run Jarvis. Your models stay on hardware you control."
+            "Two ways to run Claire. Your models stay on hardware you control."
         )
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
@@ -961,7 +959,7 @@ class ProviderChoicePage(ScrollableWizardPage):
         self._button_group.addButton(self._openai_radio)
         openai_card = self._provider_card(
             self._openai_radio,
-            "Point Jarvis at a server that speaks the OpenAI API. This is "
+            "Point Claire at a server that speaks the OpenAI API. This is "
             "usually another local app (LM Studio, oMLX, llama.cpp, vLLM, "
             "LocalAI) running on your own machine or network. You provide its "
             "URL and model name on the next step.",
@@ -1001,7 +999,7 @@ class ProviderChoicePage(ScrollableWizardPage):
 
     def _preselect_from_config(self):
         try:
-            from jarvis.config import default_config_path, _load_json
+            from claire.config import default_config_path, _load_json
             config = _load_json(default_config_path()) or {}
             provider = str(config.get("llm_provider", "ollama") or "ollama")
         except Exception:
@@ -1024,7 +1022,7 @@ class ProviderChoicePage(ScrollableWizardPage):
         authoritative again — no stale base URL / key / model is left
         pointing at a former remote server."""
         try:
-            from jarvis.config import default_config_path, _load_json, _save_json
+            from claire.config import default_config_path, _load_json, _save_json
             config_path = default_config_path()
             config = _load_json(config_path) or {}
 
@@ -1105,11 +1103,11 @@ class _CapabilityWorker(KeepAliveWorker):
 
     def run(self):
         try:
-            from jarvis.llm import OpenAICompatibleBackend, ServerCapabilities
+            from claire.llm import OpenAICompatibleBackend, ServerCapabilities
             backend = OpenAICompatibleBackend(self._base_url, api_key=self._api_key or None)
             caps = backend.check_capabilities(self._chat_model, self._embed_model or None)
         except Exception:
-            from jarvis.llm import ServerCapabilities
+            from claire.llm import ServerCapabilities
             caps = ServerCapabilities()
         self.done.emit(caps)
 
@@ -1156,7 +1154,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Choose your local server, then select the models Jarvis will use."
+            "Choose your local server, then select the models Claire will use."
         )
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
@@ -1516,7 +1514,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         if not base_url:
             return []
         try:
-            from jarvis.llm import OpenAICompatibleBackend
+            from claire.llm import OpenAICompatibleBackend
             backend = OpenAICompatibleBackend(base_url, api_key=(api_key or "").strip() or None)
             return list(backend.list_models(timeout_sec=timeout))
         except Exception:
@@ -1674,7 +1672,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         user's values. With no saved URL, default to the common LM Studio
         address and kick off auto-discovery of running local servers."""
         try:
-            from jarvis.config import default_config_path, _load_json
+            from claire.config import default_config_path, _load_json
             config = _load_json(default_config_path()) or {}
         except Exception:
             config = {}
@@ -1746,7 +1744,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         if not self._is_ready(base_url, chat_model):
             return False
         try:
-            from jarvis.config import default_config_path, _load_json, _save_json
+            from claire.config import default_config_path, _load_json, _save_json
             config_path = default_config_path()
             config = _load_json(config_path) or {}
 
@@ -1790,7 +1788,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
     def nextId(self) -> int:
         wizard = self.wizard()
         if isinstance(wizard, SetupWizard):
-            return wizard.dictation_page_id
+            return wizard.mcp_page_id
         return super().nextId()
 
 
@@ -1810,7 +1808,7 @@ class OllamaInstallPage(ScrollableWizardPage):
         title.setObjectName("title")
         layout.addWidget(title)
 
-        subtitle = QLabel("Ollama is required to run local AI models for Jarvis.")
+        subtitle = QLabel("Ollama is required to run local AI models for Claire.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -1953,7 +1951,7 @@ class OllamaServerPage(ScrollableWizardPage):
         title.setObjectName("title")
         layout.addWidget(title)
 
-        subtitle = QLabel("The Ollama server needs to be running for Jarvis to use AI models.")
+        subtitle = QLabel("The Ollama server needs to be running for Claire to use AI models.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -2035,7 +2033,7 @@ class OllamaServerPage(ScrollableWizardPage):
                 ollama_path = wizard.ollama_status.cli_path
 
             # Note: We intentionally detach the Ollama server process so it keeps
-            # running after Jarvis exits. Ollama is a system service that should
+            # running after Claire exits. Ollama is a system service that should
             # persist. The serve command is idempotent - it won't spawn duplicates.
             if sys.platform == "darwin":
                 # On macOS, try to open the Ollama app first
@@ -2179,7 +2177,7 @@ class ModelsPage(ScrollableWizardPage):
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Jarvis needs a chat model (conversations) and a fast model "
+            "Claire needs a chat model (conversations) and a fast model "
             "(voice intent, tool routing). Pick them separately for "
             "best VRAM usage."
         )
@@ -2486,7 +2484,7 @@ class ModelsPage(ScrollableWizardPage):
 
     def _save_model_to_config(self):
         try:
-            from jarvis.config import _load_json, _save_json
+            from claire.config import _load_json, _save_json
             cp = default_config_path()
             cp.parent.mkdir(parents=True, exist_ok=True)
             cfg = _load_json(cp) or {}
@@ -2580,7 +2578,7 @@ class ModelsPage(ScrollableWizardPage):
 
     def _skip_models(self):
         self._is_complete = True
-        self.status_label.setText("Skipped model installation. Jarvis may not work correctly.")
+        self.status_label.setText("Skipped model installation. Claire may not work correctly.")
         self.status_label.setStyleSheet("color: #fbbf24;")
         self.completeChanged.emit()
 
@@ -2594,7 +2592,7 @@ class ModelsPage(ScrollableWizardPage):
     def nextId(self):
         w = self.wizard()
         if isinstance(w, SetupWizard):
-            return w.dictation_page_id
+            return w.mcp_page_id
         return super().nextId()
 
 
@@ -2703,12 +2701,12 @@ class WhisperSetupPage(ScrollableWizardPage):
 
         # Header - different text based on platform
         if self._is_apple_silicon:
-            title = QLabel("Let Jarvis hear you")
+            title = QLabel("Let Claire hear you")
             subtitle_text = (
                 "GPU-accelerated speech recognition. Choose language and model size."
             )
         else:
-            title = QLabel("Let Jarvis hear you")
+            title = QLabel("Let Claire hear you")
             subtitle_text = "Choose language mode and model size for speech recognition."
 
         title.setObjectName("title")
@@ -2990,8 +2988,7 @@ class WhisperSetupPage(ScrollableWizardPage):
         # top-level widget mid-transition, which triggers a native
         # NSWindow creation and can SIGABRT inside QWizard.exec().  On
         # Windows the same reparent creates a native HWND and fast-fails
-        # (0xc0000409) inside Qt6Core.dll — see dictation_history.py
-        # where the same mistake crashed the history window.
+        # (0xc0000409) inside Qt6Core.dll.
         while self._labels_layout.count():
             item = self._labels_layout.takeAt(0)
             widget = item.widget()
@@ -3122,7 +3119,7 @@ class WhisperSetupPage(ScrollableWizardPage):
     def _save_whisper_model_to_config(self):
         """Save the selected whisper model to config file."""
         try:
-            from jarvis.config import _load_json, _save_json
+            from claire.config import _load_json, _save_json
             config_path = default_config_path()
             config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -3333,11 +3330,11 @@ class LocationPage(ScrollableWizardPage):
         layout.setContentsMargins(28, 20, 28, 20)
 
         # Header
-        title = QLabel("Make Jarvis feel at home")
+        title = QLabel("Make Claire feel at home")
         title.setObjectName("title")
         layout.addWidget(title)
 
-        subtitle = QLabel("Location helps Jarvis provide weather, local services, and time-aware responses.")
+        subtitle = QLabel("Location helps Claire provide weather, local services, and time-aware responses.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -3482,7 +3479,7 @@ class LocationPage(ScrollableWizardPage):
 
     def _open_ip_lookup(self):
         """Resolve public IP via OpenDNS and populate the input field."""
-        from jarvis.utils.location import _resolve_public_ip_via_opendns
+        from claire.utils.location import _resolve_public_ip_via_opendns
         resolved = _resolve_public_ip_via_opendns()
         if resolved:
             self.ip_input.setText(resolved)
@@ -3565,7 +3562,7 @@ class LocationPage(ScrollableWizardPage):
             return
 
         try:
-            from jarvis.config import _load_json, _save_json
+            from claire.config import _load_json, _save_json
 
             config_path = default_config_path()
             config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3596,189 +3593,6 @@ class LocationPage(ScrollableWizardPage):
         return super().nextId()
 
 
-class DictationPage(ScrollableWizardPage):
-    """Page for configuring dictation (hold-to-dictate) settings."""
-
-    @staticmethod
-    def _hotkey_options():
-        from jarvis.dictation.dictation_engine import format_hotkey_display
-        from jarvis.config import _default_dictation_hotkey
-        default = _default_dictation_hotkey()
-        options = [
-            ("ctrl+alt", format_hotkey_display("ctrl+alt")),
-            ("ctrl+cmd", format_hotkey_display("ctrl+cmd")),
-            ("ctrl+shift+d", format_hotkey_display("ctrl+shift+d")),
-            ("ctrl+shift", format_hotkey_display("ctrl+shift")),
-        ]
-        # Tag the platform default
-        return [
-            (val, f"{label} (default)" if val == default else label)
-            for val, label in options
-        ]
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setTitle("")
-
-        layout = QVBoxLayout()
-        layout.setSpacing(16)
-        layout.setContentsMargins(28, 20, 28, 20)
-
-        # Header
-        title = QLabel("Your words, anywhere")
-        title.setObjectName("title")
-        layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Hold a hotkey to record speech, release to paste the transcription "
-            "into any app. Private, local, and ready when you are."
-        )
-        subtitle.setObjectName("subtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        layout.addSpacing(16)
-
-        # Enabled checkbox
-        self._enabled_check = QCheckBox("  Enable dictation mode")
-        self._enabled_check.setChecked(True)
-        self._enabled_check.setStyleSheet("font-size: 14px; color: #fafafa;")
-        layout.addWidget(self._enabled_check)
-
-        layout.addSpacing(4)
-
-        # Filler removal checkbox
-        self._filler_check = QCheckBox("  Remove filler words (um, uh, like) using local LLM")
-        self._filler_check.setChecked(self._load_current_filler_removal())
-        self._filler_check.setStyleSheet("font-size: 14px; color: #fafafa;")
-        layout.addWidget(self._filler_check)
-
-        filler_note = QLabel(
-            "Uses your chat model to clean up dictation output. "
-            "Adds a small delay (~1–3 s) after each dictation."
-        )
-        filler_note.setWordWrap(True)
-        filler_note.setStyleSheet("color: #71717a; font-size: 12px; margin-left: 28px;")
-        layout.addWidget(filler_note)
-
-        layout.addSpacing(8)
-
-        # Hotkey selection
-        hotkey_card = QFrame()
-        hotkey_card.setObjectName("card")
-        hotkey_layout = QVBoxLayout(hotkey_card)
-        hotkey_layout.setContentsMargins(18, 16, 18, 16)
-        hotkey_layout.setSpacing(12)
-
-        hotkey_title = QLabel("⌨️ Dictation Hotkey")
-        hotkey_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
-        hotkey_layout.addWidget(hotkey_title)
-
-        hotkey_desc = QLabel(
-            "Choose the key combination you hold down while speaking. "
-            "Double-tap the same hotkey for hands-free mode (continuous recording)."
-        )
-        hotkey_desc.setWordWrap(True)
-        hotkey_desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
-        hotkey_layout.addWidget(hotkey_desc)
-
-        self._hotkey_combo = QComboBox()
-        for value, label in self._hotkey_options():
-            self._hotkey_combo.addItem(label, value)
-        self._hotkey_combo.setStyleSheet(
-            "QComboBox { padding: 8px; font-size: 14px; background: #27272a; "
-            "color: #fafafa; border: 1px solid #3f3f46; border-radius: 6px; }"
-        )
-
-        # Pre-select the current/default hotkey
-        current_hotkey = self._load_current_hotkey()
-        idx = self._hotkey_combo.findData(current_hotkey)
-        if idx >= 0:
-            self._hotkey_combo.setCurrentIndex(idx)
-
-        hotkey_layout.addWidget(self._hotkey_combo)
-        layout.addWidget(hotkey_card)
-
-        # Tips
-        tips_card = QFrame()
-        tips_card.setObjectName("card")
-        tips_layout = QVBoxLayout(tips_card)
-        tips_layout.setContentsMargins(18, 16, 18, 16)
-        tips_layout.setSpacing(8)
-
-        tips_title = QLabel("💡 How it Works")
-        tips_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
-        tips_layout.addWidget(tips_title)
-
-        tips = QLabel(
-            "<b>Hold to speak.</b> Release to transcribe and paste.<br><br>"
-            "<b>Double-tap for hands-free.</b> Tap again or press Esc to stop.<br><br>"
-            "Find past dictations in the tray, and customise your dictionary in Settings."
-        )
-        tips.setWordWrap(True)
-        tips.setStyleSheet("color: #d4d4d8; font-size: 13px; line-height: 1.6;")
-        tips_layout.addWidget(tips)
-
-        layout.addWidget(tips_card)
-        layout.addStretch()
-        self.setLayout(layout)
-
-    def _load_current_filler_removal(self) -> bool:
-        """Load the current filler removal setting from config, defaulting to False."""
-        try:
-            from jarvis.config import default_config_path, _load_json
-            config = _load_json(default_config_path())
-            if config and "dictation_filler_removal" in config:
-                return bool(config["dictation_filler_removal"])
-            return False
-        except Exception:
-            return False
-
-    def _load_current_hotkey(self) -> str:
-        """Load the current hotkey from config, or platform default."""
-        try:
-            from jarvis.config import default_config_path, _load_json, _default_dictation_hotkey
-            config = _load_json(default_config_path())
-            if config and "dictation_hotkey" in config:
-                return config["dictation_hotkey"]
-            return _default_dictation_hotkey()
-        except Exception:
-            if sys.platform == "win32":
-                return "ctrl+cmd"
-            return "ctrl+alt"
-
-    def validatePage(self) -> bool:
-        """Save dictation settings to config before leaving page."""
-        try:
-            from jarvis.config import default_config_path, _load_json, _save_json
-            config_path = default_config_path()
-            config = _load_json(config_path) or {}
-
-            enabled = self._enabled_check.isChecked()
-            hotkey = self._hotkey_combo.currentData()
-            filler_removal = self._filler_check.isChecked()
-
-            config["dictation_enabled"] = enabled
-            if hotkey:
-                config["dictation_hotkey"] = hotkey
-            config["dictation_filler_removal"] = filler_removal
-
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            _save_json(config_path, config)
-        except Exception:
-            pass
-        return True
-
-    def isComplete(self) -> bool:
-        return True
-
-    def nextId(self) -> int:
-        wizard = self.wizard()
-        if isinstance(wizard, SetupWizard):
-            return wizard.mcp_page_id
-        return super().nextId()
-
-
 class MCPPage(ScrollableWizardPage):
     """Page for selecting popular MCP servers to enable."""
 
@@ -3791,12 +3605,12 @@ class MCPPage(ScrollableWizardPage):
         layout.setContentsMargins(28, 20, 28, 20)
 
         # Header
-        title = QLabel("Give Jarvis more abilities")
+        title = QLabel("Give Claire more abilities")
         title.setObjectName("title")
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "MCP (Model Context Protocol) servers give Jarvis extra abilities. "
+            "MCP (Model Context Protocol) servers give Claire extra abilities. "
             "Select any you'd like to enable — you can always change these later in Settings."
         )
         subtitle.setObjectName("subtitle")
@@ -3809,7 +3623,7 @@ class MCPPage(ScrollableWizardPage):
         self._node_warning = QLabel(
             "⚠️  <b>Node.js not found.</b> The MCP servers below require Node.js to run. "
             "<a href='https://nodejs.org/' style='color: #f59e0b;'>Download Node.js</a> "
-            "and restart Jarvis, or skip this page for now."
+            "and restart Claire, or skip this page for now."
         )
         self._node_warning.setOpenExternalLinks(True)
         self._node_warning.setWordWrap(True)
@@ -3881,7 +3695,7 @@ class MCPPage(ScrollableWizardPage):
     def _is_node_available() -> bool:
         """Check if Node.js (npx) is available on the system."""
         try:
-            from jarvis.tools.external.mcp_client import _resolve_command
+            from claire.tools.external.mcp_client import _resolve_command
             _resolve_command("npx")
             return True
         except (FileNotFoundError, Exception):
@@ -3891,7 +3705,7 @@ class MCPPage(ScrollableWizardPage):
     def _is_already_configured(name: str) -> bool:
         """Check if an MCP server is already in the user's config."""
         try:
-            from jarvis.config import default_config_path, _load_json
+            from claire.config import default_config_path, _load_json
             config = _load_json(default_config_path())
             return name in (config.get("mcps") or {})
         except Exception:
@@ -3900,7 +3714,7 @@ class MCPPage(ScrollableWizardPage):
     def validatePage(self) -> bool:
         """Save selected MCPs to config before leaving page."""
         try:
-            from jarvis.config import default_config_path, _load_json, _save_json
+            from claire.config import default_config_path, _load_json, _save_json
             config_path = default_config_path()
             config = _load_json(config_path) or {}
 
@@ -3942,7 +3756,7 @@ class SearchProvidersPage(ScrollableWizardPage):
     Ordering mirrors the runtime fallback chain: DDG → Brave → Wikipedia →
     honest "blocked" envelope. The page is always shown (even when nothing
     needs configuring) because the explainer itself is the point — users
-    should understand what Jarvis will and won't reach over the network
+    should understand what Claire will and won't reach over the network
     before they start using it.
     """
 
@@ -3959,7 +3773,7 @@ class SearchProvidersPage(ScrollableWizardPage):
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Jarvis uses DuckDuckGo for web search. When DuckDuckGo blocks a "
+            "Claire uses DuckDuckGo for web search. When DuckDuckGo blocks a "
             "request or has nothing useful, these optional fallbacks keep "
             "answers flowing — all off by default except Wikipedia."
         )
@@ -4027,7 +3841,7 @@ class SearchProvidersPage(ScrollableWizardPage):
         layout.addWidget(wiki_card)
 
         tip = QLabel(
-            "💡  When every provider fails, Jarvis tells you the search was "
+            "💡  When every provider fails, Claire tells you the search was "
             "blocked rather than making something up."
         )
         tip.setWordWrap(True)
@@ -4046,7 +3860,7 @@ class SearchProvidersPage(ScrollableWizardPage):
     @staticmethod
     def _load_current_brave_key() -> str:
         try:
-            from jarvis.config import default_config_path, _load_json
+            from claire.config import default_config_path, _load_json
             config = _load_json(default_config_path())
             return str(config.get("brave_search_api_key", "") or "")
         except Exception:
@@ -4055,7 +3869,7 @@ class SearchProvidersPage(ScrollableWizardPage):
     @staticmethod
     def _load_current_wikipedia_enabled() -> bool:
         try:
-            from jarvis.config import default_config_path, _load_json
+            from claire.config import default_config_path, _load_json
             config = _load_json(default_config_path())
             # Default True to match config.py's default.
             val = config.get("wikipedia_fallback_enabled", True)
@@ -4068,7 +3882,7 @@ class SearchProvidersPage(ScrollableWizardPage):
         values to keep config.json minimal (consistent with the settings
         window's "only non-default values written" invariant)."""
         try:
-            from jarvis.config import default_config_path, _load_json, _save_json
+            from claire.config import default_config_path, _load_json, _save_json
             config_path = default_config_path()
             config = _load_json(config_path) or {}
 
@@ -4122,12 +3936,12 @@ class CompletePage(ScrollableWizardPage):
         layout.addWidget(success_icon)
 
         # Header
-        title = QLabel("Meet your Jarvis")
+        title = QLabel("Meet your Claire")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("Jarvis is ready to use. Click 'Start Jarvis' to launch the voice assistant.")
+        subtitle = QLabel("Claire is ready to use. Click 'Start Claire' to launch the voice assistant.")
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -4148,9 +3962,9 @@ class CompletePage(ScrollableWizardPage):
         card_layout.addSpacing(8)
 
         tips = QLabel(
-            "• Say your wake word (e.g. 'Jarvis') anywhere in your sentence to activate the assistant\n"
-            "• After Jarvis replies, speak your follow-up — no need to repeat the wake word\n"
-            "• Jarvis will appear in your system tray (menu bar on macOS)\n"
+            "• Say your wake word (e.g. 'Claire') anywhere in your sentence to activate the assistant\n"
+            "• After Claire replies, speak your follow-up — no need to repeat the wake word\n"
+            "• Claire will appear in your system tray (menu bar on macOS)\n"
             "• Right-click the tray icon to access settings and controls\n"
             "• View logs by clicking '📝 View Logs' in the tray menu"
         )
@@ -4159,7 +3973,7 @@ class CompletePage(ScrollableWizardPage):
         card_layout.addWidget(tips)
 
         # Memory viewer tip with special styling
-        brain_tip = QLabel("🧠  Peek inside Jarvis's brain — open the Memory Viewer to see what he remembers")
+        brain_tip = QLabel("🧠  Peek inside Claire's brain — open the Memory Viewer to see what he remembers")
         brain_tip.setWordWrap(True)
         brain_tip.setStyleSheet("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

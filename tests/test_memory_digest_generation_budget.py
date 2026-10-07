@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from evals.helpers import voice_config
-from jarvis.reply.enrichment import _DIGEST_MIN_CHARS, digest_memory_for_query
+from claire.reply.enrichment import _DIGEST_MIN_CHARS, digest_memory_for_query
 
 pytestmark = pytest.mark.unit
 

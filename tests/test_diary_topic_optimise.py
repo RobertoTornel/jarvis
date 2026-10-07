@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.memory.db import Database
-import jarvis.memory.conversation as cmod
-from jarvis.memory.conversation import optimise_diary_topics
+from claire.memory.db import Database
+import claire.memory.conversation as cmod
+from claire.memory.conversation import optimise_diary_topics
 
 
 def _cfg(*, embedding_model: str = "") -> SimpleNamespace:
@@ -40,7 +40,7 @@ def _cfg(*, embedding_model: str = "") -> SimpleNamespace:
 
 @pytest.fixture()
 def db(tmp_path) -> Database:
-    instance = Database(tmp_path / "jarvis.db")
+    instance = Database(tmp_path / "claire.db")
     yield instance
 
 
@@ -51,7 +51,7 @@ def _seed(db: Database, rows: list[tuple[str, str, str | None]]) -> None:
             date_utc=date_utc,
             summary=summary,
             topics=topics,
-            source_app="jarvis",
+            source_app="claire",
         )
 
 
@@ -220,7 +220,7 @@ class TestOptimiseAuditTrail:
             date_utc="2026-04-10",
             summary="User made pasta.",
             topics="cook",
-            source_app="jarvis",
+            source_app="claire",
             ts_utc=original_ts,
         )
         monkeypatch.setattr(cmod, "_direct_llm", _fake_llm({"cook": "cooking"}))

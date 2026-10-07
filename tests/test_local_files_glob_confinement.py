@@ -2,8 +2,8 @@
 import os
 
 import pytest
-from jarvis.tools.base import ToolContext
-from jarvis.tools.builtin.local_files import LocalFilesTool
+from claire.tools.base import ToolContext
+from claire.tools.builtin.local_files import LocalFilesTool
 
 pytestmark = pytest.mark.unit
 
@@ -131,7 +131,7 @@ def test_mixed_listing_failure_does_not_return_partial_entries_or_log_private_na
     except OSError:
         pytest.skip('🔒 Directory symlinks require platform permission')
     messages = []
-    monkeypatch.setattr('jarvis.tools.builtin.local_files.debug_log', lambda message, category: messages.append(message))
+    monkeypatch.setattr('claire.tools.builtin.local_files.debug_log', lambda message, category: messages.append(message))
     result = tool.run({'operation': 'list', 'path': str(home), 'glob': '*/*.txt'}, context)
     assert not result.success
     assert 'inside.txt' not in result.reply_text

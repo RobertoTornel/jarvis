@@ -32,11 +32,11 @@ import requests
 from tests.performance.timing_recorder import TimingRecorder
 
 
-OLLAMA_URL = os.environ.get("JARVIS_PERF_OLLAMA_URL", "http://localhost:11434")
-PERF_MODEL = os.environ.get("JARVIS_PERF_MODEL", "gemma4:e2b")
-PERF_RUNS = int(os.environ.get("JARVIS_PERF_RUNS", "3"))
+OLLAMA_URL = os.environ.get("CLAIRE_PERF_OLLAMA_URL", "http://localhost:11434")
+PERF_MODEL = os.environ.get("CLAIRE_PERF_MODEL", "gemma4:e2b")
+PERF_RUNS = int(os.environ.get("CLAIRE_PERF_RUNS", "3"))
 PERF_REPORT_DIR = Path(os.environ.get(
-    "JARVIS_PERF_REPORT_DIR",
+    "CLAIRE_PERF_REPORT_DIR",
     str(Path(__file__).parent / "reports"),
 ))
 
@@ -128,8 +128,8 @@ def test_micro_benchmark_tiny_prompt():
     pipeline test so hardware drift is obvious in the numbers.
     """
     # Import the module (not the function) so the recorder's patch on
-    # jarvis.llm is visible at call time.
-    from jarvis import llm as _llm
+    # claire.llm is visible at call time.
+    from claire import llm as _llm
 
     with TimingRecorder() as rec:
         # Warmup (first call pays weight-loading cost)
@@ -178,9 +178,9 @@ def test_pipeline_timings_by_context():
       3. Enrichment extractor, if it fires, must run on the router chain
          (same model as the router). This locks in the demotion we just did.
     """
-    from jarvis.memory.db import Database
-    from jarvis.memory.conversation import DialogueMemory
-    from jarvis.reply.engine import run_reply_engine
+    from claire.memory.db import Database
+    from claire.memory.conversation import DialogueMemory
+    from claire.reply.engine import run_reply_engine
 
     cfg = _make_cfg()
 

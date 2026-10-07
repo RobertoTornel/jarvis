@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from jarvis.tools.selection import (
+from claire.tools.selection import (
     select_tools,
     ToolSelectionStrategy,
     _tokenise,
@@ -497,7 +497,7 @@ class TestLLMStrategy:
     def test_caps_chatty_router_output_at_max(self):
         """A router that echoes the whole catalogue must still produce a
         compact selection — the hard cap guarantees downstream prompt size."""
-        from jarvis.tools.selection import _LLM_MAX_SELECTED
+        from claire.tools.selection import _LLM_MAX_SELECTED
 
         backend = _llm_backend(
             return_value="webSearch, getWeather, logMeal, fetchMeals, screenshot, localFiles, homeassistant__turn_on"
@@ -622,7 +622,7 @@ class TestLLMStrategy:
 def test_reasoning_router_has_room_for_answer_before_fallback(monkeypatch, provider):
     import requests
     from types import SimpleNamespace
-    from jarvis.llm import get_llm_backend
+    from claire.llm import get_llm_backend
     tools = _builtin()
     reasoning_tokens = len(('Consider each catalogue entry carefully. ' * len(tools) * 4).split())
     answer = 'getWeather'

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from jarvis.utils.time_context import format_time_context
+from claire.utils.time_context import format_time_context
 
 
 # Mid-month, mid-evening UTC so every IANA zone (UTC-12..UTC+14) still lands

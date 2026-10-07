@@ -1,6 +1,6 @@
 """⏱️ LLM call timing recorder.
 
-Monkey-patches the three entry points in ``jarvis.llm`` (``call_llm_direct``,
+Monkey-patches the three entry points in ``claire.llm`` (``call_llm_direct``,
 ``call_llm_streaming``, ``chat_with_messages``) to record per-call timings
 grouped by the context that issued the call (evaluator, intent judge, tool
 router, etc.). The context is inferred from the caller's ``__qualname__`` on
@@ -22,8 +22,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from jarvis import llm as _llm_module
-from jarvis.memory import graph_ops as _graph_ops_module
+from claire import llm as _llm_module
+from claire.memory import graph_ops as _graph_ops_module
 
 
 # Map caller __qualname__ → graph context name. Matches the 13 contexts in
@@ -161,7 +161,7 @@ class TimingRecorder:
     def _patch(self) -> None:
         """Patch every module that has already imported one of the LLM entry
         points via ``from ..llm import X``. Those bindings were resolved at
-        import time and do NOT see a setattr on ``jarvis.llm`` itself, so we
+        import time and do NOT see a setattr on ``claire.llm`` itself, so we
         have to replace the attribute on each importer.
         """
         import sys as _sys
@@ -175,7 +175,7 @@ class TimingRecorder:
             if mod is None or mod is _llm_module:
                 continue
             mod_name = getattr(mod, "__name__", "")
-            if not mod_name.startswith(("jarvis", "tests", "evals")):
+            if not mod_name.startswith(("claire", "tests", "evals")):
                 continue
             for name in names:
                 current = getattr(mod, name, None)
@@ -187,7 +187,7 @@ class TimingRecorder:
         graph_direct = _graph_ops_module.call_llm_direct
         _graph_ops_module.call_llm_direct = self._wrap("call_llm_direct", graph_direct)
         self._originals["_sites"].append((_graph_ops_module, "call_llm_direct", graph_direct))
-        # Also patch the canonical module so any late `from jarvis.llm import X`
+        # Also patch the canonical module so any late `from claire.llm import X`
         # after we enter the context sees the wrapper.
         for name in names:
             wrapped = self._wrap(name, originals[name])

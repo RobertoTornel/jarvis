@@ -20,7 +20,7 @@ jobs:
       - id: compute
         run: echo "version=dev-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
-  # Build + smoke-test all platforms using the reusable workflow
+  # Build + smoke-test the Linux desktop app using the reusable workflow
   build-desktop:
     needs: [generate-version]
     uses: ./.github/workflows/build-desktop.yml
