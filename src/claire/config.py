@@ -918,8 +918,8 @@ def load_settings() -> Settings:
         else str(voice_output_device_val)
     )
     voice_block_seconds = float(merged.get("voice_block_seconds", 4.0))
-    voice_collect_seconds = float(merged.get("voice_collect_seconds", 2.5))
-    voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 60.0))
+    voice_collect_seconds = float(merged.get("voice_collect_seconds", 4.5))
+    voice_max_collect_seconds = float(merged.get("voice_max_collect_seconds", 180.0))
     wake_word = str(merged.get("wake_word", "claire")).strip().lower()
     # Imported lazily, not at module level: listening.wake_detection imports
     # .debug, and .debug imports this module, so a module-level import here
