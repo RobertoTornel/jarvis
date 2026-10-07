@@ -607,7 +607,7 @@ class VoiceListener(threading.Thread):
             hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
             voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 4.5)),
-            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0)),
+            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 180.0)),
             hot_window_turn_limit=MAX_CONSECUTIVE_HOT_WINDOW_TURNS,
         )
 
