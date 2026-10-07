@@ -107,9 +107,9 @@ MOCK_MADRID_LIVE = (
 def _configure(mock_config):
     """Pin the eval to the live small model for the agentic loop.
 
-    The retired evaluator's ``evaluator_enabled`` / ``evaluator_nudge_max``
-    knobs are deliberately NOT set: ``claire.reply.evaluator`` was removed
-    on 2026-10-07 and the planner owns the correction role now.
+    The evaluator was retired on 2026-10-07 (``claire.reply.evaluator`` is
+    gone and the planner owns the correction role now), so its two config
+    keys no longer exist and there is nothing to switch off here.
     """
     mock_config.ollama_base_url = "http://localhost:11434"
     mock_config.ollama_chat_model = JUDGE_MODEL
@@ -340,14 +340,14 @@ class TestTerminalOnHonestCantDo:
 
 
 # =============================================================================
-# 4. Nudge-cap enforcement: pathological loop is capped cleanly
+# 4. Pathological loop: the turn cap still delivers a reply
 # =============================================================================
 
 
 class TestNudgeCapEnforcement:
-    """When the evaluator keeps wanting to nudge but the model won't comply,
-    the nudge cap must stop the loop before agentic_max_turns and the reply
-    must still be non-empty."""
+    """The evaluator and its nudge cap were retired on 2026-10-07. What is left
+    to check is the backstop: a pathological tool loop must still terminate and
+    deliver a non-empty reply."""
 
     @pytest.mark.eval
     @requires_judge_llm
@@ -355,7 +355,6 @@ class TestNudgeCapEnforcement:
         from claire.reply.engine import run_reply_engine
 
         _configure(mock_config)
-        mock_config.evaluator_nudge_max = 1  # tight cap so the test is fast
         mock_config.agentic_max_turns = 4
         capture = ToolCallCapture()
 
@@ -366,8 +365,8 @@ class TestNudgeCapEnforcement:
                 return MOCK_TOOLSEARCH_EMPTY
             return "OK"
 
-        # An action-inappropriate tool is pre-seeded; the evaluator may try to
-        # nudge toward it, but the cap must stop the ping-pong.
+        # An action-inappropriate tool is pre-seeded; the loop must not
+        # ping-pong on it and must still deliver a reply within the turn cap.
         router = _make_router_stub(["getTime", "stop"])
         runner = _make_tool_runner(capture, _respond)
 
@@ -389,8 +388,8 @@ class TestNudgeCapEnforcement:
         print(f"   reply: {(reply or '')[:240]}...")
 
         assert reply and reply.strip(), (
-            "Reply must be non-empty even when the evaluator keeps wanting "
-            "to nudge — the cap backstop must still deliver a reply."
+            "Reply must be non-empty even when the tool loop does not "
+            "converge — the turn-cap backstop must still deliver a reply."
         )
 
 

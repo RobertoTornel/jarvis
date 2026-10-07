@@ -5,7 +5,9 @@ When the hot-window transcript already covers the topic (same content words
 *and* a fresh tool result is present), running the diary/graph hops adds cost
 and context bloat for no new information. Fail open: if in doubt, recall.
 
-No LLM hop — keyword Jaccard + tool-row presence is deterministic and cheap.
+No LLM hop — asymmetric keyword coverage (the fraction of the query's own
+content words that also appear in the hot window, never a symmetric Jaccard
+against the larger window) plus tool-row presence is deterministic and cheap.
 """
 from __future__ import annotations
 

@@ -51,7 +51,9 @@ NON_GENERIC_KEYS = frozenset({"db_path"})
 EXAMPLE_DB_PATH = "~/.local/share/claire/claire.db"
 
 #: Removed surfaces.  Their *names* must never reappear in the example config.
-FORBIDDEN_KEY_PATTERNS = ("dictation", "macos", "darwin", "windows", "win32")
+#: ``allowlist_bundles`` is the retired macOS screen-capture key: it is gone from
+#: the schema, so the name itself is forbidden now, not merely required to be empty.
+FORBIDDEN_KEY_PATTERNS = ("dictation", "macos", "darwin", "windows", "win32", "allowlist_bundles")
 
 
 @pytest.fixture(scope="module")
@@ -204,16 +206,6 @@ def test_wake_word_and_claire_aliases_are_current(example, defaults):
 
     assert example["wake_fuzzy_ratio"] == WAKE_FUZZY_RATIO
     assert example["wake_fuzzy_ratio"] == defaults["wake_fuzzy_ratio"]
-
-
-@pytest.mark.unit
-def test_allowlist_bundles_is_empty(example, defaults):
-    """The macOS bundle ids were removed; the example must ship an empty list."""
-    assert example["allowlist_bundles"] == [], (
-        "examples/config.json still lists allowlist bundles; Claire is "
-        f"Linux-only, got {example['allowlist_bundles']!r}"
-    )
-    assert example["allowlist_bundles"] == defaults["allowlist_bundles"]
 
 
 @pytest.mark.unit
