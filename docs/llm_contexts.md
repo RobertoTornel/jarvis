@@ -191,7 +191,7 @@ Every distinct LLM call in Claire, what feeds it, what consumes it, and how it i
 
 ## 14. Tool-specific LLM calls
 
-- **Weather is no longer a tool, so there is no weather-specific LLM call.** `src/claire/tools/builtin/weather.py` is gone. The prompt tells the model to handle weather, climate, temperature and "what is it like outside" by calling the **web search** tool in the same turn, and forbids answering from training data ([src/claire/reply/prompts/model_variants.py:243](../src/claire/reply/prompts/model_variants.py#L243)–[:246](../src/claire/reply/prompts/model_variants.py#L246)). A place name is therefore a web-search term, not a parsed tool argument.
+- **Weather is no longer a tool, so there is no weather-specific LLM call.** `src/claire/tools/builtin/weather.py` is gone. The prompt tells the model to handle weather, climate, temperature and "what is it like outside" by calling the **web search** tool in the same turn, and forbids answering from training data ([model_variants.py:243–246](../src/claire/reply/prompts/model_variants.py#L243-L246)). A place name is therefore a web-search term, not a parsed tool argument.
 - **Nutrition log_meal** ([src/claire/tools/builtin/nutrition/log_meal.py](../src/claire/tools/builtin/nutrition/log_meal.py), lines 48 & 136) — factory-dispatched. Both the nutrition extractor and the follow-up generator use `cfg.llm_chat_model`. Both passes use `max_tokens: 1024` (`_NUTRITION_TOKEN_BUDGET`, including reasoning and the answer), with `llm_chat_timeout_sec` limiting the wait. Extracts nutrients, confirms logging. Coaching runs after a successful insert; failed or empty coaching leaves the saved meal confirmed without retrying persistence.
 
 ## 15. Server Capability Probe (setup-time, OpenAI-compatible only)
