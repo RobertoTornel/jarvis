@@ -8,6 +8,10 @@ from src.claire.tools.builtin.fetch_web_page import FetchWebPageTool
 from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _make_response_mock(**attrs) -> Mock:
     """Build a Mock that doubles as both the requests response and a context

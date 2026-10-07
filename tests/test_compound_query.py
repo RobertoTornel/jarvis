@@ -9,6 +9,10 @@ from claire.reply.compound_query import (
     split_compound_query,
 )
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestSplitCompoundQuery:
     """Behaviour-level tests for the compound-query splitter."""

@@ -6,6 +6,10 @@ Tests model size detection and prompt component selection.
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestModelSizeDetection:
     """Tests for detect_model_size function."""
@@ -97,18 +101,25 @@ class TestPromptComponents:
         assert "unknown named entities" in text
         assert "arguments the tool can auto-derive" in text
 
-    def test_small_model_tool_constraints_has_weather_section(self):
-        """Small model constraints include a weather-specific rule that covers
-        statements, questions, and contextual remarks about weather."""
+    def test_small_model_tool_constraints_has_current_conditions_section(self):
+        """Small model constraints include a current-conditions rule covering
+        statements, questions, and contextual remarks about weather. Since the
+        getWeather tool was retired there is no dedicated conditions tool: the
+        rule must instead route the model to the web search tool, and still
+        forbid answering with an opinion or generic pleasantry."""
         from claire.reply.prompts import get_system_prompts, ModelSize
 
         prompts = get_system_prompts(ModelSize.SMALL)
         text = prompts.tool_constraints.lower()
 
-        assert "weather and current conditions" in text
-        # Must command calling getWeather for weather topics
-        assert "call getweather" in text or "getweather" in text
-        # Must not allow generic pleasantries before tool call
+        assert "current conditions" in text
+        assert "weather" in text
+        # The retired getWeather tool must not be named in the prompt.
+        assert "getweather" not in text
+        # With no dedicated conditions tool, the surviving route is web search.
+        assert "no dedicated conditions tool" in text
+        assert "web search tool" in text
+        # Must not allow an opinion or generic pleasantry before the lookup.
         assert "generic pleasantry" in text or "opinion" in text or "observation" in text
 
     def test_small_model_balanced_incentives(self):

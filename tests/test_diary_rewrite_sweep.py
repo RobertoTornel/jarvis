@@ -29,6 +29,10 @@ from claire.memory import conversation as cmod
 from claire.memory.conversation import rewrite_all_diary_summaries
 from claire.memory.db import Database
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _seed(db: Database, rows: list[tuple[str, str, str | None]]) -> None:
     """Seed (date_utc, summary, topics) tuples into the DB."""

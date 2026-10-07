@@ -9,6 +9,10 @@ import pytest
 from unittest.mock import patch, MagicMock
 import sys
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestSplashScreenImport:
     """Tests for splash screen module import."""

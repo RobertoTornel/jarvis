@@ -7,6 +7,10 @@ from PyQt6.QtWidgets import QComboBox, QDoubleSpinBox, QLineEdit, QPushButton, Q
 
 from desktop_app import setup_wizard as ui
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 @pytest.mark.parametrize("page_type", [
     ui.OpenAICompatiblePage, ui.ModelsPage, ui.ProviderChoicePage,
@@ -28,6 +32,20 @@ def test_controls_fit_on_short_display(qapp, monkeypatch, page_type, width, heig
     QTest.qWait(100)
     try:
         assert wizard.height() <= height
+        scrolls = page.findChildren(QScrollArea)
+        assert scrolls
+        scroll = scrolls[0]
+        # At a 960x780 window the natural page must fit with no vertical
+        # scrollbar. Below that — and after the deliberately oversized status
+        # message injected just below — overflow is the documented mechanism:
+        # the scroll area must keep every control readable and Finish reachable
+        # (asserted at the end of this test) rather than compressing controls.
+        if width == 960:
+            assert scroll.verticalScrollBar().maximum() == 0, (
+                f"{page_type.__name__} overflows at 960x780: content "
+                f"{scroll.widget().height()}px vs viewport "
+                f"{scroll.viewport().height()}px"
+            )
         if isinstance(page, ui.OpenAICompatiblePage):
             page._connect_status.setText("Could not load models. " * 10)
             page._use_ollama_embed.show()
@@ -40,12 +58,7 @@ def test_controls_fit_on_short_display(qapp, monkeypatch, page_type, width, heig
                 assert control.height() >= control.minimumSizeHint().height(), (
                     type(control).__name__, control.height(), control.minimumSizeHint().height()
                 )
-        scrolls = page.findChildren(QScrollArea)
-        assert scrolls
-        scroll = scrolls[0]
         assert scroll.horizontalScrollBar().maximum() == 0
-        if width == 960:
-            assert scroll.verticalScrollBar().maximum() == 0
         scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
         bottom = scroll.widget().mapTo(
             scroll.viewport(), QPoint(0, scroll.widget().height())

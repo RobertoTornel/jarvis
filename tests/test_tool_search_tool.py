@@ -7,6 +7,10 @@ import pytest
 from claire.tools.builtin.tool_search import ToolSearchTool
 from claire.tools.base import ToolContext
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _ctx(cfg):
     return ToolContext(

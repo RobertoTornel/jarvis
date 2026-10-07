@@ -9,6 +9,11 @@ from src.claire.tools.builtin.time_tool import TimeTool
 from src.claire.tools.registry import BUILTIN_TOOLS
 from src.claire.tools.types import ToolExecutionResult
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestTimeTool:
     """Test the getTime tool behaviour."""

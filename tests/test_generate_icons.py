@@ -13,6 +13,11 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 ASSETS_DIR = Path(__file__).resolve().parents[1] / "src" / "desktop_app" / "desktop_assets"
 SCRIPT = ASSETS_DIR / "generate_icons.py"
 

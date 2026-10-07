@@ -15,6 +15,11 @@ from pathlib import Path, PureWindowsPath
 import claire.config as config_module
 from claire.config import load_settings
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _write_config(tmp_path, monkeypatch, values):
     cfg_path = tmp_path / "config.json"

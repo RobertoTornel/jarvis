@@ -7,6 +7,11 @@ hardcoded to Claire.
 
 from claire.system_prompt import build_system_prompt
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestBuildSystemPrompt:
     def test_default_name_is_claire(self):

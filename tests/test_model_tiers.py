@@ -20,6 +20,11 @@ import json
 
 from types import SimpleNamespace
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _load_settings_from(tmp_path, monkeypatch, cfg: dict, version: int = 2):
     cfg_path = tmp_path / "config.json"
@@ -33,8 +38,14 @@ class TestFastModelResolution:
     """cfg.fast_model always carries a resolved, provider-valid model name."""
 
     def test_ollama_path_defaults_to_small_pull(self, tmp_path, monkeypatch):
+        """On the Ollama path an unset fast tier resolves to the small pull
+        name. The provider must be named explicitly: with no ``llm_provider``
+        key the shipped default is the OpenAI-compatible OmniRouter path, where
+        the fast tier instead mirrors the active chat model."""
         from claire.config import DEFAULT_FAST_MODEL
-        settings, _ = _load_settings_from(tmp_path, monkeypatch, {})
+        settings, _ = _load_settings_from(tmp_path, monkeypatch, {
+            "llm_provider": "ollama",
+        })
         assert settings.fast_model == DEFAULT_FAST_MODEL
 
     def test_openai_path_defaults_to_chat_model(self, tmp_path, monkeypatch):
@@ -155,10 +166,12 @@ class TestV3Migration:
     def test_default_ollama_judge_value_does_not_promote(self, tmp_path, monkeypatch):
         """A v2 config carrying the old *default* judge value (written by an
         older settings save) must not pin fast_model to it — the user never
-        chose it, and pinning would block future default upgrades."""
+        chose it, and pinning would block future default upgrades. Ollama is
+        named explicitly because that pull name only resolves on that path."""
         from claire.config import DEFAULT_FAST_MODEL
         default_judge = DEFAULT_FAST_MODEL
         settings, cfg_path = _load_settings_from(tmp_path, monkeypatch, {
+            "llm_provider": "ollama",
             "intent_judge_model": default_judge,
         })
         on_disk = json.loads(cfg_path.read_text())

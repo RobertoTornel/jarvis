@@ -25,6 +25,10 @@ import inspect
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def test_tool_search_passes_configured_embedding_timeout_to_select_tools(
     mock_config, monkeypatch

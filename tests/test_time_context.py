@@ -4,6 +4,11 @@ from datetime import datetime, timezone
 
 from claire.utils.time_context import format_time_context
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 # Mid-month, mid-evening UTC so every IANA zone (UTC-12..UTC+14) still lands
 # on April 2026 — keeps the system-local fallback assertions robust regardless

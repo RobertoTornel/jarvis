@@ -32,6 +32,10 @@ from claire.utils.location import (
     _is_private_ip,
 )
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 @pytest.fixture
 def stub_openai_server():
@@ -66,6 +70,22 @@ def stub_openai_server():
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+@pytest.fixture
+def ollama_path_config(monkeypatch):
+    """Make the wizard's provider-precondition tests hermetic.
+
+    ``should_show_setup_wizard`` short-circuits to False on the
+    OpenAI-compatible (OmniRouter) path, so without this the result depends on
+    the host's real config.json — and this machine ships the OpenAI-compatible
+    default, which made every Ollama-path expectation fail. Tests that exercise
+    the OpenAI-compatible branch re-patch ``load_settings`` themselves.
+    """
+    monkeypatch.setattr(
+        "desktop_app.setup_wizard.load_settings",
+        lambda: SimpleNamespace(llm_provider="ollama"),
+    )
 
 
 class TestCheckOllamaCli:
@@ -366,6 +386,14 @@ class TestCheckOllamaStatus:
 
 class TestShouldShowSetupWizard:
     """Tests for wizard display logic."""
+
+    @pytest.fixture(autouse=True)
+    def _ollama_path_config(self, ollama_path_config):
+        """Applied to every test in this class; see the module-level fixture.
+
+        The two openai_compatible tests re-patch ``load_settings`` inside their
+        own bodies, which overrides this patch for the call they make.
+        """
 
     def test_returns_false_when_fully_setup(self):
         """Returns False when everything is configured."""
@@ -1508,6 +1536,7 @@ class TestWizardMemoryBudget:
         assert "Whisper ~5.0 GB" in summary.text()
 
 
+@pytest.mark.usefixtures("ollama_path_config")
 class TestDefaultModelDetection:
     """Regression tests: the default small model must be detected as missing when not
     installed, triggering the setup wizard install prompt.

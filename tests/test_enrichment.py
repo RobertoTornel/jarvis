@@ -12,6 +12,10 @@ from claire.reply.engine import (
 )
 from claire.reply.enrichment import extract_search_params_for_memory
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestMatchQuestion:
     """Verify question→node matching logic."""
@@ -855,33 +859,33 @@ class TestMaybeDigestToolResult:
             "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm:
             out = _maybe_digest_tool_result(
-                cfg=cfg, query="q", tool_name="getWeather", raw_tool_result=short,
+                cfg=cfg, query="q", tool_name="getTime", raw_tool_result=short,
             )
             mock_llm.assert_not_called()
         assert out == short
 
-    def test_weather_tool_output_is_never_digested(self):
-        """getWeather output is structured (current conditions + multi-day
-        forecast). Digesting it throws away substantive data — field capture
-        2026-04-20 showed a 7-day forecast reduced to just current conditions.
-        The per-tool skip list must bypass digest even when the small-model
-        auto-on path would otherwise trigger and the payload is long enough
-        to pass _TOOL_DIGEST_MIN_CHARS."""
+    def test_time_tool_output_is_never_digested(self):
+        """getTime output is a compact, fully-formed answer (local time +
+        formatted zone for the resolved place). Digesting it burns an LLM
+        round-trip and can mangle the rendered timestamp, so getTime sits in
+        the per-tool skip list and must bypass digest even when the
+        small-model auto-on path would otherwise trigger and the payload is
+        long enough to pass _TOOL_DIGEST_MIN_CHARS."""
         cfg = self._cfg(
             ollama_chat_model="gemma4:e2b",
             tool_result_digest_enabled=True,
         )
         # Make payload deliberately long so the min-chars gate would not
         # short-circuit — we're proving the per-tool skip wins.
-        raw = "Forecast for London: " + ("sunny 18C; " * 500)
+        raw = "Times for London: " + ("14:05 Europe/London; " * 500)
         with patch(
             "claire.reply.enrichment.call_llm_direct"
         ) as mock_llm, patch(
             "claire.reply.enrichment.digest_tool_result_for_query"
         ) as mock_digest:
             out = _maybe_digest_tool_result(
-                cfg=cfg, query="weather this week",
-                tool_name="getWeather", raw_tool_result=raw,
+                cfg=cfg, query="what time is it in London",
+                tool_name="getTime", raw_tool_result=raw,
             )
             mock_llm.assert_not_called()
             mock_digest.assert_not_called()
@@ -913,22 +917,22 @@ class TestDigestLoopForMaxTurns:
             captured["system_prompt"] = kwargs["system_prompt"]
             captured["user_content"] = kwargs["user_content"]
             captured["timeout_sec"] = kwargs["timeout_sec"]
-            return "I couldn't fully finish this. I found the London forecast looks cloudy today."
+            return "I couldn't fully finish this. I found it is mid-afternoon in London."
 
         loop_messages = [
             {"role": "assistant", "content": "", "tool_calls": [
-                {"function": {"name": "getWeather",
+                {"function": {"name": "getTime",
                               "arguments": {"location": "London"}}}
             ]},
-            {"role": "tool", "name": "getWeather",
-             "content": "London: 12C partly cloudy with light rain."},
+            {"role": "tool", "name": "getTime",
+             "content": "London: 14:05 (Europe/London)."},
             {"role": "assistant", "content": "Let me also check tomorrow."},
         ]
 
         with patch("claire.reply.enrichment.call_llm_direct",
                    side_effect=fake_call):
             out = digest_loop_for_max_turns(
-                user_query="what's the weather in London this week?",
+                user_query="what time is it in London?",
                 loop_messages=loop_messages,
                 cfg=self._cfg(),
             )
@@ -937,7 +941,7 @@ class TestDigestLoopForMaxTurns:
         assert "London" in out
         # Prompt visibility: user query and some loop activity must be present.
         assert "London" in captured["user_content"]
-        assert "getWeather" in captured["user_content"]
+        assert "getTime" in captured["user_content"]
         assert captured["timeout_sec"] == 8.0
 
     def test_em_dash_is_scrubbed_from_output(self):

@@ -17,6 +17,10 @@ from unittest.mock import patch
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _make_tool_name_msg(name: str) -> dict:
     """Return a message dict that looks like a tool-result message from a prior query."""
