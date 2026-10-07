@@ -20,6 +20,36 @@ from claire.reply import planner as planner_mod
 
 pytestmark = pytest.mark.unit
 
+
+class _SyntheticWeatherTool:
+    """The ``getWeather`` builtin, as it was when these numbers were taken.
+
+    It has since been removed from the product. The direct-exec behaviour
+    under test is about plan-step argument fidelity, not about weather, so
+    the tool is kept as a fixture with the same schema it had — ``location``
+    declared, everything else (``timeframe``) not.
+    """
+
+    name = "getWeather"
+    description = "Synthetic fixture tool: weather data."
+    inputSchema = {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+        "required": [],
+    }
+
+    def run(self, args=None, context=None):  # pragma: no cover — never invoked
+        raise AssertionError("synthetic fixture tool must not be executed")
+
+
+@pytest.fixture(autouse=True)
+def _register_synthetic_weather_tool():
+    """Let the engine's catalogue filter see the synthetic tool."""
+    from claire.reply import engine as _engine
+
+    with patch.dict(_engine.BUILTIN_TOOLS, {"getWeather": _SyntheticWeatherTool()}):
+        yield
+
 SCHEMA = [
     {
         "type": "function",

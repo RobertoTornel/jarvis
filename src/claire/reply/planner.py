@@ -409,7 +409,7 @@ def plan_has_unresolved_tool_steps(
     them as a known tool.
 
     Small models sometimes paraphrase ("get the weather") instead of
-    naming the tool ("getWeather ..."). When that happens the plan-driven
+    naming the tool ("getTime ..."). When that happens the plan-driven
     allow-list becomes empty and the chat model ends up with only
     ``stop`` + ``toolSearchTool``, which makes it hallucinate a tool
     name out of training priors. Treat this as planner under-specification
@@ -634,8 +634,8 @@ def _parse_plan_step_concrete(
     exactly this before dispatch (see ``resolve_next_tool_call``), so
     turning it on here only brings the deterministic path in line with the
     resolver it replaces — and it matters for latency: a planner that adds
-    one qualifier the schema does not declare (``getWeather
-    location='Lisbon' timeframe='tomorrow'``, where ``getWeather`` takes
+    one qualifier the schema does not declare (``getTime
+    location='Lisbon' timeframe='tomorrow'``, where ``getTime`` takes
     only ``location``) otherwise forfeits the free parse and buys an LLM
     round-trip to be told the same thing. Callers that still have a
     resolver to fall back on leave it off.
@@ -716,8 +716,8 @@ def _parse_plan_step_concrete(
         if unknown:
             # A step that names at least one of the tool's own arguments has
             # already committed to the tool's vocabulary, so an extra key is
-            # a qualifier the schema simply does not carry (``getWeather
-            # location='Lisbon' timeframe='tomorrow'`` — getWeather takes
+            # a qualifier the schema simply does not carry (``getTime
+            # location='Lisbon' timeframe='tomorrow'`` — getTime takes
             # only ``location``). The resolver strips such keys too; when the
             # caller has no resolver to fall back on, strip them here.
             #

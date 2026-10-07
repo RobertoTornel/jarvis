@@ -1,7 +1,7 @@
 """Current time and date for any location or timezone.
 
 Resolves a user-named place (city, country) to its IANA timezone via the
-same Open-Meteo geocoding endpoint the weather tool uses, then formats the
+free Open-Meteo geocoding endpoint, then formats the
 current instant in that zone with ``format_time_context``. A bare IANA
 zone name (``Europe/Athens``) is used directly without a network call.
 
@@ -30,7 +30,7 @@ from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
 # Open-Meteo geocoding returns an IANA ``timezone`` field per result (the
-# same free, key-less endpoint getWeather already uses for its lookups).
+# free, key-less endpoint).
 _GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 # Cache of lowercased location string -> (iana_zone, display_name).
@@ -109,7 +109,7 @@ class TimeTool(Tool):
             "(e.g. 'what time is it in London?', 'what's the date in Tokyo?'). "
             "Use for time/date questions about a place other than the user's "
             "own location — their local time is already in the assistant's "
-            "context and needs no tool. NOT for weather; that is getWeather."
+            "context and needs no tool."
         )
 
     @property

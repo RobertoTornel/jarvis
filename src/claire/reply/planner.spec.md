@@ -151,7 +151,7 @@ The planner prompt instructs the model to emit:
   `["Reply to the user."]` plan is the planner's *positive* decision
   that no memory or tools are needed — the engine uses that to skip
   the memory extractor, the tool router, and the direct-exec path
-  entirely. A single-step tool plan like `["getWeather query='tomorrow'"]`
+  entirely. A single-step tool plan like `["getTime query='tomorrow'"]`
   is also preserved: `tool_steps_of` returns it as a tool step, the
   engine injects the ACTION PLAN block, and direct-exec runs the tool
   without waiting for the chat model. Only an **empty** list means
@@ -178,7 +178,7 @@ The engine consumes the plan in two phases.
   `toolSearchTool` are always added regardless.
 - `plan_has_unresolved_tool_steps(plan, known_names)` — true when the
   plan has non-synthesis steps but names no known tool (e.g. the
-  model wrote `get the weather` instead of `getWeather ...`). In
+  model wrote `get the time` instead of `getTime ...`). In
   this state the direct-exec path is skipped — vague step text
   would otherwise force the resolver LLM to guess arguments (e.g.
   emitting `location='Nowhere'` for a bare weather request). The
@@ -228,7 +228,8 @@ A step is therefore only ever direct-executed for a LARGE model when
 the planner already spelled out the call, and no path through the
 block can add an LLM call that was not there before.
 
-Measured on a weather query whose plan read
+Measured on a weather query (measured before the `getWeather` tool was
+removed; the direct-exec mechanism it exercises is unchanged) whose plan read
 `getWeather location='Lisbon' timeframe='tomorrow'`: chat turns per
 reply fell 2 → 1 with the plan's own arguments dispatched, total reply
 latency 6.06 s → 4.36 s median (interleaved, n=6). A query whose plan

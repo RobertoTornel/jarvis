@@ -527,13 +527,12 @@ _HINT_MESSAGE_CHAR_LIMIT = 200
 
 
 # Tools whose output is already structured, concise, and small-model-friendly.
-# Digesting them throws away substantive data (e.g. a 7-day forecast being
+# Digesting them throws away substantive data (a 7-day forecast being
 # summarised down to just the current conditions because the distil is
 # capped at 4–5 sentences). Add tools here only when their output is
 # consistently <~2 KB AND the user commonly wants the full payload rather
 # than a fact note.
 _DIGEST_SKIP_TOOLS = frozenset({
-    "getWeather",
     "getTime",
 })
 
@@ -934,7 +933,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # narrowed tool names — not a 30+ catalogue it has to paraphrase. Two
     # gains: small planners stop inventing tool names ("get the weather")
     # because the relevant ones are already named for them; and tool steps
-    # come out concrete ("getWeather location='Paris'") so the direct-exec
+    # come out concrete ("getTime location='Paris'") so the direct-exec
     # fast path parses without needing the resolver LLM round-trip.
     context_hint = _build_enrichment_context_hint(cfg, recent_messages)
     try:
@@ -999,11 +998,12 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # tool that FAILED (success=False on the ToolExecutionResult), union
     # the previous tool name back into the allow-list. Compensates for
     # small routers that misroute follow-ups where the user is supplying
-    # the missing info — e.g. turn 1 "how's the weather tomorrow?" stalls
-    # because no location is configured, turn 2 "I'm in London" routes to
-    # webSearch instead of re-invoking getWeather. Gating on the prior
-    # tool's failure flag (rather than query length) means a successful
-    # chain followed by a genuine new short ask ("play some music")
+    # the missing info — the assistant asks for a place, the user answers
+    # with just that place on the next turn, and the router picks a generic
+    # search instead of re-invoking the tool that was waiting for it. The
+    # dated field trace that motivated this lives in reply.spec.md. Gating on
+    # the prior tool's failure flag (rather than query length) means a
+    # successful chain followed by a genuine new short ask ("play some music")
     # correctly does NOT carry over the prior tool. The flag distinguishes
     # only success vs failure, not failure mode (argument issue vs network
     # vs anything else); the user is most likely to follow up with a
@@ -1895,7 +1895,8 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # name and every argument, and re-deriving it costs a whole extra
         # chat round-trip on the full system prompt. Measured on this
         # host that redundant turn is 2.0-3.6 s for a call the plan
-        # already contained verbatim (plan `getWeather location='Lisbon'
+        # already contained verbatim (the measurement predates the
+        # removal of the getWeather tool; plan `getWeather location='Lisbon'
         # timeframe='tomorrow'` → the chat model emitted exactly the same
         # arguments one round-trip later). So LARGE models take this path
         # too, but only through `deterministic_only`: when the step is not

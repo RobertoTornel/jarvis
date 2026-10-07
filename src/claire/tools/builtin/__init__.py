@@ -12,7 +12,6 @@ from .fetch_web_page import FetchWebPageTool
 from .nutrition.log_meal import LogMealTool
 from .nutrition.fetch_meals import FetchMealsTool
 from .nutrition.delete_meal import DeleteMealTool
-from .weather import WeatherTool
 from .time_tool import TimeTool
 from .stop import StopTool
 from .schedule import ScheduleTool
@@ -29,7 +28,6 @@ __all__ = [
     'LogMealTool',
     'FetchMealsTool',
     'DeleteMealTool',
-    'WeatherTool',
     'TimeTool',
     'StopTool',
     'ScheduleTool',
