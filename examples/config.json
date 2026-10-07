@@ -12,10 +12,10 @@
   "ollama_base_url": "http://127.0.0.1:11434",
   "ollama_embed_model": "nomic-embed-text",
   "ollama_chat_model": "gemma4:e2b",
-  "llm_chat_timeout_sec": 180.0,
-  "llm_tools_timeout_sec": 300.0,
+  "llm_chat_timeout_sec": 45.0,
+  "llm_tools_timeout_sec": 15.0,
   "llm_digest_timeout_sec": 8.0,
-  "llm_embedding_timeout_sec": 60.0,
+  "llm_embedding_timeout_sec": 5.0,
   "llm_profile_select_timeout_sec": 30.0,
   "active_profiles": [
     "developer",

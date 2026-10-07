@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -100,10 +101,20 @@ For any request about a dated period, both from and to must contain that period,
         # server's KV/prefix cache can then reuse it for every extractor call.
         user_content = f"Extract search parameters from: {query}\n\n{hint_block}"
 
-        # Try up to 2 attempts
+        # Try up to 2 attempts. The retry exists for the case it can actually
+        # fix: the model answered quickly but produced no parsable JSON (the
+        # samples that emit prose before the object, or truncate it). It
+        # cannot fix a *stalled* call — a retry against a server that just
+        # consumed the whole ceiling re-sends the identical request and burns
+        # the ceiling a second time. Measured on this machine: a black-holed
+        # endpoint took 30.04 s at a 15 s ceiling, i.e. exactly 2 x the
+        # ceiling, and returned {} either way. So if an attempt consumes its
+        # entire budget, treat it as a stall and stop rather than doubling the
+        # block the user is waiting on.
         attempts = 0
         while attempts < 2:
             attempts += 1
+            _attempt_started = time.monotonic()
             response = call_llm_direct(
                 cfg=cfg,
                 chat_model=chat_model,
@@ -113,6 +124,7 @@ For any request about a dated period, both from and to must contain that period,
                 thinking=thinking,
                 max_tokens=_MEMORY_SEARCH_PARAMETER_TOKEN_BUDGET,
             )
+            _attempt_elapsed = time.monotonic() - _attempt_started
 
             if response:
                 import re
@@ -127,6 +139,14 @@ For any request about a dated period, both from and to must contain that period,
                         pass
 
             if attempts == 1:
+                if timeout_sec > 0 and _attempt_elapsed >= timeout_sec * 0.9:
+                    debug_log(
+                        "search parameter extraction: first attempt consumed its "
+                        f"whole {timeout_sec:g}s budget ({_attempt_elapsed:.1f}s) — "
+                        "treating as a stall and not retrying",
+                        "memory",
+                    )
+                    break
                 debug_log("search parameter extraction: first attempt returned no usable result, retrying", "memory")
 
     except Exception as e:

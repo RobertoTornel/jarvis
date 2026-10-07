@@ -554,12 +554,25 @@ def get_default_config() -> Dict[str, Any]:
         "ollama_base_url": "http://127.0.0.1:11434",
         "ollama_embed_model": "nomic-embed-text",
         "ollama_chat_model": DEFAULT_CHAT_MODEL,
-        "llm_chat_timeout_sec": 180.0,
-        "llm_tools_timeout_sec": 300.0,
+        # Reply-path ceilings. These bound the WORST case, not the typical
+        # case: a stalled dependency must fail fast rather than hold the
+        # reply open. Measured on this machine (call_logs + journal stage
+        # markers), a healthy turn spends 2-4 s per chat round-trip and
+        # 2-3 s on the tool router, so these leave several times the
+        # observed p50 while cutting the worst case by 1-2 orders of
+        # magnitude. The reply engine's own call sites already name these
+        # figures as their `getattr` fallbacks (see reply/engine.py), so
+        # before this change the fallbacks were dead code and a hung call
+        # could hold a reply open for 300 s per attempt.
+        #   chat turn            -> 45 s (engine fallback: 45.0)
+        #   tool router / memory extractor -> 15 s (engine fallback: 8.0/10.0)
+        #   embedding probe      -> 5 s  (a missing embed model 404s in ms)
+        "llm_chat_timeout_sec": 45.0,
+        "llm_tools_timeout_sec": 15.0,
         # Cheap distil passes should fail fast — a hung digest call would
         # block the reply loop per tool call, amplified by agentic turns.
         "llm_digest_timeout_sec": 8.0,
-        "llm_embedding_timeout_sec": 60.0,
+        "llm_embedding_timeout_sec": 5.0,
         "llm_profile_select_timeout_sec": 30.0,
 
         # Profiles & Behavior
@@ -1077,10 +1090,10 @@ def load_settings() -> Settings:
         streaming_stt_engine = "sherpa"
     streaming_stt_model_dir = str(merged.get("streaming_stt_model_dir", "") or "").strip()
     streaming_stt_num_threads = int(merged.get("streaming_stt_num_threads", 2))
-    llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 180.0))
-    llm_tools_timeout_sec = float(merged.get("llm_tools_timeout_sec", 300.0))
+    llm_chat_timeout_sec = float(merged.get("llm_chat_timeout_sec", 45.0))
+    llm_tools_timeout_sec = float(merged.get("llm_tools_timeout_sec", 15.0))
     llm_digest_timeout_sec = float(merged.get("llm_digest_timeout_sec", 8.0))
-    llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 60.0))
+    llm_embedding_timeout_sec = float(merged.get("llm_embedding_timeout_sec", 5.0))
     llm_profile_select_timeout_sec = float(merged.get("llm_profile_select_timeout_sec", 30.0))
 
     return Settings(
