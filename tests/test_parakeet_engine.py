@@ -79,13 +79,21 @@ class FakeSession:
         return [self.token_ids]
 
 
-def _fake_nemo_module(model: FakeNemoModel, restore_calls: list[str]):
-    def restore_from(path):  # noqa: ANN001
-        restore_calls.append(path)
+def _fake_nemo_module(model: FakeNemoModel, restore_calls: list):
+    def restore_from(path, **kwargs):  # noqa: ANN001
+        restore_calls.append((path, kwargs))
         return model
 
     return SimpleNamespace(
         models=SimpleNamespace(ASRModel=SimpleNamespace(restore_from=restore_from))
+    )
+
+
+def _fake_torch(cuda_available: bool = False):
+    """Stand-in for torch: device construction + CUDA availability, no import."""
+    return SimpleNamespace(
+        device=lambda name: f"device({name})",
+        cuda=SimpleNamespace(is_available=lambda: cuda_available),
     )
 
 
@@ -127,13 +135,13 @@ def _write_onnx_dir(tmp_path, name: str = "model.onnx", tokens: bool = True):
 def test_auto_infers_nemo_for_dot_nemo_file(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
     model = FakeNemoModel()
-    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
 
     engine = parakeet.create_parakeet_engine(str(path))
 
     assert engine.identity().model_kind == "nemo"
     assert engine.name == parakeet.NEMO_ENGINE_NAME
-    assert asked == ["nemo.collections.asr"]
+    assert asked == ["nemo.collections.asr", "torch"]
     assert engine.raw_model is model
 
 
@@ -142,7 +150,7 @@ def test_auto_infers_onnx_for_directory(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"))
     asked = _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     engine = parakeet.create_parakeet_engine(str(directory))
@@ -159,7 +167,7 @@ def test_auto_infers_onnx_for_dot_onnx_file(tmp_path, monkeypatch):
     session = FakeSession(str(onnx_file))
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     engine = parakeet.create_parakeet_engine(str(onnx_file))
@@ -172,7 +180,7 @@ def test_explicit_kind_overrides_suffix(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"))
     asked = _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     engine = parakeet.create_parakeet_engine(str(directory), kind="ONNX")
@@ -190,7 +198,7 @@ def test_unknown_kind_is_rejected(tmp_path):
 def test_nemo_loader_does_not_import_onnxruntime(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
     model = FakeNemoModel()
-    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
 
     parakeet.create_parakeet_engine(str(path))
 
@@ -249,7 +257,7 @@ def test_onnx_dir_without_tokens_names_tokens_file(tmp_path, monkeypatch):
     directory = _write_onnx_dir(tmp_path, tokens=False)
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: FakeSession(p))},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: FakeSession(p))},
     )
 
     with pytest.raises(SttModelMissingError) as excinfo:
@@ -304,7 +312,7 @@ def test_missing_onnx_backend_raises_backend_unavailable(tmp_path, monkeypatch):
 def test_identity_reports_model_path_kind_and_engine(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
     model = FakeNemoModel()
-    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
 
     engine = parakeet.create_parakeet_engine(str(path))
     identity = engine.identity()
@@ -321,7 +329,7 @@ def test_identity_reports_onnx_export_detail(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"))
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     identity = parakeet.create_parakeet_engine(str(directory)).identity()
@@ -333,15 +341,72 @@ def test_identity_reports_onnx_export_detail(tmp_path, monkeypatch):
 
 
 def test_identity_reports_requested_device_honestly(tmp_path, monkeypatch):
+    from claire.listening.stt.base import SttBackendUnavailableError
     directory = _write_onnx_dir(tmp_path)
+
+    # cuda with a CUDA-capable fake: works, and identity echoes the request.
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: FakeSession(p))},
+        {"onnxruntime": SimpleNamespace(
+            InferenceSession=lambda p, **kw: FakeSession(p),
+            get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )},
+    )
+    identity = parakeet.create_parakeet_engine(str(directory), device="cuda").identity()
+    assert identity.detail["device"] == "cuda"
+
+    # cuda without CUDA providers: honest named error, not silent CPU fallback.
+    _install_import(
+        monkeypatch,
+        {"onnxruntime": SimpleNamespace(
+            InferenceSession=lambda p, **kw: FakeSession(p),
+            get_available_providers=lambda: ["CPUExecutionProvider"],
+        )},
+    )
+    with pytest.raises(SttBackendUnavailableError):
+        parakeet.create_parakeet_engine(str(directory), device="cuda")
+
+
+# --------------------------------------------------------------------------
+# device enforcement (stt_device honesty)
+# --------------------------------------------------------------------------
+def test_nemo_restore_receives_cpu_map_location(tmp_path, monkeypatch):
+    path = _write_nemo(tmp_path)
+    model = FakeNemoModel()
+    calls: list = []
+    _install_import(monkeypatch, {
+        "nemo.collections.asr": _fake_nemo_module(model, calls),
+        "torch": _fake_torch(),
+    })
+
+    parakeet.create_parakeet_engine(str(path), device="cpu")
+
+    assert len(calls) == 1
+    _, kwargs = calls[0]
+    assert "map_location" in kwargs, "stt_device='cpu' must reach restore_from as map_location"
+    assert kwargs["map_location"] == "device(cpu)"
+
+
+def test_onnx_session_receives_cpu_only_providers(tmp_path, monkeypatch):
+    directory = _write_onnx_dir(tmp_path)
+    seen: list = []
+
+    class RecordingSession(FakeSession):
+        def __init__(self, path, **kwargs):
+            super().__init__(path)
+            seen.append(kwargs)
+
+    _install_import(
+        monkeypatch,
+        {"onnxruntime": SimpleNamespace(InferenceSession=RecordingSession)},
     )
 
-    identity = parakeet.create_parakeet_engine(str(directory), device="cuda").identity()
+    parakeet.create_parakeet_engine(str(directory), device="cpu")
 
-    assert identity.detail["device"] == "cuda"
+    assert len(seen) == 1
+    providers = seen[0].get("providers", [])
+    assert providers, "stt_device='cpu' must reach InferenceSession as providers="
+    assert all("CPU" in p.upper() for p in providers), f"cpu must not enable GPU providers: {providers}"
 
 
 # --------------------------------------------------------------------------
@@ -350,7 +415,7 @@ def test_identity_reports_requested_device_honestly(tmp_path, monkeypatch):
 def test_transcribe_nemo_returns_fake_text(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
     model = FakeNemoModel("the quick brown fox")
-    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
     engine = parakeet.create_parakeet_engine(str(path))
 
     result = engine.transcribe(_audio(), SAMPLE_RATE)
@@ -375,7 +440,7 @@ def test_transcribe_nemo_handles_hypothesis_objects(tmp_path, monkeypatch):
 
     model = FakeNemoModel()
     model.transcribe = lambda audio, batch_size=1: [Hypothesis()]  # noqa: ARG005
-    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
 
     result = parakeet.create_parakeet_engine(str(path)).transcribe(_audio(0.3), SAMPLE_RATE)
 
@@ -387,7 +452,7 @@ def test_transcribe_onnx_decodes_token_ids(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"), token_ids=[[0, 3, 4, 4, 5]])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
     engine = parakeet.create_parakeet_engine(str(directory))
 
@@ -403,7 +468,7 @@ def test_transcribe_onnx_builds_mel_features_for_whisper_layout(tmp_path, monkey
     session = FakeSession(str(directory / "model.onnx"), shape=[1, 80, 3000])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     parakeet.create_parakeet_engine(str(directory)).transcribe(_audio(0.5), SAMPLE_RATE)
@@ -420,7 +485,7 @@ def test_transcribe_onnx_builds_features_for_trailing_frames_layout(tmp_path, mo
     session = FakeSession(str(directory / "model.onnx"), shape=[1, -1, 80])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     parakeet.create_parakeet_engine(str(directory)).transcribe(_audio(0.5), SAMPLE_RATE)
@@ -440,7 +505,7 @@ def test_transcribe_onnx_argmaxes_logits(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"), token_ids=logits)
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     result = parakeet.create_parakeet_engine(str(directory)).transcribe(_audio(0.5), SAMPLE_RATE)
@@ -453,7 +518,7 @@ def test_transcribe_resamples_non_16khz_input(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"), shape=[1, 80, -1])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
     engine = parakeet.create_parakeet_engine(str(directory))
 
@@ -469,7 +534,7 @@ def test_transcribe_stereo_input_is_averaged(tmp_path, monkeypatch):
     session = FakeSession(str(directory / "model.onnx"), shape=[1, 80, -1])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
     stereo = np.stack([_audio(0.3), _audio(0.3)], axis=1)  # (samples, 2)
 
@@ -483,7 +548,7 @@ def test_empty_audio_is_not_an_empty_success(tmp_path, monkeypatch):
     directory = _write_onnx_dir(tmp_path)
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: FakeSession(p))},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: FakeSession(p))},
     )
     engine = parakeet.create_parakeet_engine(str(directory))
 
@@ -499,7 +564,7 @@ def test_failing_nemo_transcribe_raises_named_decode_error(tmp_path, monkeypatch
         raise RuntimeError("cuda exploded")
 
     model.transcribe = boom
-    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, [])})
+    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(model, []), "torch": _fake_torch()})
     engine = parakeet.create_parakeet_engine(str(path))
 
     with pytest.raises(parakeet.SttDecodeError) as excinfo:
@@ -517,7 +582,7 @@ def test_failing_onnx_session_raises_named_decode_error(tmp_path, monkeypatch):
 
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: BoomSession(p))},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: BoomSession(p))},
     )
     engine = parakeet.create_parakeet_engine(str(directory))
 
@@ -532,13 +597,13 @@ def test_failing_onnx_session_raises_named_decode_error(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 def test_heavy_backends_are_imported_lazily(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
-    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(FakeNemoModel(), [])})
+    asked = _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(FakeNemoModel(), []), "torch": _fake_torch()})
 
     # Importing the module has not reached for a backend...
     assert asked == []
     # ...and neither has merely constructing nothing: the call does it.
     parakeet.create_parakeet_engine(str(path))
-    assert asked == ["nemo.collections.asr"]
+    assert asked == ["nemo.collections.asr", "torch"]
 
 
 def test_module_import_pulls_no_heavy_backend():
@@ -570,7 +635,7 @@ def test_module_import_pulls_no_heavy_backend():
 
 def test_engine_satisfies_stt_engine_protocol(tmp_path, monkeypatch):
     path = _write_nemo(tmp_path)
-    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(FakeNemoModel(), [])})
+    _install_import(monkeypatch, {"nemo.collections.asr": _fake_nemo_module(FakeNemoModel(), []), "torch": _fake_torch()})
 
     engine = parakeet.create_parakeet_engine(str(path))
 
@@ -583,7 +648,7 @@ def test_greedy_decode_keeps_every_token_when_blanks_absent(tmp_path, monkeypatc
     session = FakeSession(str(directory / "model.onnx"), token_ids=[[3, 4, 5]])
     _install_import(
         monkeypatch,
-        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p: session)},
+        {"onnxruntime": SimpleNamespace(InferenceSession=lambda p, **kw: session)},
     )
 
     result = parakeet.create_parakeet_engine(str(directory)).transcribe(_audio(0.3), SAMPLE_RATE)

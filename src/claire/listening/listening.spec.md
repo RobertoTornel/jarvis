@@ -199,7 +199,7 @@ On small models, a caveat line is appended above a more involved example to set 
 
 **What gets warmed:**
 - **Parakeet** (the authoritative recogniser, when `stt_engine='parakeet'`) — loads on first use and is cached for the process lifetime, shared with the phone bridge so only one NeMo instance ever exists. Nothing else is loaded in its place.
-- **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/generate` request with the power-mode `keep_alive` (`30m` normally, `1m` in low-power mode) so the weights stay resident.
+- **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/chat` request with the power-mode `keep_alive` (`30m` normally, `1m` in low-power mode) so the weights stay resident.
 - **Intent judge model** (the fast tier: `resolve_model(cfg, Tier.FAST)`) — same pattern. If it points at the same Ollama model as the chat model, a single warmup covers both roles (Ollama loads the weights once).
 
 **Whisper is opt-in only:** Whisper is imported, downloaded and loaded *only* when `stt_engine` names it (`'faster_whisper'` or `'whisper'`). A Parakeet-configured process never imports `faster_whisper`/`mlx_whisper`, never downloads a Whisper model and never holds one in memory; the engine factory raises for any other token instead of falling back to it. When Whisper *is* selected: auto mode prefers MLX on Apple Silicon only when `mlx-whisper` imports successfully, an explicit `faster-whisper` preference disables MLX, and an explicit `mlx` preference falls back to faster-whisper when MLX is unavailable. `large-v3-turbo` is supported by MLX or by faster-whisper 1.1.0 and newer; on an unsupported faster-whisper backend startup loads `medium` instead and prints a warning.
@@ -231,6 +231,20 @@ System is waiting for wake word activation.
 After TTS finishes, allow wake-word-free follow-up.
 
 **Activation:** `echo_tolerance` seconds after TTS ends (allows echo to settle)
+
+**Acoustic tail guard:** audio captured during TTS, or starting inside
+`POST_TTS_TAIL_GUARD_SECONDS` (0.6 s) after TTS ends, is rejected **unless the
+wake word is genuinely present** (`listener.py:880-919`, constants at
+`listener.py:47-67`). The gate uses the acoustic `captured_during_tts` signal,
+not recogniser text — text similarity alone (`partial_ratio >= 70`) can never
+catch a mis-transcribed echo. A verified wake word resets the chain
+(`listener.py:738-743`, reusing `is_wake_word_detected`).
+
+**Follow-up renewal cap:** at most `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
+hot-window follow-up per explicit wake word (`state_manager.py:394-408`). A
+second consecutive follow-up without "Claire" is refused
+(`Follow-up window closed — say "Claire" to continue`), an audio-independent
+loop-breaker so even a missed echo cannot cause an unbounded loop.
 
 **Duration:** Configurable (default: 3 seconds)
 

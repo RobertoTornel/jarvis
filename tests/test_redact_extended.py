@@ -43,6 +43,12 @@ class TestVendorAccessKeys:
         assert token not in out
         assert "[REDACTED_OPENAI_KEY]" in out
 
+    def test_openai_proj_key_redacted(self):
+        token = "sk-proj-" + "A" * 40
+        out = redact(token)
+        assert token not in out
+        assert "[REDACTED_OPENAI_KEY]" in out
+
     def test_google_api_key_redacted(self):
         token = "AIza" + "B" * 35
         out = redact(token)

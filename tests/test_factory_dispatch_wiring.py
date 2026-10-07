@@ -60,8 +60,6 @@ def _openai_cfg() -> _Cfg:
         # Reply path
         ("src.claire.reply.planner", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.claire.reply.planner", "call_llm_direct", _openai_cfg, "openai_compatible"),
-        ("src.claire.reply.evaluator", "call_llm_direct", _ollama_cfg, "ollama"),
-        ("src.claire.reply.evaluator", "call_llm_direct", _openai_cfg, "openai_compatible"),
         ("src.claire.reply.enrichment", "call_llm_direct", _ollama_cfg, "ollama"),
         ("src.claire.reply.enrichment", "call_llm_direct", _openai_cfg, "openai_compatible"),
         # Memory path

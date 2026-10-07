@@ -7,7 +7,7 @@ senses this laptop cannot supply: a camera and a position.  This module is the
 small HTTP surface that lets the phone hand both to Claire, and hear what she
 has to say back.
 
-The eight routes, five of them canonical
+The nine routes, six of them canonical
 ----------------------------------------
 
 ========================  ============================================
@@ -16,6 +16,7 @@ The eight routes, five of them canonical
                           voice loop's own engine and answered with its text
 ``POST /see``             one photo, plus an optional question
 ``POST /loc``             latitude / longitude
+``POST /say``             speak one of the allowed short phrases on the phone
 ``GET  /reply``           whatever Claire has to say next (drained once)
 ``GET  /health``          reachability, masked token handle, capability verdict
 ``POST /location``        alias of ``/loc`` -- see below

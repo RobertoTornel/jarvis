@@ -574,8 +574,14 @@ def submit_text_query(
     # One query at a time: voice and text share the lock.  ``wait_until_free``
     # makes this a queue of one rather than a refusal, which is what the phone's
     # dispatcher relies on so a second sentence is answered instead of dropped.
+    # The wait is bounded at 60 s (under the phone's 120 s read timeout) so a
+    # wedged worker sheds load through the honest busy path instead of hanging
+    # the caller forever.
     if wait_until_free:
-        _chat_query_lock.acquire()
+        if not _chat_query_lock.acquire(timeout=60.0):
+            _notify_chat("busy", None, callbacks=callbacks, use_ipc=use_ipc)
+            debug_log("chat query timed out waiting for lock", "chat")
+            return
     elif not _chat_query_lock.acquire(blocking=False):
         _notify_chat("busy", None, callbacks=callbacks, use_ipc=use_ipc)
         debug_log("chat query rejected: another query is running", "chat")
@@ -1682,16 +1688,28 @@ def main(smoke_test: bool = False) -> None:
             time.sleep(1.0)
             now = time.time()
 
-            # Periodically check if diary should be updated
+            # Periodically check if diary should be updated. The diary is
+            # delay-tolerant background work: if a query holds the single-writer
+            # lock, skip this tick and defer to the next 60 s cycle rather than
+            # serialising a multi-minute large-model summarisation behind a
+            # user-visible reply (or contending for the same chat model/VRAM).
             if now - last_diary_check >= diary_check_interval:
-                _check_and_update_diary(db, cfg, verbose=False)
+                if _chat_query_lock.acquire(blocking=False):
+                    try:
+                        _check_and_update_diary(db, cfg, verbose=False)
+                    finally:
+                        _chat_query_lock.release()
                 last_diary_check = now
 
         # Keep voice thread alive (unless stop requested)
         if voice_thread is not None:
             while voice_thread.is_alive() and not _global_stop_requested:
                 time.sleep(0.5)
-                _check_and_update_diary(db, cfg, verbose=False)
+                if _chat_query_lock.acquire(blocking=False):
+                    try:
+                        _check_and_update_diary(db, cfg, verbose=False)
+                    finally:
+                        _chat_query_lock.release()
 
     except KeyboardInterrupt:
         debug_log("daemon received KeyboardInterrupt", "claire")

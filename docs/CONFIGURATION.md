@@ -45,6 +45,20 @@ For reference, the underlying config keys are:
 - `llm_chat_model`: whatever model name the endpoint exposes.
 - `fast_model` (optional): the small, quick model used for real-time work (voice intent, tool routing, quick classifications). Leave empty for automatic: `gemma4:e2b` on Ollama, your chat model on an OpenAI-compatible endpoint. Set it to pin a dedicated small model.
 
+**Conversation history bound** (what a turn sends, not what is stored). The wire
+payload is capped so a long session cannot grow the prompt without bound
+(measured: 133,893 input tokens at 324 messages before the cap). Nothing is
+evicted from storage; only what is *sent* is bounded, oldest-first in whole
+user-led exchanges so tool results are never orphaned from their parents:
+
+```json
+{
+  "dialogue_memory_timeout": 300.0,
+  "dialogue_memory_max_tokens": 8000,
+  "dialogue_memory_max_messages": 40
+}
+```
+
 **Embeddings** (used for memory search) can run on a different backend. If your chat server has no embeddings endpoint, memory falls back to keyword search. To keep full semantic memory, route embeddings to Ollama (the wizard offers this automatically when it detects a server that cannot embed):
 
 ```json
@@ -109,9 +123,10 @@ Parakeet. No code changes.
   empty value raises a named error naming the path and the fix rather than
   producing an empty transcript that would look like "the user said nothing".
 - `stt_model_kind`: `"auto"` (default; decides from the path), `"nemo"` or `"onnx"`.
-- `stt_device`: `"cpu"` (default) or `"cuda"`. The value is recorded in the
-  engine's identity; the Parakeet engine executes on CPU today, so `"cuda"` is
-  reported honestly rather than silently ignored.
+- `stt_device`: `"cpu"` (default) or `"cuda"`. Enforced at load: `"cpu"`
+  restores through `map_location` (NeMo) / `CPUExecutionProvider` (ONNX);
+  `"cuda"` requests GPU providers and raises a named error when CUDA is not
+  available. The value is also recorded in the engine's identity.
 - Set `stt_engine` to `"faster_whisper"` (or `"whisper"`) only if you
   deliberately want Whisper as the recogniser instead; the `whisper_*` settings
   in the next section then apply. **Whisper is opt-in only and never a

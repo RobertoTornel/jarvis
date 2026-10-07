@@ -457,7 +457,7 @@ def _decode_ids(ids: np.ndarray, tokens: dict[int, str]) -> str:
     return "".join(pieces).strip()
 
 
-def _load_nemo(model_path: str) -> ParakeetNemoEngine:
+def _load_nemo(model_path: str, device: str = "cpu") -> ParakeetNemoEngine:
     try:
         nemo_asr = _import_module("nemo.collections.asr")
     except ImportError as exc:
@@ -471,7 +471,18 @@ def _load_nemo(model_path: str) -> ParakeetNemoEngine:
             AttributeError("nemo.collections.asr.models.ASRModel.restore_from is missing"),
         )
     try:
-        model = asr_model.restore_from(model_path)
+        # torch stays a lazy import: machines that only run the ONNX export
+        # never pay for it (module docstring). map_location pins the restore
+        # to the requested device instead of NeMo's GPU default.
+        torch = _import_module("torch")
+        target = torch.device(device)
+        if device != "cpu" and not torch.cuda.is_available():
+            raise SttBackendUnavailableError(
+                _NEMO_BACKEND,
+                _NEMO_PACKAGE,
+                RuntimeError(f"stt_device={device!r} requested but CUDA is not available"),
+            )
+        model = asr_model.restore_from(model_path, map_location=target)
     except FileNotFoundError as exc:
         raise SttModelMissingError(model_path, _MODEL_HINT) from exc
     except Exception as exc:  # noqa: BLE001 - a broken checkpoint is not a missing file
@@ -484,7 +495,7 @@ def _load_nemo(model_path: str) -> ParakeetNemoEngine:
     )
 
 
-def _load_onnx(model_path: str) -> ParakeetOnnxEngine:
+def _load_onnx(model_path: str, device: str = "cpu") -> ParakeetOnnxEngine:
     root = Path(model_path)
     if root.is_file():
         search_dir = root.parent
@@ -511,10 +522,23 @@ def _load_onnx(model_path: str) -> ParakeetOnnxEngine:
     except ImportError as exc:
         raise SttBackendUnavailableError(_ONNX_BACKEND, _ONNX_PACKAGE, exc) from exc
 
+    # providers= pins execution to the requested device instead of
+    # onnxruntime's default (which prefers CUDA when present).
+    if device == "cpu":
+        providers = ["CPUExecutionProvider"]
+    else:
+        available = onnxruntime.get_available_providers()
+        if "CUDAExecutionProvider" not in available:
+            raise SttBackendUnavailableError(
+                _ONNX_BACKEND,
+                _ONNX_PACKAGE,
+                RuntimeError(f"stt_device={device!r} requested but CUDAExecutionProvider is not available"),
+            )
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     sessions = []
     for onnx_file in onnx_files:
         try:
-            sessions.append(onnxruntime.InferenceSession(str(onnx_file)))
+            sessions.append(onnxruntime.InferenceSession(str(onnx_file), providers=providers))
         except Exception as exc:  # noqa: BLE001 - a corrupt graph is not a missing file
             raise SttDecodeError(f"Could not load ONNX graph {onnx_file}: {exc}") from exc
     token_ids = _load_tokens(tokens_path)
@@ -541,9 +565,10 @@ def create_parakeet_engine(
     """Build the authoritative Parakeet engine for ``model_path``.
 
     ``kind`` is ``'auto'`` (infer from the path), ``'nemo'`` or ``'onnx'``.
-    ``device`` is reported in :meth:`identity`; CPU execution is what this
-    engine is configured for, and a non-CPU value is recorded honestly rather
-    than silently ignored.
+    ``device`` is enforced, not just reported: ``'cpu'`` restores through
+    ``map_location`` (NeMo) / ``CPUExecutionProvider`` (ONNX); ``'cuda'``
+    requests GPU providers and raises :class:`SttBackendUnavailableError`
+    when CUDA is not available.
     """
     if not isinstance(model_path, str) or not model_path:
         raise SttModelMissingError(str(model_path), _MODEL_HINT)
@@ -562,7 +587,7 @@ def create_parakeet_engine(
                 str(path), f"Expected a .nemo checkpoint file. {_MODEL_HINT}"
             )
 
-    engine = _load_nemo(str(path)) if resolved == "nemo" else _load_onnx(str(path))
+    engine = _load_nemo(str(path), device) if resolved == "nemo" else _load_onnx(str(path), device)
     engine._detail["device"] = device
     engine._detail["kind_requested"] = requested
     return engine

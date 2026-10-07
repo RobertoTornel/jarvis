@@ -105,7 +105,7 @@ The migration in `_migrate_config` runs once when `_config_version < 2`:
 
 ### Ollama (`OllamaBackend`)
 
-- Endpoints: `POST /api/chat`, `POST /api/embeddings`, `GET /api/tags`, `POST /api/generate` (used by `warm_up`).
+- Endpoints: `POST /api/chat`, `POST /api/embeddings`, `GET /api/tags`, `POST /api/generate` (NOT used by `warm_up` — the warmup exercises the full pipeline via `/api/chat`, since an empty `/api/generate` ping would mask first-real-call initialisation cost).
 - GPT-OSS Ollama requests use named reasoning levels: boolean `thinking=False` selects `low`, and `True` selects `high`. Reasoning cannot be disabled for this model. Explicit named levels are preserved, including `extra_options["think"]` overrides applied before translation. Canonical `gpt-oss` names may include namespace prefixes and size tags; other model names retain their own controls.
 - Streaming: JSON-lines (`{...}\n`).
 - Tool calls: native `tools` parameter (Ollama 0.4+); arguments returned as a Python dict.
@@ -120,7 +120,7 @@ The migration in `_migrate_config` runs once when `_config_version < 2`:
 - Tool calls: native `tools` parameter; OpenAI returns `tool_calls[*].function.arguments` as a JSON-encoded string. The backend decodes them to a dict so the reply engine sees a single shape.
 - Response normalisation: `_normalise_response` lifts `choices[0].message` to top-level `message` so callers do not branch on provider. Servers that already return Ollama-shaped responses pass through unchanged.
 - `extra_options` lifts sampling fields (`temperature`, `max_tokens`, `top_p`, `stop`, …) to the payload root and silently drops Ollama-only knobs (`keep_alive`, `num_ctx`, `num_predict`, `think`) that have no equivalent in the OpenAI shape.
-- `warm_up(model)` is a two-phase probe: it first issues ``GET /models`` as a fast reachability check (capped at 25 % of the budget, max 5 s), then sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) to force the runtime to load the model into memory. Without the inference phase, an OpenAI-compatible server may keep the model in a cold state until the first real user request, incurring latency on the first query. The fallback stance remains: a failed warmup is informational and never blocks operation.
+- `warm_up(model)` is a two-phase probe: it first issues ``GET /models`` as a fast reachability check (capped at 25 % of the budget, max 5 s), then sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) to force the runtime to load the model into memory. `warm_up` never raises — every failure path returns `False`, so the listener can warn the user early. Without the inference phase, an OpenAI-compatible server may keep the model in a cold state until the first real user request, incurring latency on the first query. The fallback stance remains: a failed warmup is informational and never blocks operation. `keep_alive` is accepted for signature parity with `OllamaBackend.warm_up` but ignored: OpenAI-compatible servers manage model residency at server load time.
 - Authentication: `Authorization: Bearer <api_key>` header sent only when `api_key` is non-empty.
 - Error logs do not echo URLs or API keys: HTTP errors print only the status code, generic exceptions print only the class name, connection errors print a fixed string and re-raise so callers can apply their own back-off.
 - `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
@@ -131,7 +131,6 @@ Each migrated module exposes a single intercept point so tests can patch one sym
 
 - `claire.reply.engine.chat_with_messages(cfg, messages, ...)` — agentic-loop chat boundary.
 - `claire.reply.planner.call_llm_direct(*, cfg, chat_model, ...)` — planner + step resolver.
-- `claire.reply.evaluator.call_llm_direct(*, cfg, chat_model, ...)` — terminal evaluator.
 - `claire.reply.enrichment.call_llm_direct(*, cfg, chat_model, ...)` — memory enrichment extractor + digest passes.
 - `claire.memory.graph_ops.call_llm_direct(*, cfg, chat_model, ...)` — knowledge graph extraction, best-child picker, node merge.
 - `claire.memory.conversation._direct_llm(cfg, system_prompt, user_content, ...)` — diary summary, deflection rewrite, topic optimisation.
