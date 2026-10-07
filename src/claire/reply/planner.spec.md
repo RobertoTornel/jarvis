@@ -9,10 +9,44 @@ entirely and confabulate from training. The planner fixes this by
 running a single cheap classification-shaped LLM pass **at the very
 front of the reply flow** that emits a short ordered list of sub-tasks.
 
-The planner runs **after the tool router** and **before memory search**.
-The router narrows the catalogue first so the planner's tool steps reference
-concrete chosen names; the planner then **gates memory enrichment** and
-**drives direct execution**.
+The planner **starts before the tool router** and **runs before memory
+search**. It used to run strictly after the router, which narrowed the
+catalogue first so the planner's tool steps referenced concrete chosen names;
+the plan still **gates memory enrichment** and **drives direct execution**.
+
+The ordering is now speculative: the planner depends only on the redacted
+query and the dialogue window, both known before the router, so the engine
+starts it on a background thread against the **full** catalogue — there is no
+narrowed one yet — and overlaps the router's round-trip. On this host the two
+ran serially at ~2.2 s (router) + ~2.1 s (planner); the overlap removes most of
+the planner's half on every turn that plans. Planning against the full
+catalogue measured no worse than against the narrowed one (26 queries, paired
+adjacent arms, median delta +0.03 s), because the catalogue the planner is
+handed is names plus a truncated first description line, not the full JSON
+schema. See `src/claire/reply/planner_prefetch.py`.
+
+The engine consumes the speculative plan only when the router's own output
+says the plan will be used at all; the short, tool-free fast path still
+discards it and never waits. Three bounds make the reordering safe, and each
+is pinned by `tests/test_planner_prefetch.py`:
+
+- **Never slower.** The engine waits for the plan with a budget of
+  `planner_timeout_sec + router_elapsed`, measured from the prefetch start —
+  exactly the wall-clock the serial ordering gives the planner (the router,
+  then one full planner ceiling).
+- **Never planless where serial would have planned.** The speculative *call* is
+  given `planner_timeout_sec + llm_tools_timeout_sec`, so sharing its window
+  with the router can never cut it off early — that would return `[]`, which is
+  indistinguishable from the planner's positive "nothing to do" answer, and the
+  engine would consume it as such instead of falling back. Given that ceiling,
+  a prefetch that settles without a plan (error, empty response, stray
+  non-list) is retried on the serial path with the router-narrowed catalogue.
+  One still *in flight* at its deadline has already had that full window, so
+  the engine fails open exactly like a planner timeout instead of buying a
+  second one.
+- **Never an unexecutable allow-list.** Any tool the plan names is unioned
+  into `allowed_tools` from the full catalogue, so a speculative plan that
+  reaches for a tool the router did not pick stays callable.
 
 The engine uses the plan for three things:
 1. **Gate memory enrichment** — the planner emits an explicit
@@ -42,18 +76,23 @@ integration in `src/claire/reply/engine.py`.
 
 ### When the planner runs
 
-- After the dialogue context is assembled, MCP tools are loaded, and
-  the tool router has produced a narrowed catalogue. Memory search
-  runs *after* the planner so it can be gated on its output.
+- Started once the dialogue context is assembled and MCP tools are loaded —
+  *before* the tool router, on a background thread (see the ordering note
+  above). Memory search runs *after* the planner so it can be gated on its
+  output.
 - Dialogue context contains the latest six non-empty user or assistant
   messages, in chronological order, with at most 200 characters per message.
   Other roles and empty messages do not consume this dialogue budget.
-- The planner sees the **router-narrowed** tool catalogue (name +
-  one-line description), not the full 30+ list. It does not see memory
-  content — it decides whether memory is needed, via the
-  `searchMemory` directive. An empty external catalogue still allows
-  private-history preparation. The same personal-history rules apply with
-  or without external tools.
+- The planner sees a catalogue of `(name, first description line)` pairs. The
+  speculative call gets the **full** builtin + MCP catalogue, because the
+  router has not narrowed it yet; the serial fallback gets the
+  **router-narrowed** one. Neither is the raw `generate_tools_json_schema`
+  payload — the first description line is truncated to 120 characters, which
+  is why 15 tools cost the planner no measurable time over 3 (26 queries,
+  paired adjacent arms, median delta +0.03 s). It does not see memory content:
+  it decides whether memory is needed, via the `searchMemory` directive. An
+  empty external catalogue still allows private-history preparation. The same
+  personal-history rules apply with or without external tools.
 - Only when the query is at least `MIN_QUERY_CHARS` long (default 4).
   Pure noise like "hi" / "ok" still short-circuits.
 - Only when `cfg.planner_enabled` is True (default).
