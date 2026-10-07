@@ -1441,13 +1441,22 @@ class VoiceListener(threading.Thread):
         Args:
             query: Complete user query to process
         """
-        generation = self._capture_generation
-        if not self._transcription_is_current(generation):
+        # A dispatch that arrives after shutdown has nothing to speak into.
+        if self._should_stop:
             return
         debug_log(f"dispatching query: '{query}'", "voice")
 
-        # Clear audio buffers to prevent stale audio from next query
+        # Clear audio buffers to prevent stale audio from next query.
+        #
+        # This is also this turn's session boundary: it bumps the capture
+        # generation, which is what lets a later turn invalidate this reply.
+        # The generation must therefore be captured *after* the clear. Taken
+        # before, the guard below compares against a generation that the clear
+        # has already superseded, so every voice dispatch looked stale and the
+        # reply was silently dropped -- wake word, thinking tune and "Working on
+        # it" all fired, then nothing was ever spoken.
         self._clear_audio_buffers()
+        generation = self._capture_generation
 
         # Set face state to THINKING
         try:
