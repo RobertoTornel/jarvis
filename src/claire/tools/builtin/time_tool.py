@@ -29,8 +29,8 @@ from ...utils.time_context import format_time_context
 from ..base import Tool, ToolContext
 from ..types import ToolExecutionResult
 
-# Open-Meteo geocoding returns an IANA ``timezone`` field per result (the
-# free, key-less endpoint).
+# Open-Meteo geocoding returns an IANA ``timezone`` field per result. The
+# endpoint is free and needs no API key.
 _GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 # Cache of lowercased location string -> (iana_zone, display_name).
