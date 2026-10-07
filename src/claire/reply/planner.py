@@ -617,6 +617,8 @@ def _parse_plan_step_concrete(
     next_step_text: str,
     allowed_names: Sequence[str],
     property_schemas: dict[str, dict],
+    *,
+    drop_unknown_keys: bool = False,
 ) -> Optional[Tuple[str, dict]]:
     """Deterministically parse ``toolName key='value' key2="value2"`` steps.
 
@@ -626,6 +628,17 @@ def _parse_plan_step_concrete(
     prior results. Primitive values follow their declared JSON types;
     strings and untyped values stay literal. Invalid or complex typed
     values return ``None`` for the LLM resolver.
+
+    ``drop_unknown_keys`` discards argument keys the tool does not declare
+    instead of refusing the step. The LLM resolver path already does
+    exactly this before dispatch (see ``resolve_next_tool_call``), so
+    turning it on here only brings the deterministic path in line with the
+    resolver it replaces — and it matters for latency: a planner that adds
+    one qualifier the schema does not declare (``getWeather
+    location='Lisbon' timeframe='tomorrow'``, where ``getWeather`` takes
+    only ``location``) otherwise forfeits the free parse and buys an LLM
+    round-trip to be told the same thing. Callers that still have a
+    resolver to fall back on leave it off.
 
     Why this exists: small models occasionally flake on the resolver LLM
     call (timeout, empty output, spurious ``null``) even for trivially
@@ -701,9 +714,29 @@ def _parse_plan_step_concrete(
     if declared:
         unknown = args.keys() - declared
         if unknown:
-            # The planner used key names that don't match the tool's
-            # schema — surface to the LLM resolver which can remap them.
-            return None
+            # A step that names at least one of the tool's own arguments has
+            # already committed to the tool's vocabulary, so an extra key is
+            # a qualifier the schema simply does not carry (``getWeather
+            # location='Lisbon' timeframe='tomorrow'`` — getWeather takes
+            # only ``location``). The resolver strips such keys too; when the
+            # caller has no resolver to fall back on, strip them here.
+            #
+            # A step that names *none* of the tool's arguments is speaking in
+            # its own words, and only the resolver can translate it —
+            # ``getTime city='Tokyo'`` must become ``location='Tokyo'``.
+            # Dropping ``city`` there would run the tool with no arguments
+            # and answer about the wrong place, so those always defer.
+            known = args.keys() & declared
+            if not drop_unknown_keys or not known:
+                # The planner used key names that don't match the tool's
+                # schema — surface to the LLM resolver which can remap them.
+                return None
+            debug_log(
+                "planner: concrete step parsed, dropping undeclared "
+                f"argument key(s) {sorted(unknown)!r} for {name!r}",
+                "planning",
+            )
+            args = {k: v for k, v in args.items() if k in declared}
     return name, args
 
 
@@ -726,6 +759,7 @@ def resolve_next_tool_call(
     tools_schema: Sequence[dict],
     *,
     timeout_sec: Optional[float] = None,
+    deterministic_only: bool = False,
 ) -> Optional[Tuple[str, dict]]:
     """Turn a planned step + prior results into a concrete tool call.
 
@@ -734,6 +768,14 @@ def resolve_next_tool_call(
     without an LLM call when every required field is present. Otherwise
     use the LLM resolver for missing fields and placeholder substitution
     from prior results.
+
+    ``deterministic_only`` refuses the LLM hop: the fast path is still
+    tried, and anything that would have needed the resolver returns
+    ``None`` instead. Callers that are *not* short a derivation pass this
+    when they hold a plan whose under-specified steps are better left to
+    the chat model's own native tool calling than to a resolver round-trip
+    (see the LARGE-model branch in the engine's plan-driven direct-exec
+    block).
 
     Returns ``(tool_name, arguments)`` or ``None`` if the step is a
     synthesis step, the LLM call fails, or the emitted JSON is invalid /
@@ -780,8 +822,12 @@ def resolve_next_tool_call(
         schema_lines.append(f"- {name} (args: {keys}) — {first[:120]}")
 
     # Fast path: fully-concrete plan step parses deterministically.
+    # When the caller forbids the LLM hop there is nothing to fall back on
+    # for a stray argument key, so drop it here (the resolver path drops
+    # unknown keys too, just later).
     fast = _parse_plan_step_concrete(
         next_step_text, allowed_names, property_schemas,
+        drop_unknown_keys=deterministic_only,
     )
     if fast is not None and _has_required_arguments(fast[0], fast[1], required_props):
         debug_log(
@@ -790,6 +836,15 @@ def resolve_next_tool_call(
             "planning",
         )
         return fast[0], _normalise_url_args(fast[1], property_schemas[fast[0]])
+
+    if deterministic_only:
+        debug_log(
+            "planner.resolve_next_tool_call: step is not fully concrete and "
+            "deterministic_only was requested — leaving it to the chat "
+            "model's native tool calling",
+            "planning",
+        )
+        return None
 
     model = resolve_model(cfg, Tier.CHAT)
     if not model:

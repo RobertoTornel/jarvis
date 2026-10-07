@@ -1884,9 +1884,26 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # all plan tool steps are exhausted, at which point it synthesises
         # a final reply from the accumulated results.
         # See planner.spec.md.
+        #
+        # LARGE models: this block used to be SMALL-only, on the grounds
+        # that a capable model should do its own native tool calling. That
+        # remains true for an *under-specified* step, which needs a
+        # resolver to fill in fields and substitute placeholders — that
+        # hop would only be added cost beside a native call the LARGE
+        # model makes well. But a *fully concrete* step needs no
+        # derivation at all: the planner has already spelled out the tool
+        # name and every argument, and re-deriving it costs a whole extra
+        # chat round-trip on the full system prompt. Measured on this
+        # host that redundant turn is 2.0-3.6 s for a call the plan
+        # already contained verbatim (plan `getWeather location='Lisbon'
+        # timeframe='tomorrow'` → the chat model emitted exactly the same
+        # arguments one round-trip later). So LARGE models take this path
+        # too, but only through `deterministic_only`: when the step is not
+        # concrete we fall through to native tool calling below instead
+        # of paying a resolver call to guess.
         _plan_tool_steps = tool_steps_of(action_plan)
         if (
-            use_text_tools
+            (use_text_tools or model_size == ModelSize.LARGE)
             and _plan_tool_steps
             and not _plan_under_specified
         ):
@@ -1903,6 +1920,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                         next_step_text=_plan_tool_steps[_tool_results_so_far],
                         prior_results=_prior,
                         tools_schema=tools_json_schema or [],
+                        # LARGE models never pay the resolver LLM: only a
+                        # fully-concrete step is accepted, everything else
+                        # goes back to native tool calling (see above).
+                        deterministic_only=not use_text_tools,
                     )
                     if _resolved is not None:
                         _name, _args = _resolved

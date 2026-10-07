@@ -12,7 +12,7 @@ front of the reply flow** that emits a short ordered list of sub-tasks.
 The planner runs **after the tool router** and **before memory search**.
 The router narrows the catalogue first so the planner's tool steps reference
 concrete chosen names; the planner then **gates memory enrichment** and
-**drives direct execution** for small models.
+**drives direct execution**.
 
 The engine uses the plan for three things:
 1. **Gate memory enrichment** — the planner emits an explicit
@@ -25,9 +25,13 @@ The engine uses the plan for three things:
    (instead of the full 30+ list) stops small planners from
    paraphrasing ("get the weather") and from defaulting to
    `webSearch` when a more specific tool exists.
-3. **Drive direct execution** for small models, as before — each
-   planned step is resolved to a concrete tool call without
-   round-tripping the chat model for intermediate turns.
+3. **Drive direct execution** — each planned step is resolved to a
+   concrete tool call without round-tripping the chat model for
+   intermediate turns. Direct execution removes one full chat turn per
+   resolved step; on this host that turn measured 1.3–3.6 s, because the
+   chat turn carries the entire system prompt while the plan already
+   holds the answer. Scope differs by model size — see
+   "Deterministic-only resolution for LARGE models".
 
 ## Scope
 
@@ -197,14 +201,41 @@ The engine consumes the plan in two phases.
   hint injected after each tool result, naming the next planned step
   and reminding the model to substitute discovered entities and avoid
   duplicate arguments.
-- When `use_text_tools` is active and the plan still has unexecuted
-  tool steps, the engine runs `resolve_next_tool_call` to convert the
-  next step into a concrete `{name, arguments}` JSON and dispatches
-  the tool directly, bypassing the chat model for that turn. This
-  keeps small models on-rails without relying on their native
-  tool-call reliability.
+- When the plan still has unexecuted tool steps, the engine runs
+  `resolve_next_tool_call` to convert the next step into a concrete
+  `{name, arguments}` JSON and dispatches the tool directly, bypassing
+  the chat model for that turn. This keeps small models on-rails
+  without relying on their native tool-call reliability. For LARGE
+  models the same dispatch runs, but restricted to the deterministic
+  fast path — see "Deterministic-only resolution for LARGE models".
 - The chat model still runs the final synthesis turn so the reply is
   phrased in the daemon's voice using its own profile and persona.
+
+### Deterministic-only resolution for LARGE models
+
+Direct execution spends no chat turn, but it can spend an LLM turn:
+an under-specified step goes to the resolver, whose round-trip
+measured 1.5–2.5 s on this host — the same order as the chat turn it
+replaces. That trade only pays when the resolver hop is *removed*
+rather than substituted, i.e. when the step is already fully concrete.
+
+So a LARGE (`use_text_tools` false) model passes
+`deterministic_only=True`. The fast path is unchanged; everything that
+would have needed the resolver returns `None` immediately, and the
+engine falls through to the chat model's native tool calling — which a
+LARGE model does well and which is the pre-existing behaviour anyway.
+A step is therefore only ever direct-executed for a LARGE model when
+the planner already spelled out the call, and no path through the
+block can add an LLM call that was not there before.
+
+Measured on a weather query whose plan read
+`getWeather location='Lisbon' timeframe='tomorrow'`: chat turns per
+reply fell 2 → 1 with the plan's own arguments dispatched, total reply
+latency 6.06 s → 4.36 s median (interleaved, n=6). A query whose plan
+spoke in a synonym the schema does not declare (`getTime
+city='Tokyo'`, where the tool takes `location`) is correctly left to
+native tool calling: median 5.57 s → 5.91 s, chat turns unchanged at
+2, within contention noise.
 
 ### resolve_next_tool_call
 
@@ -223,6 +254,16 @@ The engine consumes the plan in two phases.
   argument keys, or doesn't fit the `key=value` shape, the step is
   passed to the LLM resolver which can substitute entities from prior
   results and remap names.
+- **`drop_unknown_keys`** (off by default; set only when the caller has
+  no resolver to fall back on, i.e. the LARGE `deterministic_only`
+  path): a step that names *at least one* of the tool's declared
+  arguments is accepted with the undeclared keys discarded. A step that
+  names *none* of them still returns `None`, because the unknown key is
+  then the step's entire intent and only the resolver can translate it —
+  `getTime city='Tokyo'` must become `location='Tokyo'`, and dropping
+  `city` would dispatch an argument-less call about the wrong place.
+  A discarded key that was carrying a required field is caught by the
+  required-argument check, which then returns `None` as well.
 - Returns `None` for synthesis steps (the LLM emits the literal
   `null`), unknown tools, or invalid JSON. All `None` paths fall back
   to the normal chat-model turn.
