@@ -39,6 +39,10 @@ import pytest
 from claire.utils.audio_capture import open_input_stream
 from claire.utils.audio_lock import portaudio_lock
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class _PaError(Exception):
     """Minimal stand-in for ``sounddevice.PaError``: args are (message, code)."""

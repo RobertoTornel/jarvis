@@ -232,7 +232,6 @@ def test_engine_direct_execs_a_concrete_plan_step_on_a_large_model(
 
     mock_config.llm_chat_model = "gpt-oss:20b"   # LARGE → native tools
     mock_config.ollama_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
     mock_config.tool_selection_strategy = "llm"
 
     plan = [
@@ -288,7 +287,6 @@ def test_engine_leaves_a_synonym_plan_step_to_native_tool_calling(
 
     mock_config.llm_chat_model = "gpt-oss:20b"
     mock_config.ollama_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
     mock_config.tool_selection_strategy = "llm"
 
     plan = ["getTime city='Tokyo'", "Reply to the user."]

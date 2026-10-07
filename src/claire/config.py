@@ -133,12 +133,8 @@ class Settings:
     llm_profile_select_timeout_sec: float
 
     # Profiles & Behavior
-    active_profiles: list[str]
     use_stdin: bool
     voice_debug: bool
-
-    # Screen Capture
-    allowlist_bundles: list[str]
 
     # Text-to-Speech
     tts_enabled: bool
@@ -193,7 +189,6 @@ class Settings:
     whisper_min_confidence: float
     whisper_no_speech_threshold: float
     whisper_min_audio_duration: float
-    whisper_min_word_length: int
 
     # Speech-to-text engine selection (D4)
     #
@@ -287,17 +282,10 @@ class Settings:
     # Agentic Loop
     agentic_max_turns: int
     tool_selection_strategy: str  # "all", "keyword", "embedding", or "llm"
-    # None = auto (on for SMALL models, off for LARGE). Explicit true/false forces.
-    evaluator_enabled: Optional[bool]
     # Upper bound on toolSearchTool invocations per reply turn. The cap
     # prevents a small model from churning through the escape hatch forever
     # when no tool really fits.
     tool_search_max_calls: int
-    # Upper bound on evaluator-driven nudges per reply. Each time the
-    # evaluator says "continue" with a nudge, the nudge is injected into
-    # the next turn's system message. This cap stops nudge ping-pong when
-    # the model keeps producing prose despite the nudge.
-    evaluator_nudge_max: int
     # Whether the pre-loop planner is enabled. True = planner always runs;
     # False = planner never runs (legacy behaviour, with the
     # compound_query fallback still active). Default True — the planner
@@ -315,10 +303,6 @@ class Settings:
     location_ip_address: str | None
     location_auto_detect: bool
     location_cgnat_resolve_public_ip: bool
-    # A fixed home city. When set, weather answers use it directly instead of
-    # resolving an IP (whose UPnP probe can block for ~30s) and then scraping a
-    # city out of the utterance with a second model call.
-    location_city: str
 
     # Web Search
     web_search_enabled: bool
@@ -611,15 +595,7 @@ def get_default_config() -> Dict[str, Any]:
         "llm_profile_select_timeout_sec": 30.0,
 
         # Profiles & Behavior
-        "active_profiles": ["developer", "business", "life"],
         "use_stdin": False,
-
-        # Screen Capture
-        # Empty by default: these were macOS application bundle identifiers
-        # (com.apple.Terminal and friends) and Claire is Linux-only. Linux screen
-        # capture is allowlisted by application/window name in the senses wave,
-        # not by bundle id.
-        "allowlist_bundles": [],
 
 
         # Text-to-Speech
@@ -681,7 +657,6 @@ def get_default_config() -> Dict[str, Any]:
         "whisper_min_confidence": 0.3,  # Filter low-confidence segments (hallucinations)
         "whisper_no_speech_threshold": 0.5,  # Hard cutoff: reject segments where no_speech_prob >= this
         "whisper_min_audio_duration": 0.15,
-        "whisper_min_word_length": 1,
 
         # Speech-to-text engine selection (D4). Parakeet v2 is the authoritative
         # recogniser; the streaming zipformer is the always-on listener. An empty
@@ -761,12 +736,8 @@ def get_default_config() -> Dict[str, Any]:
         # Agentic Loop
         "agentic_max_turns": 8,
         "tool_selection_strategy": "llm",
-        # None = auto (on for small models, off for large). Set true/false to force.
-        "evaluator_enabled": None,
         # Cap the number of toolSearchTool invocations per reply.
         "tool_search_max_calls": 3,
-        # Cap the number of evaluator-driven nudges per reply.
-        "evaluator_nudge_max": 2,
         # Task-list planner (see src/claire/reply/planner.spec.md). Runs on
         # the chat model; the fast tier resolves its steps for small models.
         "planner_enabled": True,
@@ -774,7 +745,6 @@ def get_default_config() -> Dict[str, Any]:
 
         # Stop Commands
         "stop_commands": ["stop", "quiet", "shush", "silence", "enough", "shut up"],
-        "stop_command_fuzzy_ratio": 0.8,
 
         # Location Services
         "location_enabled": True,
@@ -784,7 +754,6 @@ def get_default_config() -> Dict[str, Any]:
         # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
         # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
         "location_cgnat_resolve_public_ip": True,
-        "location_city": "",
 
         # Web Search
         "web_search_enabled": True,
@@ -877,7 +846,6 @@ def load_settings() -> Settings:
     vault_dir = (
         _expand_path(merged.get("vault_dir")) or _expand_path(_default_vault_dir())
     )
-    allowlist_bundles = _ensure_list(merged.get("allowlist_bundles"))
 
     ollama_base_url = str(merged.get("ollama_base_url"))
     ollama_embed_model = str(merged.get("ollama_embed_model"))
@@ -940,7 +908,6 @@ def load_settings() -> Settings:
     else:
         embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
-    active_profiles = _ensure_list(merged.get("active_profiles"))
     tts_enabled = bool(merged.get("tts_enabled", True))
     tts_engine = str(merged.get("tts_engine", "fish")).strip().lower()
     # Deliberately NOT coerced to a known value. This used to rewrite anything
@@ -1077,12 +1044,6 @@ def load_settings() -> Settings:
     tool_selection_strategy = str(merged.get("tool_selection_strategy", "llm")).lower()
     if tool_selection_strategy not in ("all", "keyword", "embedding", "llm"):
         tool_selection_strategy = "llm"
-    _eval_raw = merged.get("evaluator_enabled", None)
-    evaluator_enabled: Optional[bool]
-    if _eval_raw is None:
-        evaluator_enabled = None
-    else:
-        evaluator_enabled = bool(_eval_raw)
     planner_enabled = bool(merged.get("planner_enabled", True))
     try:
         planner_timeout_sec = float(merged.get("planner_timeout_sec", 3.0))
@@ -1094,19 +1055,12 @@ def load_settings() -> Settings:
         tool_search_max_calls = 3
     if tool_search_max_calls < 0:
         tool_search_max_calls = 0
-    try:
-        evaluator_nudge_max = int(merged.get("evaluator_nudge_max", 2))
-    except (TypeError, ValueError):
-        evaluator_nudge_max = 2
-    if evaluator_nudge_max < 0:
-        evaluator_nudge_max = 0
     location_enabled = bool(merged.get("location_enabled", True))
     location_cache_minutes = int(merged.get("location_cache_minutes", 60))
     location_ip_address_val = merged.get("location_ip_address")
     location_ip_address = None if location_ip_address_val in (None, "", "null") else str(location_ip_address_val)
     location_auto_detect = bool(merged.get("location_auto_detect", True))
     location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
-    location_city = str(merged.get("location_city", "") or "").strip()
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
@@ -1114,7 +1068,6 @@ def load_settings() -> Settings:
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
-    whisper_min_word_length = int(merged.get("whisper_min_word_length", 2))
     stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower()
     if stt_engine not in ("parakeet", "faster_whisper"):
         stt_engine = "parakeet"
@@ -1163,12 +1116,8 @@ def load_settings() -> Settings:
         llm_profile_select_timeout_sec=llm_profile_select_timeout_sec,
 
         # Profiles & Behavior
-        active_profiles=active_profiles,
         use_stdin=use_stdin,
         voice_debug=voice_debug,
-
-        # Screen Capture
-        allowlist_bundles=allowlist_bundles,
 
         # Text-to-Speech
         tts_enabled=tts_enabled,
@@ -1219,7 +1168,6 @@ def load_settings() -> Settings:
         whisper_min_confidence=whisper_min_confidence,
         whisper_no_speech_threshold=whisper_no_speech_threshold,
         whisper_min_audio_duration=whisper_min_audio_duration,
-        whisper_min_word_length=whisper_min_word_length,
         stt_engine=stt_engine,
         stt_model_path=stt_model_path,
         stt_model_kind=stt_model_kind,
@@ -1266,9 +1214,7 @@ def load_settings() -> Settings:
         tool_result_digest_enabled=tool_result_digest_enabled,
         agentic_max_turns=agentic_max_turns,
         tool_selection_strategy=tool_selection_strategy,
-        evaluator_enabled=evaluator_enabled,
         tool_search_max_calls=tool_search_max_calls,
-        evaluator_nudge_max=evaluator_nudge_max,
         planner_enabled=planner_enabled,
         planner_timeout_sec=planner_timeout_sec,
 
@@ -1278,7 +1224,6 @@ def load_settings() -> Settings:
         location_ip_address=location_ip_address,
         location_auto_detect=location_auto_detect,
         location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
-        location_city=location_city,
 
         # Web Search
         web_search_enabled=web_search_enabled,

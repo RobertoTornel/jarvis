@@ -15,6 +15,10 @@ import pytest
 
 from claire.config import _save_json
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def test_save_json_writes_new_contents_via_replace(tmp_path, monkeypatch):
     """The temp file holds the old contents at the moment of the atomic swap."""

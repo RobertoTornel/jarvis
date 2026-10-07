@@ -48,7 +48,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 __all__ = [
-    "DEFAULT_VAULT_DIR",
     "NOTES_DIRNAME",
     "ROUTER_BUDGET_BYTES",
     "ROUTER_FILENAME",

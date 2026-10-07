@@ -7,6 +7,10 @@ from src.claire.tools.builtin.nutrition.delete_meal import DeleteMealTool
 from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestDeleteMealTool:
     """Test delete meal tool functionality."""

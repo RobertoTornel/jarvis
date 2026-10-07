@@ -11,6 +11,11 @@ from desktop_app.mcp_catalogue import (
     get_wizard_entries,
 )
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestCatalogueIntegrity:
     """Tests for catalogue data integrity."""

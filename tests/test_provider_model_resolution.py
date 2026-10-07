@@ -22,6 +22,10 @@ from types import SimpleNamespace
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class _RecordingStub:
     """Minimal OpenAI-compatible chat stub that records the model of every

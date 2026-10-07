@@ -21,6 +21,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 ROOT = Path(__file__).resolve().parent.parent
 
 CHURN_SCENARIO = r"""

@@ -15,6 +15,10 @@ from src.claire.memory.conversation import (
 from src.claire.reply.engine import run_reply_engine
 from src.claire.utils.redact import redact
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 @pytest.mark.unit
 class TestDialogueMemory:

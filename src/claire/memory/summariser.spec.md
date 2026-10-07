@@ -118,10 +118,10 @@ The memory viewer's diary tab carries a Maintenance section in the sidebar with 
 
 ## Tag Optimisation
 
-`optimise_diary_topics(db, ollama_base_url, ollama_chat_model, ...)` in `conversation.py` implements the bulk tag normalisation sweep:
+`optimise_diary_topics(db, cfg, *, embed_timeout_sec=15.0)` in `conversation.py` implements the bulk tag normalisation sweep:
 
 1. Collect all unique topic strings from every `conversation_summaries` row (one pass, in memory).
-2. One `call_llm_direct` call to `ollama_chat_model` with `_TOPIC_OPTIMISE_SYSTEM_PROMPT` — returns a JSON object mapping each input tag to its normalised form (string for merge, list for split).
+2. One `_direct_llm(cfg, _TOPIC_OPTIMISE_SYSTEM_PROMPT, ...)` call — the configured chat model (`cfg.llm_chat_model`) through the provider-aware backend — returns a JSON object mapping each input tag to its normalised form (string for merge, list for split).
 3. Apply the mapping via `_apply_topic_mapping()` to each row's comma-separated topics string. Deduplicates the result while preserving order so a merge that produces two identical tags (e.g. "cook, cooking" → "cooking, cooking") collapses cleanly.
 4. Write back only rows whose topics changed, preserving `ts_utc` (same contract as the deflection rewrite).
 5. Re-embed updated rows if an embed model is configured.

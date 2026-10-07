@@ -11,6 +11,10 @@ from claire.listening.intent_judge import (
 )
 from claire.listening.transcript_buffer import TranscriptSegment
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestIntentJudgeConfig:
     """Tests for IntentJudgeConfig."""

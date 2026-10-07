@@ -13,6 +13,10 @@ import time
 
 from claire.listening.wake_detection import is_wake_word_detected
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestWakeWordValidation:
     """Tests for wake word presence validation in wake word mode.
@@ -87,15 +91,24 @@ class TestWakeWordValidation:
         # No assertion needed - just verifying the logic flow
 
     def test_wake_word_with_fuzzy_match(self):
-        """Fuzzy matching catches slight variations."""
-        text = "hey jarv what time is it"  # Slight typo
+        """Fuzzy matching catches a structurally plausible mishearing.
+
+        The fallback is fenced in: a token must share the wake name's onset
+        consonant cluster before the ratio is even considered, so recogniser
+        near-misses like "klair" wake her while ordinary English such as
+        "care" never can — regardless of the ratio threshold.
+        """
+        text = "hey klair what time is it"
         wake_word = "claire"
         aliases = []
 
-        # With lower fuzzy ratio (0.7), "jarv" might match "claire"
         result = is_wake_word_detected(text, wake_word, aliases, fuzzy_ratio=0.7)
-        # "jarv" to "claire" ratio is about 0.73
         assert result is True
+
+        # A different-onset word must stay rejected even at this loose ratio.
+        assert is_wake_word_detected(
+            "I do not care what time it is", wake_word, aliases, fuzzy_ratio=0.7
+        ) is False
 
     def test_wake_word_case_insensitive(self):
         """Wake word detection is case insensitive."""

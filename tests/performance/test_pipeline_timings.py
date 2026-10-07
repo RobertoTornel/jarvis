@@ -79,8 +79,7 @@ def _make_cfg():
     cfg.ollama_base_url = OLLAMA_URL
     cfg.ollama_chat_model = PERF_MODEL
     cfg.fast_model = PERF_MODEL
-    # Let size-aware defaults kick in (evaluator + digests ON for small).
-    cfg.evaluator_enabled = None
+    # Let size-aware defaults kick in (digests ON for small).
     cfg.memory_digest_enabled = None
     cfg.tool_result_digest_enabled = None
     # Force the LLM-based router so its timing shows up in the report.

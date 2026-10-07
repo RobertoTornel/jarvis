@@ -21,6 +21,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 @dataclass
 class _Cfg:
@@ -137,7 +141,7 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
         assert not ollama_chat.called
 
 
-# ── weather extractor (uses get_llm_backend directly, no local wrapper) ────
+# ── diary/summary direct dispatch (uses get_llm_backend directly) ──────────
 
 @pytest.mark.parametrize(
     "cfg_factory, expected_backend_module",
@@ -146,16 +150,21 @@ def test_engine_chat_with_messages_dispatches_via_factory(cfg_factory, expected_
         (_openai_cfg, "openai_compatible"),
     ],
 )
-def test_weather_place_extractor_dispatches_via_factory(cfg_factory, expected_backend_module: str):
-    from src.claire.tools.builtin import weather as weather_mod
+def test_conversation_direct_llm_dispatches_via_factory(cfg_factory, expected_backend_module: str):
+    """``memory.conversation._direct_llm`` is the single intercept every diary
+    and summary round-trip goes through, and it reaches the backend via
+    ``get_llm_backend(cfg)`` rather than naming a concrete class. The removed
+    getWeather place extractor used to cover this shape; this is its surviving
+    analogue, so the shim stays covered."""
+    from src.claire.memory import conversation as conversation_mod
     from src.claire.llm.ollama import OllamaBackend
     from src.claire.llm.openai_compatible import OpenAICompatibleBackend
 
     cfg = cfg_factory()
 
-    with patch.object(OllamaBackend, "direct", return_value="London") as ollama_direct, \
-         patch.object(OpenAICompatibleBackend, "direct", return_value="London") as openai_direct:
-        weather_mod._extract_place_from_user_text("weather in london please", cfg)
+    with patch.object(OllamaBackend, "direct", return_value="summary") as ollama_direct, \
+         patch.object(OpenAICompatibleBackend, "direct", return_value="summary") as openai_direct:
+        conversation_mod._direct_llm(cfg, "system prompt", "user content")
 
     if expected_backend_module == "ollama":
         assert ollama_direct.called

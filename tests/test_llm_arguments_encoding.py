@@ -12,6 +12,10 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestToolCallArgumentsWireFormat:
     """Verifies that tool_calls arguments are JSON-encoded strings on the wire."""

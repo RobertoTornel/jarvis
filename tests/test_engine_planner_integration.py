@@ -17,6 +17,10 @@ from unittest.mock import patch
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _make_tool_name_msg(name: str) -> dict:
     """Return a message dict that looks like a tool-result message from a prior query."""
@@ -36,7 +40,6 @@ def test_plan_injects_action_plan_block_into_system_message(
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → native tools, no direct-exec
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE → native tools, no direct-exec
-    mock_config.evaluator_enabled = False
 
     captured_system_messages: list[str] = []
 
@@ -96,7 +99,6 @@ def test_small_model_direct_execs_planned_tools_without_chat_llm(
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → use_text_tools
 
     mock_config.llm_chat_model = "gemma4:e2b"  # SMALL → use_text_tools
-    mock_config.evaluator_enabled = False
 
     chat_call_count = [0]
 
@@ -181,7 +183,6 @@ def test_empty_plan_falls_through_to_existing_behaviour(
     mock_config.ollama_chat_model = "gemma4:e2b"
 
     mock_config.llm_chat_model = "gemma4:e2b"
-    mock_config.evaluator_enabled = False
 
     captured_system_messages: list[str] = []
 
@@ -299,7 +300,6 @@ def test_paraphrased_plan_falls_back_to_tool_router(
     mock_config.ollama_chat_model = "gpt-oss:20b"  # LARGE → native tools
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE → native tools
-    mock_config.evaluator_enabled = False
 
     select_tools_called = [0]
 
@@ -354,7 +354,6 @@ def test_paraphrased_plan_skips_direct_exec_for_small_models(
     mock_config.ollama_chat_model = "gemma4:e2b"  # SMALL → direct-exec path
 
     mock_config.llm_chat_model = "gemma4:e2b"  # SMALL → direct-exec path
-    mock_config.evaluator_enabled = False
 
     resolver_calls = [0]
 
@@ -410,7 +409,6 @@ def test_router_always_runs_and_plan_tools_are_unioned(
     mock_config.ollama_chat_model = "gpt-oss:20b"
 
     mock_config.llm_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
 
     router_calls = [0]
     captured_allow_lists: list[list[str]] = []
@@ -568,7 +566,6 @@ def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
 
     plan_query_calls = []
 
@@ -633,7 +630,6 @@ def test_planner_runs_when_router_returns_real_tools(
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
 
     plan_query_calls = []
 
@@ -676,7 +672,6 @@ def test_planner_runs_when_query_is_long_even_without_tools(
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
 
     plan_query_calls = []
 
@@ -721,7 +716,6 @@ def test_planner_not_skipped_on_router_fallback_to_all_tools(
 
     mock_config.ollama_chat_model = "gpt-oss:20b"
     mock_config.llm_chat_model = "gpt-oss:20b"
-    mock_config.evaluator_enabled = False
 
     plan_query_calls = []
 

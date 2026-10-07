@@ -9,6 +9,10 @@ import time
 import pytest
 from claire.listening.echo_detection import EchoDetector
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestTextNormalization:
     """Tests for text normalization handling TTS/Whisper differences."""

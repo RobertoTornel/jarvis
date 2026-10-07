@@ -46,7 +46,6 @@ def _make_cfg(**overrides):
         'llm_embedding_timeout_sec': 0.1,
         'llm_chat_timeout_sec': 0.1,
         'agentic_max_turns': 1,
-        'active_profiles': ['developer'],
         'voice_debug': False,
         'memory_enrichment_max_results': 0,
         'mcps': {},

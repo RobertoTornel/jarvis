@@ -18,6 +18,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 def _make_response(*, json_data=None, iter_lines=None, status_code=200, raise_http=None):
     """Build a MagicMock that behaves like a ``requests.Response`` with

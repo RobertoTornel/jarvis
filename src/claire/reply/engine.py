@@ -1971,9 +1971,9 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # chat round-trip on the full system prompt. Measured on this
         # host that redundant turn is 2.0-3.6 s for a call the plan
         # already contained verbatim (the measurement predates the
-        # removal of the getWeather tool; plan `getWeather location='Lisbon'
-        # timeframe='tomorrow'` → the chat model emitted exactly the same
-        # arguments one round-trip later). So LARGE models take this path
+        # retirement of the tool it used; a fully concrete plan step →
+        # the chat model emitted exactly the same arguments one
+        # round-trip later). So LARGE models take this path
         # too, but only through `deterministic_only`: when the step is not
         # concrete we fall through to native tool calling below instead
         # of paying a resolver call to guess.

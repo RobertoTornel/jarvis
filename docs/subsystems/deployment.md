@@ -148,6 +148,79 @@ No secret is baked in: the image never uses `ARG *_API_KEY`, `ENV ..._KEY=...` o
 `COPY *.env` (`Dockerfile:26`–`:30`), and the build context is expected to be
 trimmed with a `.dockerignore` the repo does not ship (`:32`–`:52`).
 
+### What the production install carries — the development trees are excluded
+
+The suites stay in the repository and stay runnable from a checkout; what is
+excluded is their presence in a *deployed* or *built* install. That is enforced
+in three separate places, and the distinction matters because each one covers a
+different file set.
+
+**The deployed install is the checkout, not site-packages.** The venv holds an
+*editable* install — its only trace in site-packages is
+`__editable__.claire-<version>.pth`, whose single line is the absolute path of
+the checkout's `src/` — and the unit does not depend on that either: it sets
+`Environment=PYTHONPATH=<checkout>/src` and runs
+`ExecStart=<checkout>/.venv/bin/python -m claire` (`claire.service:68`, `:77`).
+`tests/` and `evals/` therefore sit *beside* the running code rather than inside
+it, and nothing under `src/claire` imports either one.
+
+**A wheel ships only the runtime packages.** `pyproject.toml:51`–`:54` names the
+runtime roots positively (`include = ["claire*", "desktop_app*"]`) and the
+development trees negatively (`exclude`, ten patterns). The negative list is the
+load-bearing half: `include` alone would still admit a `tests` package created
+under `src/` by a stray `__init__.py`, or by a rename that broadens the pattern.
+`package-dir = { "" = "src" }` (`:34`–`:35`) is why discovery cannot see the
+top-level `tests/`, `evals/` and `scripts/` directories at all; `exclude` is what
+keeps that true if one of them is ever moved under `src/`.
+
+**An sdist ships only the runtime too, and not because of any of the above.**
+Distutils' sdist command appends `tests/test*.py` and `test/test*.py` to *every*
+source distribution from a default in `_add_defaults_optional()`
+(`setuptools/_distutils/command/sdist.py`), which `packages.find` has no say
+over. `MANIFEST.in:25`–`:32` `prune`s the eight development trees; `prune` is
+processed after that default, so it is what removes the files. This rule fixes a
+real leak rather than stating an existing one: before `MANIFEST.in` existed, an
+sdist of this repository carried **201 files under `tests/`**, and adding
+`exclude` to `pyproject.toml` changed that number by **zero**.
+
+The container follows the same boundary for the same reason: the image copies
+`requirements.txt` and `src/` only (`Dockerfile:90`, `:110`), so there is no
+`tests/` in it to exclude.
+
+**To verify the artifacts**, from the repository root. This build is offline —
+it uses the venv's own setuptools with no build isolation and no network — and it
+writes only gitignored paths into the checkout:
+
+```
+.venv/bin/python - <<'PY'
+import os, sys, tarfile, tempfile, zipfile
+import setuptools.build_meta as build
+out = tempfile.mkdtemp()
+wheel, sdist = build.build_wheel(out), build.build_sdist(out)
+DEV = ('tests/', 'evals/', 'scripts/')
+print('wheel dev members:',
+      [n for n in zipfile.ZipFile(os.path.join(out, wheel)).namelist()
+       if n.startswith(DEV)])
+tar = tarfile.open(os.path.join(out, sdist))
+strip = len(tar.getnames()[0].split('/')[0]) + 1
+print('sdist dev members:',
+      [n[strip:] for n in tar.getnames() if n[strip:].startswith(DEV)])
+PY
+```
+
+Both lists must print empty, while the wheel still holds the `claire/` package
+tree, `desktop_app/` and the console entry point. Measured on this repository:
+the wheel was already clean before the change (139 members, 0 development
+members) and is unchanged after it (139 members); the sdist went from 369
+members with 201 development files to 168 members with none.
+
+`tests/test_prod_packaging_excludes_dev_trees.py` pins the same guarantee in the
+gate without building anything — it parses both configuration files, re-runs
+`find_packages` over `src/`, checks that a decoy `tests` package under a
+synthetic `src/` is still rejected when `include` is relaxed to `*`, and replays
+the sdist file list (legacy default first, then `MANIFEST.in`) to assert the
+`prune` rules remove every `tests/test*.py` and no runtime file.
+
 ## Data and control flow
 
 ### Interactive path (`./start.sh` → daemon)
@@ -318,6 +391,13 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 - [`tests/test_runtime_env_file.py`](../../tests/test_runtime_env_file.py) and
   [`tests/test_version_stamp.py`](../../tests/test_version_stamp.py) — the 0600
   env file and the `python -m claire` version path.
+- [`tests/test_prod_packaging_excludes_dev_trees.py`](../../tests/test_prod_packaging_excludes_dev_trees.py)
+  — the packaging boundary above. `pyproject.toml`'s `include`/`exclude` are read
+  and `find_packages` is re-run over `src/`; a decoy `tests` package under a
+  synthetic `src/` must still be rejected once `include` is relaxed to `*`; and
+  the sdist file list is replayed (legacy default first, then `MANIFEST.in`) to
+  show the `prune` rules drop every `tests/test*.py` and no runtime file.
+  Deterministic and build-free.
 
 ## Documentation drift
 

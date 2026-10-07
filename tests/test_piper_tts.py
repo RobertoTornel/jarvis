@@ -5,6 +5,10 @@ from unittest.mock import Mock, patch, MagicMock
 import threading
 import time
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestPiperTTSInterface:
     """Tests for PiperTTS interface compliance."""
@@ -340,12 +344,23 @@ class TestPiperTTSFactory:
         tts = create_tts_engine(enabled=False)
         assert isinstance(tts, PiperTTS)
 
-    def test_unknown_engine_falls_back_to_piper(self):
-        """create_tts_engine with unknown engine should create PiperTTS."""
-        from src.claire.output.tts import create_tts_engine, PiperTTS
+    def test_unknown_engine_is_refused_not_substituted(self):
+        """An unrecognised engine name is refused loudly.
 
-        tts = create_tts_engine(engine="unknown", enabled=False)
-        assert isinstance(tts, PiperTTS)
+        The factory used to fall back to Piper, which silently voiced the
+        wrong engine after a typo'd or retired setting. The contract now is a
+        ``ValueError`` naming the engines that are actually supported."""
+        from src.claire.output.tts import (
+            create_tts_engine,
+            SUPPORTED_TTS_ENGINES,
+        )
+
+        with pytest.raises(ValueError, match="supported engines"):
+            create_tts_engine(engine="unknown", enabled=False)
+
+        # Every shipped engine is accepted (no substitution needed).
+        for name in SUPPORTED_TTS_ENGINES:
+            assert create_tts_engine(engine=name, enabled=False) is not None
 
     def test_chatterbox_engine_still_works(self):
         """create_tts_engine should still create ChatterboxTTS."""
@@ -445,19 +460,22 @@ class TestPiperTTSConfig:
         assert "tts_piper_sentence_silence" in defaults
         assert defaults["tts_piper_sentence_silence"] == 0.2
 
-    def test_tts_engine_defaults_to_piper(self):
-        """tts_engine should default to 'piper'."""
+    def test_tts_engine_defaults_to_fish(self):
+        """tts_engine should default to the shipped default, 'fish'.
+
+        Piper is one engine among three (see SUPPORTED_TTS_ENGINES) but is no
+        longer the default: a fresh install runs Fish Audio."""
         from src.claire.config import load_settings, get_default_config
         from unittest.mock import patch
 
         # Check default config
         defaults = get_default_config()
-        assert defaults["tts_engine"] == "piper"
+        assert defaults["tts_engine"] == "fish"
 
         # Mock empty config file - should use default
         with patch("src.claire.config._load_json", return_value={}):
             settings = load_settings()
-            assert settings.tts_engine == "piper"
+            assert settings.tts_engine == "fish"
 
     def test_tts_engine_migrates_system_to_piper(self):
         """tts_engine 'system' should be auto-migrated to 'piper' for existing users."""
@@ -473,8 +491,12 @@ class TestPiperTTSConfig:
                 # Should be migrated to piper
                 assert settings.tts_engine == "piper"
 
-    def test_invalid_engine_falls_back_to_piper(self):
-        """Invalid tts_engine values should fall back to piper."""
+    def test_invalid_engine_is_preserved_for_the_factory_to_reject(self):
+        """An invalid tts_engine is kept verbatim, not coerced to piper.
+
+        Config loading no longer guesses a substitute: the raw value survives
+        so ``create_tts_engine`` can refuse it with a clear ValueError instead
+        of silently voicing a different engine than the user configured."""
         from src.claire.config import load_settings
         from unittest.mock import patch
 
@@ -487,8 +509,7 @@ class TestPiperTTSConfig:
         with patch("src.claire.config._load_json", return_value=config_data), \
              patch("src.claire.config._save_json", return_value=True):
             settings = load_settings()
-            # Should fall back to piper
-            assert settings.tts_engine == "piper"
+            assert settings.tts_engine == "invalid_engine"
 
     def test_chatterbox_engine_preserved(self):
         """tts_engine 'chatterbox' should be preserved."""

@@ -1,0 +1,32 @@
+# WHAT AN SDIST MUST NEVER CARRY.
+#
+# The `exclude` list under `[tool.setuptools.packages.find]` in pyproject.toml
+# governs *package discovery*, which is the wheel's file set.  It does NOT
+# govern an sdist: distutils' sdist command adds `tests/test*.py` and
+# `test/test*.py` to every source distribution from a legacy default --
+# `_add_defaults_optional()` in
+# `.venv/lib/python3.12/site-packages/setuptools/_distutils/command/sdist.py`
+# (the same rule exists in distutils itself).  Measured on this repo: without
+# the rules below, `python -m build --sdist` ships 201 files under `tests/`,
+# and adding `exclude = [...]` to pyproject.toml changes that number by zero.
+#
+# `prune` is processed after those defaults, so it is what actually removes
+# them.  `tests` is the one that matters today; the rest are here so a
+# development tree added later cannot start riding along by matching the same
+# legacy glob (a top-level `test_*.py` under any of them would).
+#
+# NONE of this affects a checkout.  `prune` only filters the sdist's file list;
+# `tests/` and `evals/` stay on disk, `pytest.ini`'s `testpaths = tests` is
+# untouched, and both suites still run in place with `pytest tests/` and
+# `pytest evals/`.
+#
+# Pinned by tests/test_prod_packaging_excludes_dev_trees.py.
+
+prune tests
+prune evals
+prune scripts
+prune examples
+prune docs
+prune deploy
+prune templates
+prune android

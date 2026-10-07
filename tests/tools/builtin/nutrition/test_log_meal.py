@@ -10,6 +10,10 @@ from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
 from src.claire.reply.planner import _parse_plan_step_concrete
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 class TestLogMealTool:
     """Test log meal tool functionality."""

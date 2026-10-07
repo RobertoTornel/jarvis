@@ -3,13 +3,17 @@
 Scenario: the router picks a narrow initial tool set. Mid-loop the chat model
 realises it needs a different tool and invokes ``toolSearchTool``. The engine
 dispatches it, merges the returned tool names into the per-turn allow-list,
-and the next turn calls the newly-surfaced tool (``getWeather``). The final
+and the next turn calls the newly-surfaced tool (``getTime``). The final
 content is delivered immediately.
 """
 
 from unittest.mock import patch
 
 import pytest
+
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
 
 
 def _assistant_tool_call(name: str, args: dict, call_id: str = "call_1"):
@@ -50,13 +54,13 @@ def test_loop_merges_toolsearchtool_results_into_allowlist(
             # Returns a newly-routed tool that was NOT in the initial pick.
             return ToolExecutionResult(
                 success=True,
-                reply_text="getWeather: Report current weather.",
+                reply_text="getTime: Report the current time.",
                 error_message=None,
             )
-        if tool_name == "getWeather":
+        if tool_name == "getTime":
             return ToolExecutionResult(
                 success=True,
-                reply_text="London: 12C partly cloudy.",
+                reply_text="London: 15:04.",
                 error_message=None,
             )
         return ToolExecutionResult(
@@ -67,14 +71,14 @@ def test_loop_merges_toolsearchtool_results_into_allowlist(
         [
             # Turn 1: model calls toolSearchTool.
             _assistant_tool_call(
-                "toolSearchTool", {"query": "current weather in london"}
+                "toolSearchTool", {"query": "current time in london"}
             ),
-            # Turn 2: model uses the newly-surfaced getWeather.
+            # Turn 2: model uses the newly-surfaced getTime.
             _assistant_tool_call(
-                "getWeather", {"location": "London"}, call_id="call_2"
+                "getTime", {"location": "London"}, call_id="call_2"
             ),
             # Turn 3: final reply.
-            _assistant_content("It's 12C and partly cloudy in London."),
+            _assistant_content("It's 15:04 in London."),
         ]
     )
 
@@ -96,7 +100,7 @@ def test_loop_merges_toolsearchtool_results_into_allowlist(
             db=db,
             cfg=mock_config,
             tts=None,
-            text="how's the weather in london?",
+            text="what time is it in london?",
             dialogue_memory=dialogue_memory,
         )
 
@@ -104,13 +108,13 @@ def test_loop_merges_toolsearchtool_results_into_allowlist(
     assert "toolSearchTool" in tool_names, (
         f"Expected toolSearchTool to be invoked; got {tool_names}"
     )
-    assert "getWeather" in tool_names, (
-        "Expected getWeather (surfaced mid-loop by toolSearchTool) to be "
+    assert "getTime" in tool_names, (
+        "Expected getTime (surfaced mid-loop by toolSearchTool) to be "
         f"invoked on a subsequent turn; got {tool_names}"
     )
-    # getWeather must follow toolSearchTool (the allow-list widening
+    # getTime must follow toolSearchTool (the allow-list widening
     # happens after the tool result is appended).
-    assert tool_names.index("getWeather") > tool_names.index("toolSearchTool")
+    assert tool_names.index("getTime") > tool_names.index("toolSearchTool")
     assert reply and "London" in reply
 
 
@@ -188,7 +192,7 @@ def test_schema_regenerated_after_toolsearchtool_merge(
         if tool_name == "toolSearchTool":
             return ToolExecutionResult(
                 success=True,
-                reply_text="getWeather: Report current weather.",
+                reply_text="getTime: Report the current time.",
                 error_message=None,
             )
         return ToolExecutionResult(
@@ -198,7 +202,7 @@ def test_schema_regenerated_after_toolsearchtool_merge(
     chat_responses = iter(
         [
             _assistant_tool_call(
-                "toolSearchTool", {"query": "weather"}, call_id="c1"
+                "toolSearchTool", {"query": "time"}, call_id="c1"
             ),
             _assistant_content("All good."),
         ]
@@ -224,12 +228,12 @@ def test_schema_regenerated_after_toolsearchtool_merge(
             db=db,
             cfg=mock_config,
             tts=None,
-            text="weather?",
+            text="what time is it?",
             dialogue_memory=dialogue_memory,
         )
 
     # Two LLM calls: pre-merge and post-merge. The post-merge call must
-    # include getWeather in its tools schema.
+    # include getTime in its tools schema.
     assert len(captured_tools_params) >= 2
     post_merge_schema = captured_tools_params[1] or []
     names = []
@@ -239,8 +243,8 @@ def test_schema_regenerated_after_toolsearchtool_merge(
             nm = fn.get("name")
             if nm:
                 names.append(nm)
-    assert "getWeather" in names, (
-        f"Expected getWeather in post-merge tools schema; got {names}"
+    assert "getTime" in names, (
+        f"Expected getTime in post-merge tools schema; got {names}"
     )
 
 

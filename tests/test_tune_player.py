@@ -33,6 +33,10 @@ from claire.output.tune_player import (
     _get_thinking_pad_wav,
 )
 
+# The unit gate deselects any test that is not marked `unit`; a module-level
+# pytestmark makes this whole file visible to it.
+pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
+
 
 # --- Sample / WAV generation -----------------------------------------------
 
