@@ -146,35 +146,40 @@ def record_transcripts(obj):
 
 # -- honest degradation ----------------------------------------------------
 
-def test_unset_stt_model_path_degrades_the_turn_and_names_the_setting(listener):
+def test_unset_stt_model_path_degrades_and_names_the_setting(listener):
+    """A missing Parakeet is visible: no turn, and the reason names the setting.
+
+    Whisper used to answer here and the turn was merely *marked* degraded. That
+    is exactly the silent degradation this design removed: with one
+    authoritative recogniser, an unavailable one produces an empty transcript
+    and a named reason — never a second, worse engine answering in its place.
+    """
     obj = listener
     assert not obj.cfg.stt_model_path, "this test needs stt_model_path to be unset"
     seen = record_transcripts(obj)
-    obj._transcribe_audio = lambda audio: ("Claire what is the weather", "en", ())
+    obj._transcribe_audio = Mock(side_effect=AssertionError('Whisper must not run'))
 
     prime_utterance(obj)
     obj._finalize_utterance()
     result = run_one_job(obj)
     obj._handle_transcription_result(result)
 
-    assert result.turn is not None
-    assert result.turn.degraded is True
-    assert result.turn.source == SOURCE_STREAMING_FALLBACK
-    assert "stt_model_path" in result.turn.degraded_reason
-    # The existing Whisper path still answered, and its text is what acts.
-    assert result.text == "Claire what is the weather"
-    assert seen == [("Claire what is the weather", "")]
+    assert result.text == ""
+    assert result.turn is None, "no authoritative transcript must mean no turn"
+    assert seen == [], "an unavailable recogniser must not act on anything"
+    assert 'stt_model_path' in obj._authoritative_stt_reason
+    assert obj._transcribe_audio.call_count == 0
 
 
 def test_degradation_is_logged_once_in_the_voice_log(listener, monkeypatch):
     obj = listener
     logged = []
     monkeypatch.setattr(capture, 'debug_log', lambda message, *a, **kw: logged.append(message))
-    obj._transcribe_audio = lambda audio: ("Claire what is the weather", "en", ())
 
     first = obj._decode_utterance(np.zeros(1600, dtype=np.float32))
     second = obj._decode_utterance(np.zeros(1600, dtype=np.float32))
 
+    assert first[0] == "" and second[0] == ""
     assert first[3] == SOURCE_STREAMING_FALLBACK
     assert second[3] == SOURCE_STREAMING_FALLBACK
     degraded = [m for m in logged if 'degraded' in m]
@@ -188,24 +193,24 @@ def test_missing_engine_never_crashes_the_listener(listener):
     # listener must swallow it, record the reason and stay usable.
     assert obj._get_authoritative_stt_engine() is None
     assert 'stt_model_path' in obj._authoritative_stt_reason
-    obj._transcribe_audio = lambda audio: ("Claire hello", "en", ())
     text, language, _events, source, reason = obj._decode_utterance(
         np.zeros(1600, dtype=np.float32)
     )
-    assert (text, language, source) == ("Claire hello", "en", SOURCE_STREAMING_FALLBACK)
+    assert (text, language) == ("", None)
+    assert source == SOURCE_STREAMING_FALLBACK
     assert 'stt_model_path' in reason
 
 
 def test_named_model_error_with_a_path_set_still_degrades(listener):
     obj = listener
     obj.cfg = replace(obj.cfg, stt_model_path='/nonexistent/parakeet.nemo')
-    obj._transcribe_audio = lambda audio: ('Claire hello', 'en', ())
 
     text, _language, _events, source, reason = obj._decode_utterance(
         np.zeros(1600, dtype=np.float32)
     )
 
-    assert (text, source) == ('Claire hello', SOURCE_STREAMING_FALLBACK)
+    assert text == ""
+    assert source == SOURCE_STREAMING_FALLBACK
     assert '/nonexistent/parakeet.nemo' in reason
 
 
@@ -314,8 +319,7 @@ def test_streaming_engine_unavailable_call_signature_is_unchanged(listener, monk
 
 def test_listener_still_wakes_and_transcribes_without_streaming(listener, monkeypatch):
     obj = listener
-    inject_engines(monkeypatch, None, None)
-    obj._transcribe_audio = lambda audio: ('Claire weather', 'en', ())
+    inject_engines(monkeypatch, FakeAuthoritativeEngine('Claire weather'), None)
 
     assert obj._get_streaming_stt_engine() is None
 
@@ -370,7 +374,6 @@ def test_streaming_frames_go_only_through_the_streaming_api(listener, monkeypatc
     obj = listener
     streaming = FakeStreamingEngine('claire')
     inject_engines(monkeypatch, None, streaming)
-    obj._transcribe_audio = lambda audio: ('Claire weather', 'en', ())
 
     frame = np.zeros(int(obj._samplerate * 0.02), dtype=np.float32)
     for _ in range(3):
@@ -391,14 +394,15 @@ def test_streaming_frames_go_only_through_the_streaming_api(listener, monkeypatc
 def test_failing_streaming_engine_is_disabled_without_crashing(listener, monkeypatch):
     obj = listener
     streaming = FakeStreamingEngine(fail_on_accept=True)
-    inject_engines(monkeypatch, None, streaming)
+    authoritative = FakeAuthoritativeEngine('Claire hello')
+    inject_engines(monkeypatch, authoritative, streaming)
 
     obj._feed_streaming_stt(np.zeros(1600, dtype=np.float32))
 
     assert obj._get_streaming_stt_engine() is None
     assert obj._provisional_text() == ''
-    # And the listener still decodes the utterance on the fallback path.
-    obj._transcribe_audio = lambda audio: ('Claire hello', 'en', ())
+    # A failed streamer does not take the authoritative recogniser down with
+    # it: Parakeet still answers the utterance.
     assert obj._decode_utterance(np.zeros(1600, dtype=np.float32))[0] == 'Claire hello'
 
 
@@ -414,3 +418,73 @@ def test_provisional_text_can_only_satisfy_wake_detection(listener, monkeypatch)
     )
     # The turn was accepted, but every word acted on is authoritative.
     assert obj.state_manager.get_pending_query() == 'what is the weather'
+
+# -- one listening model: Parakeet, and no Whisper fallback ----------------
+
+def test_parakeet_configuration_never_builds_a_whisper_backend(listener, monkeypatch, capsys):
+    """With Parakeet configured the loop must not build or import Whisper.
+
+    Drives the real ``VoiceListener._run`` gate.  Every Whisper entry point is
+    replaced with a recording bomb, so *reaching* one fails the test rather
+    than being inferred from source; the loop is then stopped at the first
+    audio-system call, so no model, device or thread is left behind.  This is
+    the guarantee the boot banner and the journal are checked against in
+    production.
+    """
+    obj = listener
+    monkeypatch.setattr(obj, 'cfg', replace(obj.cfg, stt_engine='parakeet'))
+
+    touched = []
+    monkeypatch.setattr(VoiceListener, '_initialise_whisper_backend',
+                        lambda _self: touched.append('initialise') or True)
+    monkeypatch.setattr(capture, '_load_faster_whisper_model',
+                        lambda *a, **kw: touched.append('load') or MagicMock())
+    monkeypatch.setattr(capture, '_ensure_faster_whisper_imported',
+                        lambda: touched.append('import') or True)
+
+    class FakeSd:
+        @staticmethod
+        def query_devices(device=None, *_a, **_kw):
+            info = {'name': 'fake input', 'max_input_channels': 1,
+                    'default_samplerate': 16000.0}
+            return info if device is not None else [info]
+
+    monkeypatch.setattr(capture, 'sd', FakeSd)
+    monkeypatch.setattr(capture, 'resolve_input_device', lambda *_a, **_kw: {'device': 0})
+
+    def no_audio(*_a, **_kw):
+        raise RuntimeError('no audio device in this test')
+
+    monkeypatch.setattr(capture, 'open_input_stream', no_audio)
+
+    obj._run()
+
+    out = capsys.readouterr().out
+    assert touched == [], f'Whisper was touched with parakeet configured: {touched}'
+    assert 'Recogniser: parakeet' in out
+    assert obj.model is None
+
+
+def test_importing_the_listener_pulls_no_whisper_backend():
+    """A fresh interpreter importing the loop must not import a Whisper backend.
+
+    ``sys.modules`` is process-global, so this runs in a subprocess: the answer
+    must be about the module, not about whichever other test ran first.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "import sys\n"
+        "import claire.listening.listener  # noqa: F401\n"
+        "bad = [m for m in ('faster_whisper', 'mlx_whisper', 'ctranslate2')\n"
+        "       if m in sys.modules]\n"
+        "print(','.join(bad))\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+    result = subprocess.run([sys.executable, '-c', code],
+                            capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, (
+        'importing the listener pulled in a Whisper backend: '
+        f'{result.stdout.strip() or result.stderr.strip()}'
+    )

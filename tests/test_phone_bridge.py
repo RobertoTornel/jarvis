@@ -758,9 +758,13 @@ def test_loc_records_the_coordinates(tmp_path):
 
     assert response.status == 200
     assert response.payload["ok"] is True
-    assert response.payload["recorded"]["latitude"] == 51.5074
-    assert response.payload["recorded"]["longitude"] == -0.1278
-    assert response.payload["recorded"]["accuracy_m"] == 12.5
+    # The fix is acknowledged, not read back: the phone is not told its own
+    # coordinates, the sink (Claire's context) is where the position goes.
+    assert response.payload["recorded"] is True
+    assert response.payload["accuracy_m"] == 12.5
+    assert "latitude" not in json.dumps(response.payload)
+    assert "51.5074" not in json.dumps(response.payload)
+    assert "-0.1278" not in json.dumps(response.payload)
 
     assert len(recorded) == 1
     assert recorded[0].latitude == 51.5074
@@ -901,12 +905,14 @@ def test_health_answers_and_reports_the_masked_token_only(tmp_path):
     assert response.payload["token"] != b.token()
     assert b.token().encode() not in response.body()
     assert response.payload["max_body_bytes"] == MAX_BODY_BYTES
-    # The five canonical endpoints, the audio route the phone needs, and the two
-    # spellings the shipped 0.2 client calls.  Pinned as an exact set on purpose:
-    # a route added to ENDPOINTS is an authenticated attack surface, and this is
-    # where that has to be acknowledged.
+    # The five canonical endpoints, the audio route the phone needs, the
+    # channel back to the phone (`/say`), and the two spellings the shipped 0.2
+    # client calls.  Pinned as an exact set on purpose: a route added to
+    # ENDPOINTS is an authenticated attack surface, and this is where that has
+    # to be acknowledged.
     assert set(response.payload["endpoints"]) == {
         "/text",
+        "/say",
         "/transcribe",
         "/see",
         "/loc",
@@ -1830,7 +1836,8 @@ def test_location_is_loc_over_a_real_socket(tmp_path):
 
     assert status == 200, payload
     assert payload["ok"] is True
-    assert payload["recorded"]["latitude"] == pytest.approx(38.7223)
+    assert payload["recorded"] is True
+    assert "38.7223" not in json.dumps(payload), "the fix was read back over the socket"
     assert seen and seen[0].latitude == pytest.approx(38.7223)
 
 
@@ -1928,3 +1935,374 @@ def test_the_transcribe_remedy_names_a_script_that_exists():
     assert match, remedy
     script = Path(__file__).resolve().parent.parent / "scripts" / match.group(1)
     assert script.is_file(), "the remedy names a missing script: %s" % script
+
+
+# --------------------------------------------------------------------------- #
+# /say: the channel back to the phone, over a real socket
+# --------------------------------------------------------------------------- #
+#
+# /say exists because the bridge normally runs as its own process, so the voice
+# loop reaches the reply queue over HTTP like any other client.  These are
+# exactly the tests that must not be in-process: a handler that never registered
+# /say, or a socket layer that mishandles a JSON POST, would still pass a call to
+# ``PhoneBridge.handle()`` and has to fail here.  Every case below drives the
+# real ``ThreadingHTTPServer`` bound to an OS-chosen port on 127.0.0.1.
+
+def post_raw_over_socket(port: int, path: str, body: bytes, content_type, *,
+                         token=None):
+    """A POST that returns the body as bytes, not parsed JSON.
+
+    ``post_over_socket`` decodes for payload assertions; this one keeps the
+    bytes so two refusals can be compared exactly, which is the whole point of
+    the no-oracle check.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        headers = {}
+        if token is not None:
+            headers["Authorization"] = "Bearer %s" % token
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        conn.request("POST", path, body=body, headers=headers)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def test_say_queues_text_that_the_next_reply_drains_once_over_a_real_socket(
+    tmp_path,
+):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port,
+            "/say",
+            b'{"text": "good morning"}',
+            "application/json",
+            token=b.token(),
+        )
+        first_status, first_body = get_over_socket(port, "/reply", token=b.token())
+        second_status, second_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 200, payload
+    assert payload["ok"] is True
+    assert payload["queued"] == {"kind": "text", "text": "good morning"}
+    assert payload["count"] == 1
+
+    first = json.loads(first_body)
+    assert first_status == 200, first
+    assert first["count"] == 1
+    assert first["items"] == [{"kind": "text", "text": "good morning"}]
+
+    second = json.loads(second_body)
+    assert second_status == 200, second
+    assert second["count"] == 0, "/say's item was handed out more than once"
+
+
+def test_say_queues_a_photo_command_with_its_question_over_a_real_socket(
+    tmp_path,
+):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port,
+            "/say",
+            json.dumps({"command": "photo", "question": "what is this?"}).encode(
+                "utf-8"
+            ),
+            "application/json",
+            token=b.token(),
+        )
+        drain_status, drain_body = get_over_socket(port, "/reply", token=b.token())
+        again_status, again_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 200, payload
+    assert payload["ok"] is True
+    assert payload["queued"]["kind"] == "command"
+    assert payload["queued"]["command"] == "photo"
+    assert payload["queued"]["question"] == "what is this?"
+    assert payload["count"] == 1
+
+    drained = json.loads(drain_body)
+    assert drain_status == 200, drained
+    assert drained["count"] == 1
+    assert drained["items"][0]["kind"] == "command"
+    assert drained["items"][0]["command"] == "photo"
+    assert drained["items"][0]["question"] == "what is this?"
+    assert again_status == 200
+    assert json.loads(again_body)["count"] == 0
+
+
+def test_say_queues_the_location_command_over_a_real_socket(tmp_path):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port,
+            "/say",
+            b'{"command": "location"}',
+            "application/json",
+            token=b.token(),
+        )
+        drain_status, drain_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 200, payload
+    assert payload["queued"] == {"kind": "command", "command": "location"}
+    assert payload["count"] == 1
+    drained = json.loads(drain_body)
+    assert drain_status == 200, drained
+    assert drained["items"] == [{"kind": "command", "command": "location"}]
+
+
+def test_say_explicit_command_kind_wins_and_keeps_the_text_over_a_real_socket(
+    tmp_path,
+):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, payload = post_over_socket(
+            port,
+            "/say",
+            json.dumps(
+                {"text": "look at this", "kind": "command", "command": "photo"}
+            ).encode("utf-8"),
+            "application/json",
+            token=b.token(),
+        )
+        drain_status, drain_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 200, payload
+    assert payload["queued"]["kind"] == "command"
+    assert payload["queued"]["command"] == "photo"
+    assert payload["queued"]["text"] == "look at this"
+    drained = json.loads(drain_body)
+    assert drain_status == 200, drained
+    assert drained["count"] == 1
+    assert drained["items"][0]["kind"] == "command"
+    assert drained["items"][0]["command"] == "photo"
+    assert drained["items"][0]["text"] == "look at this"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"command": "video"},
+        {"command": ""},
+        {"kind": "command"},
+        {"kind": "command", "command": "PHOTO"},
+    ],
+)
+def test_say_refuses_an_unknown_or_missing_command_by_name_without_queueing(
+    tmp_path, payload
+):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, answer = post_over_socket(
+            port,
+            "/say",
+            json.dumps(payload).encode("utf-8"),
+            "application/json",
+            token=b.token(),
+        )
+        empty_status, empty_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 400, answer
+    assert answer["ok"] is False
+    assert answer["error"]["code"]
+    # The body names both commands, so a caller never has to read the source.
+    shown = json.dumps(answer)
+    assert "photo" in shown
+    assert "location" in shown
+    assert empty_status == 200
+    assert json.loads(empty_body)["count"] == 0, "a refused /say queued something"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"id": 7},
+        {"kind": "text"},
+        {"text": ""},
+        {"text": "   "},
+    ],
+)
+def test_say_refuses_a_body_with_nothing_to_queue(tmp_path, payload):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        status, answer = post_over_socket(
+            port,
+            "/say",
+            json.dumps(payload).encode("utf-8"),
+            "application/json",
+            token=b.token(),
+        )
+        empty_status, empty_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert status == 400, answer
+    assert answer["ok"] is False
+    assert answer["error"]["code"]
+    assert empty_status == 200
+    assert json.loads(empty_body)["count"] == 0
+
+
+def test_say_without_a_token_is_the_same_401_as_health_over_a_real_socket(
+    tmp_path,
+):
+    b = make_bridge(tmp_path)
+    body = b'{"text": "good morning"}'
+
+    with live_bridge(b) as port:
+        missing_status, missing_body = post_raw_over_socket(
+            port, "/say", body, "application/json"
+        )
+        wrong_status, wrong_body = post_raw_over_socket(
+            port, "/say", body, "application/json", token="wrong" * 8
+        )
+        health_status, health_body = get_over_socket(
+            port, "/health", token="wrong" * 8
+        )
+        reply_status, reply_body = get_over_socket(port, "/reply", token=b.token())
+
+    assert missing_status == 401, missing_body
+    assert wrong_status == 401, wrong_body
+    assert health_status == 401, health_body
+    assert wrong_body == health_body, "the 401 is an oracle: /say differs from /health"
+    assert missing_body == wrong_body
+    assert b.token().encode() not in wrong_body
+    assert reply_status == 200
+    assert json.loads(reply_body)["count"] == 0, "a refused /say reached the queue"
+
+
+def test_the_canonical_and_legacy_routes_still_behave_over_a_real_socket(tmp_path):
+    queue = ReplyQueue()
+    queue.put_text("the kettle is boiling")
+    seen = []
+    b = make_bridge(tmp_path, queue=queue, location_sink=seen.append)
+
+    with live_bridge(b) as port:
+        health_status, health_body = get_over_socket(port, "/health", token=b.token())
+        reply_status, reply_body = get_over_socket(port, "/reply", token=b.token())
+        where_status, where_body = get_over_socket(port, "/where", token=b.token())
+        location_status, location_payload = post_over_socket(
+            port,
+            "/location",
+            json.dumps(
+                {"latitude": 38.7223, "longitude": -9.1393, "accuracy": 12.5}
+            ).encode("utf-8"),
+            "application/json",
+            token=b.token(),
+        )
+
+    health = json.loads(health_body)
+    assert health_status == 200, health
+    assert health["status"] == "ok"
+    assert health["endpoints"]["/say"] == ["POST"]
+
+    reply = json.loads(reply_body)
+    assert reply_status == 200, reply
+    assert reply["count"] == 1
+    assert reply["items"][0]["text"] == "the kettle is boiling"
+
+    where = json.loads(where_body)
+    assert where_status == 200, where
+    assert where["count"] == 0, "/where replayed a sentence the phone already showed"
+
+    assert location_status == 200, location_payload
+    assert location_payload["recorded"] is True
+    assert seen and seen[0].latitude == pytest.approx(38.7223)
+
+
+@pytest.mark.parametrize(
+    "content_type, body, expected",
+    [
+        ("text/plain", b'{"text": "hi"}', 415),
+        (None, b'{"text": "hi"}', 415),
+        ("application/json", b"not json at all", 400),
+        ("application/json", b"", 400),
+        ("application/json", b"[1, 2, 3]", 400),
+    ],
+)
+def test_say_reuses_the_text_routes_body_handling_exactly(
+    tmp_path, content_type, body, expected
+):
+    b = make_bridge(tmp_path)
+
+    with live_bridge(b) as port:
+        say_status, say_body = post_raw_over_socket(
+            port, "/say", body, content_type, token=b.token()
+        )
+        text_status, text_body = post_raw_over_socket(
+            port, "/text", body, content_type, token=b.token()
+        )
+
+    assert say_status == text_status == expected, (say_body, text_body)
+    assert json.loads(say_body)["error"]["code"] == json.loads(text_body)["error"][
+        "code"
+    ], "the same refusal is reported two different ways"
+
+
+def test_say_refuses_an_oversize_body_exactly_like_text(tmp_path):
+    b = make_bridge(tmp_path, max_body_bytes=32)
+    body = b'{"text": "' + b"x" * 64 + b'"}'
+
+    with live_bridge(b) as port:
+        say_status, say_body = post_raw_over_socket(
+            port, "/say", body, "application/json", token=b.token()
+        )
+        text_status, text_body = post_raw_over_socket(
+            port, "/text", body, "application/json", token=b.token()
+        )
+
+    assert say_status == text_status == 413, (say_body, text_body)
+    assert json.loads(say_body)["error"]["code"] == json.loads(text_body)["error"][
+        "code"
+    ]
+
+
+def test_say_with_an_unwired_queue_is_a_named_503(tmp_path):
+    b = make_bridge(tmp_path)
+    b._queue = None  # the construction the guard exists for
+
+    response = post_json(b, "/say", {"text": "good morning"})
+
+    assert response.status == 503
+    assert error_code(response) == "queue_unconfigured"
+
+
+def test_say_is_not_an_alias_and_the_alias_table_is_unchanged():
+    assert "/say" not in bridge.ROUTE_ALIASES
+    assert bridge.ENDPOINTS["/say"] == ("POST",)
+    assert bridge.ROUTE_ALIASES["/location"] == "/loc"
+    assert bridge.ROUTE_ALIASES["/where"] == "/reply"
+
+
+def test_a_say_post_with_no_content_length_is_still_a_named_411(tmp_path):
+    """The unframed-body rule is shared with /text, not re-implemented."""
+    b = make_bridge(tmp_path)
+    request = (
+        b"POST /say HTTP/1.1\r\n"
+        b"Host: 127.0.0.1\r\n"
+        b"Authorization: Bearer " + b.token().encode() + b"\r\n"
+        b"Connection: close\r\n\r\n"
+    )
+    with live_bridge(b) as port:
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+            raw.sendall(request)
+            raw.settimeout(5)
+            chunks = []
+            while True:
+                chunk = raw.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+
+    response = b"".join(chunks)
+    head, _, body = response.partition(b"\r\n\r\n")
+    assert b" 411 " in head.split(b"\r\n")[0], head
+    assert json.loads(body)["error"]["code"] == "length_required"

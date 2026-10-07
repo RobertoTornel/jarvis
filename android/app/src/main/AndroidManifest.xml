@@ -12,13 +12,32 @@
          declared here *and* requested at startForeground() time. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <!-- Photos on demand. -->
+    <!-- The location and camera service types, for continuous position reporting
+         and for taking a photo with no activity on screen.  Android 14+ refuses
+         startForeground() with a type whose permission is not declared here, and
+         refuses the type at runtime when the matching runtime permission has not
+         been granted.  See VoiceService.types() for how the mask is built
+         honestly from what has actually been granted. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- Photos on demand, and photos on Claire's own initiative. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Position on demand.  Coarse is requested too, because Android 12+ lets the
          owner grant only approximate location and an approximate answer is a real
          answer. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Position *continuously*: a separate, more invasive grant than the two
+         above, and on Android 11+ it can only be given from the system settings
+         screen ("Allow all the time").  The app asks for it, reports honestly
+         when it is missing, and keeps one-shot location working anyway. -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Survival, not data.  Both of these exist only to keep the microphone
+         service alive through MIUI's background killer; neither is granted by
+         install and both open a system screen the owner has to confirm.  See
+         SettingsActivity's "Survival" section. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- Knowing whether the laptop is reachable, so a dropped tailnet is reported
          instead of looking like a stalled transcription. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -52,10 +71,21 @@
              notification entry points; the camera activity is exported=false because
              it is started from a PendingIntent inside this app's own process, not
              from outside. -->
+        <!-- configChanges: MIUI re-sends a configuration change
+             (CONFIG_ORIENTATION|CONFIG_SCREEN_SIZE, logged as 536872064) many times
+             an hour on this phone, and without this attribute the platform destroys
+             and recreates the activity every single time — observed in logcat as
+             wm_relaunch_resume_activity -> handleRelaunchActivity -> performDestroy,
+             2026-10-07 00:36:09 and 00:51:44, all inside one PID.  On screen that is
+             "the app closed itself and opened again", and it also tore down the
+             activity's worker mid-request.  None of these layouts needs rebuilding
+             for a config change, so the activity now keeps its window and simply
+             lays itself out again. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|touchscreen|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -66,17 +96,26 @@
         <activity
             android:name=".CameraActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|touchscreen|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale"
             android:screenOrientation="portrait" />
 
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|touchscreen|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|layoutDirection|locale"
             android:label="@string/title_settings" />
 
+        <!-- One service, three types.  It is the microphone service and the
+             location service and the camera service at once, because three
+             separate foreground services would be three notifications and three
+             ways for MIUI to kill one of them without killing the others.  Each
+             type is only *requested* at startForeground() time when the matching
+             runtime permission is actually granted (see VoiceService.types()); a
+             declared-but-ungranted type would throw SecurityException. -->
         <service
             android:name=".VoiceService"
             android:exported="false"
-            android:foregroundServiceType="microphone"
+            android:foregroundServiceType="microphone|location|camera"
             android:stopWithTask="false" />
 
         <receiver
@@ -88,5 +127,21 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- The watchdog that re-arms the listening service after MIUI (or the
+             owner's swipe) has killed it.  Not exported: only this app's own
+             AlarmManager PendingIntents reach it. -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- The notification's own actions, so the shade can pause/resume and
+             take a photo without an activity coming to the front.  Exported=false:
+             nothing outside this app may poke the service. -->
+        <receiver
+            android:name=".ServiceActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
     </application>
 </manifest>

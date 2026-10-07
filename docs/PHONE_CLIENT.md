@@ -23,24 +23,28 @@ listening notification.
 
 ## 2. What was built, and where
 
-`android/` is a standalone Gradle project (`com.claire.companion`, versionCode 3,
-versionName 0.3.0, minSdk 24, targetSdk 35, AGP 8.5.2, Gradle 8.10.2, Java 17
-source level, built with JDK 21). Thirteen app classes (~3.6k lines of Java) plus
-three tools that run on the laptop:
+`android/` is a standalone Gradle project (`com.claire.companion`, versionCode 4,
+versionName 0.4.0, minSdk 24, targetSdk 35, AGP 8.5.2, Gradle 8.10.2, Java 17
+source level, built with JDK 21). Nineteen app classes plus three tools that run
+on the laptop, and an instrumentation test class (§8.1, §11):
 
 | Class | What it is |
 | --- | --- |
 | `ClaireWire.java` | The wire format and nothing else: WAV framing, JSON bodies, query encoding. Pure Java, no Android imports, so it can be compiled and run on the laptop — which is how its output was checked against the real bridge (§5). |
 | `AudioSegmenter.java` | The energy VAD: per-frame RMS and zero-crossing rate, an adaptive noise floor, a pre-roll ring, and a hangover. Decides where the owner's sentences start and stop. Pure Java, also laptop-runnable. |
 | `ClaireClient.java` | Every HTTP call, on `HttpURLConnection`. One credential, one way of presenting it. `Answer` carries either a status and a body or a transport failure; nothing throws for an HTTP answer. |
-| `VoiceService.java` | The foreground service. Holds the microphone open, segments, uploads, polls for Claire's replies, retries across a network drop, watches battery and audio focus. |
-| `Notifier.java` | Two channels (silent status, real alerts) and the notification actions Photo / Location / Pause. |
-| `MainActivity.java` | The one screen: the dot and the status line, the conversation list, a typed-message box, and Listen / Photo / Location / Settings. Permission onboarding and the link check. |
-| `CameraActivity.java` | CameraX preview, capture, review, send to `POST /see`. |
-| `LocationReporter.java` | One position on demand, with the three real failure states named (permission refused, services off, no fix). |
-| `SettingsActivity.java` | Address, port, token, photo question, and four switches. |
+| `VoiceService.java` | The foreground service: one service carrying `microphone|location|camera`. Holds the microphone open, segments, uploads, polls for Claire's replies, runs the always-on location stream and the periodic camera, retries across a network drop, watches battery and audio focus, and arms the watchdog. |
+| `ClaireState.java` | What this phone is doing right now: `Link`/`Mic`/`Loc`/`Cam` enums, a singleton, volatile fields, listeners on the main thread. The service writes it, the screen only reads it (§12.1). |
+| `Survival.java` | The two MIUI exemptions and the watchdog: battery exemption, `SYSTEM_ALERT_WINDOW`, `canRestartInBackground()` (which is exactly the overlay permission), and the inexact 15-minute repeating alarm. |
+| `Notifier.java` | Three channels (silent status, real alerts, camera) and the notification actions Photo / Pause / Resume / Stop, plus the nudge the watchdog posts when the platform refuses a restart. |
+| `CameraCapture.java` | The camera with no Activity: a `LifecycleOwner` the service drives itself, `ImageCapture` bound alone, in-memory captures. |
+| `ServiceActionReceiver.java` / `WatchdogReceiver.java` | The two non-exported receivers behind the notification's Pause/Resume/Stop and the watchdog alarm, both of which nudge rather than pretend when a start is refused. |
+| `MainActivity.java` | The one screen: a Material 3 status card (microphone, location, camera, link), the bubble conversation, the four hand-actions, the composer and permission onboarding. |
+| `CameraActivity.java` | CameraX preview, capture, review, send to `POST /see`, with the privacy sentence that says nothing leaves the phone until Send. |
+| `LocationReporter.java` | One position on demand, and `Continuous` — the always-on stream — with every real failure state named (permission refused, background denied, services off, no provider, failed). |
+| `SettingsActivity.java` | Address, port, token, photo question, the always-on switches (continuous location + interval, autonomous photos + period, watchdog), the permission rows, the two exemption rows, and four behaviour switches. |
 | `ClairePrefs.java` | Where those live. |
-| `Conversation.java` / `ConversationAdapter.java` | The conversation as the phone saw it: an append-only capped list mirrored to `files/conversation.jsonl`, and its adapter. |
+| `Conversation.java` / `ConversationAdapter.java` | The conversation as the phone saw it: an append-only capped list mirrored to `files/conversation.jsonl`, and its `RecyclerView` adapter with the long-press copy. |
 | `BootReceiver.java` | Posts a notification after a restart. Deliberately does not start the service (§6). |
 | `tools/WireSelfTest.java`, `tools/SegmenterSelfTest.java` | Laptop-runnable checks for the two pure-Java classes. |
 | `tools/PhoneE2E.java` | The end-to-end client: drives the app's own `ClaireWire` against a live bridge (§5). |
@@ -304,45 +308,174 @@ audio goes to the owner's own laptop and nowhere else. A voice-activity detector
 that claims to solve this with energy alone is lying; solving it properly needs
 speaker identification, which is a different piece of work.
 
-## 8. What was NOT verified, and what is blocked
+## 8. What was observed on the phone, and what was not
 
-* **The APK has never run on a phone.** Installation is blocked, and not by
-  anything in this repository. `adb install` against `502059fb`
-  (`25057RN09E`, Android 15) returns
-  `INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`, because the
-  handset's screen is `mWakefulness=Asleep` and MIUI refuses an install while it
-  is off. Waking it is not possible from here: `adb shell input keyevent` is
-  refused with `SecurityException: Injecting input events requires ... INJECT_EVENTS`.
-  `com.claire.companion` is not present on the device (`pm list packages`).
-  **This is a limitation of the environment, and it needs the owner's hands:**
-  wake and unlock the phone, ensure Developer options → *Install via USB* is on,
-  then `adb -s 502059fb install -r -t
-  android/app/build/outputs/apk/debug/app-debug.apk`.
-* Consequently **nothing about the running service has been observed**: not the
-  microphone, not the notification, not the camera, not the GPS, not the
-  doze behaviour, not the reconnect. The VAD and the wire format were verified
-  on the laptop; the service that glues them to Android was not.
-* The manifest was verified in the **built** APK, not in the source:
-  `foregroundServiceType=0x80` (microphone) on `VoiceService`, `BootReceiver`
-  with `BOOT_COMPLETED`, the ten permissions, `usesCleartextTraffic`, and exactly
-  three exported components: the launcher (`MainActivity`), `BootReceiver`, and
-  `androidx.profileinstaller.ProfileInstallReceiver` — the last of which is
-  injected by AndroidX, is guarded by `android.permission.DUMP`, and is not this
-  app's code. The camera and settings activities and the service are all
-  `exported="false"`. The APK is signed with this machine's debug key (v2
-  scheme), 4,534,145 bytes,
-  sha256 `a3715ba55da147d723d8882d879125f53eba5cf03728c7e62554c176a5884c71`.
-  Its three dex files contain the app's classes (`dexdump` finds `MainActivity`,
-  `VoiceService`, `ClaireClient`, `AudioSegmenter` and `ClaireWire` in
-  `classes3.dex`); the APK's bytes are therefore the code that was reviewed, not
-  a stale artefact.
-* **MIUI specifics are unverified**: Autostart, the do-not-kill list, and whether
-  this build's `registerDefaultNetworkCallback` survives MIUI's power
-  management. The code degrades rather than crashes when a registration is
-  refused, but that path is untested.
-* The vision and location paths were verified as *HTTP* (§5) and, for photos, the
-  bridge's own photo handling is unchanged and already tested. What was not
-  verified is `CameraActivity` producing a JPEG on this device.
+This section was rewritten on 2026-10-07 for versionCode 4 / versionName 0.4.0.
+The earlier text said "the APK has never run on a phone"; that stopped being true
+when the phone became reachable over wireless `adb` (tailnet, `adb connect
+100.68.123.69:37637`). What follows is only what was seen, with the command that
+showed it, and §8.2 lists everything still unproven.
+
+### 8.1 Observed
+
+* **Installed and running.** `adb install -r -t app-debug.apk` → `Success`;
+  `dumpsys package com.claire.companion` → `versionCode=4 versionName=0.4.0`,
+  `targetSdk=35`, on a Redmi `25057RN09E`, Android 15.
+* **One foreground service with all three types, requested at runtime.** After
+  the owner's taps (see §8.2), `dumpsys activity services com.claire.companion`:
+  `isForeground=true foregroundId=1001 types=0x000000C8`. `0xC8` is
+  `MICROPHONE (0x80) | CAMERA (0x40) | LOCATION (0x08)`. The mask is built from
+  what is actually granted, so this also proves the permissions were present at
+  `startForeground()` time.
+* **The notification says what is on, and degrades honestly.** `dumpsys
+  notification --noredact`, id 1001 on channel `claire.listening`, importance 2,
+  `flags=ONGOING_EVENT|ONLY_ALERT_ONCE|NO_CLEAR|FOREGROUND_SERVICE`, three
+  actions:
+  * `[0] "Photo" -> startActivity` (a user-initiated activity start, which is why
+    the camera may legally open from it),
+  * `[1] "Pause" -> broadcastIntent`, `[2] "Stop" -> broadcastIntent` (both to
+    `.ServiceActionReceiver`);
+  title `Claire is listening`, text
+  `Microphone open · Location only while the app is on screen · Camera ready
+  (Claire may ask)`. That middle clause is the honest degradation: it says
+  *only while the app is on screen* because `ACCESS_BACKGROUND_LOCATION` was not
+  granted, which is a different sentence from the one it shows when it is.
+* **Continuous location, reaching the bridge.** With continuous mode on at a 30 s
+  interval, the app wrote
+  `sharing location every 30 seconds (only while this app is on screen: "Allow
+  all the time" is not granted)` into the conversation, and the bridge's
+  `/health` then reported
+  `location={'accuracy_m': 13.5, 'latitude': 37.973541, 'longitude': -1.133373,
+  'received_at': ...}` — i.e. a real POST /location arrived from the phone.
+* **An autonomous photo, with the camera notice.** `POST /say
+  {"kind":"command","command":"photo"}` was drained by the app's reply poll
+  (`dumpsys`-free evidence: the conversation gained `Claire asked for a photo`
+  then `photo taken — Claire asked through the bridge`), and `dumpsys
+  notification` showed a **separate** notification, id 1004 on channel
+  `claire.capture`, importance 3, title `Claire took a photo`, text `Claire asked
+  through the bridge`. No activity was on screen. The camera is therefore
+  genuinely autonomous *and* never silent.
+* **The photo upload was attempted and its failure was reported honestly.** The
+  app logged `sending the photo was refused with HTTP 500 — {"error":
+  {"code":"photo_store_failed", ...}}`. The bridge could not write its photo
+  directory because that path is not writable inside the `claire.service`
+  sandbox on the laptop (§8.2, item 4) — a host-side fault, not the app's. The
+  app's behaviour on it is the point: the bridge's own error code and remedy went
+  into the conversation verbatim rather than being retried in a loop or swallowed.
+* **The watchdog alarm is armed.** `dumpsys alarm`:
+  `tag=*walarm*:com.claire.companion/.WatchdogReceiver`,
+  `type=ELAPSED_WAKEUP ... repeatInterval=900000`. Inexact, wakeup-capable, 15
+  minutes, and it fires with the device asleep.
+* **A full round trip through the microphone, live.** While the phone was in the
+  room and someone was talking to it, the conversation filled with `YOU` lines
+  transcribed by the bridge (`[parakeet_nemo]`), `PHONE` lines for delivery, and
+  `CLAIRE` replies which were then spoken aloud — `dumpsys audio` showed the
+  service taking `USAGE_ASSISTANT` focus for the duration of each reply. This is
+  the whole loop, observed rather than inferred.
+* **A defect the live run found, and the fix.** With `speak_replies` on and the
+  microphone open, the phone **heard Claire's own voice**, sent the transcription
+  back as the owner's words, and Claire answered herself — visible in
+  `files/conversation.jsonl` as the owner apparently saying *"Claire is already
+  answering."* The `VOICE_RECOGNITION` audio source is supposed to cancel the
+  speaker and on this handset it does not do so well enough. The capture loop now
+  drops the microphone's contribution for the duration of a reply (flushing the
+  half-sentence that was in flight first, because that one was really the owner),
+  with a timed guard so a silent TTS failure cannot leave the microphone deaf.
+* **Long-press copy, through the real clipboard.** This phone refuses
+  `adb shell input` outright (`Injecting input events requires ... INJECT_EVENTS`),
+  so the gesture was exercised by an instrumentation test inside the app's own
+  process (`android/app/src/androidTest/.../CompanionUiTest.java`): bind a real
+  conversation row, `performLongClick()` on the bubble, then read
+  `ClipboardManager.getPrimaryClip()`. **It passed**: the owner's message text was
+  on the clipboard, and the copy callback fired. The same single
+  `setOnLongClickListener` handles every row, so Claire's replies, the phone's own
+  lines and the system lines go through the identical path; the test also asserts
+  that a blank line reports failure instead of claiming a copy.
+* **The first screen, visually.** `adb exec-out screencap` of the running app
+  shows the Material 3 status card (Listening · connected chip; Microphone
+  listening; Location only while on screen; Camera ready; Laptop connected; last
+  fix), the three tonal actions, the bubble conversation with per-speaker colours,
+  the survival hint (`Tap to allow "Display over other apps" — without it Android
+  will not let the service restart itself after a kill`), and the composer with
+  the `Long-press a message to copy it` hint.
+
+### 8.2 Not observed, and what it would take
+
+1. **The notification's Pause and Stop buttons were never tapped**, and neither
+   was Photo. They cannot be: the receivers are `exported="false"` (correctly),
+   and input injection is denied by MIUI. The structural evidence is in
+   §8.1 — the three actions exist with the right `PendingIntent` kinds — but
+   *the taps themselves are unverified and need the owner*. The same is true of
+   tapping a conversation bubble by hand.
+2. **`ACCESS_BACKGROUND_LOCATION` was never granted**, so the always-on location
+   path is only proven in its *degraded* form (while the app is on screen). The
+   always-on form is what the code does when the permission is there; that
+   specific branch has not run on this handset. Android 11+ will not grant it from
+   inside the app — Settings → Permissions → Location → *Allow all the time* is
+   the only route, and the app's Settings screen has a row that opens exactly that
+   screen.
+3. **Surviving a real MIUI kill, doze, and a locked screen for hours was not
+   observed.** The alarm is armed (§8.1) and `SYSTEM_ALERT_WINDOW` is what makes an
+   automatic restart legal; nothing here can prove the restart until the phone is
+   left alone overnight with the exemptions granted. The app's own honest position
+   is in §12: with no overlay permission the watchdog may only *notify*.
+4. **The bridge's photo directory is read-only in its sandbox**, so no photo has
+   been stored end-to-end by the new code. The failure is
+   `OSError: [Errno 30] Read-only file system` on
+   `/home/mana/.cache/claire/phone/...`; `claire.service`'s mount namespace binds
+   `/home/mana/.config/claire` and `/home/mana/.local/share/claire` read-write but
+   not `/home/mana/.cache/claire`. This is a host configuration matter (the unit
+   is another writer's), and it is why "Claire received a photo" is not claimed:
+   she received the *request path* and answered with a named 500.
+5. **The Settings screen has not been photographed.** It is not exported, so
+   `am start` cannot open it; the instrumentation route that works for the
+   adapter does not survive being combined with other tests on this handset, and
+   `UiAutomation.takeScreenshot()` crashed the app under MIUI's own screenshot
+   pipeline. The layout compiles, every id in it is referenced by code that
+   compiles, and the same Material components render on the main screen — but the
+   screen itself was not seen, and that is stated rather than implied.
+6. **Runtime permissions were lost, and only the owner can restore them.** Running
+   the Gradle `connectedDebugAndroidTest` task on this handset uninstalled the app
+   (`com.claire.companion` was gone from `pm list packages`), which clears every
+   runtime grant. They cannot be put back from here: `pm grant` returns success
+   and changes nothing, and `adb install -g` is refused with *"You need the
+   android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS permission to use the
+   PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS flag"*. So the app on
+   the phone right now has **no** microphone, camera, location or notification
+   permission and **no token**, and the owner must grant them and re-enter the
+   host/token once. **Do not use `connectedAndroidTest` on this phone**; use
+   `adb install -r -t` plus `adb shell am instrument -w`, which does not uninstall
+   anything.
+7. **The verification session ended with the phone offline** (tailnet
+   `redmi-15-5g` offline, `ping` 100% loss) partway through the last test runs, so
+   the remaining on-device checks were not repeated. `adb connect` needs the
+   phone's wireless-debugging port again when it is back.
+
+### 8.3 Operator notes for the next run
+
+* Reconnect: `adb connect <tailnet-ip>:<port>`; the port is random per session.
+  `adb mdns services` does not find a phone that is only reachable over the
+  tailnet.
+* After the app is reinstalled, `wants_listening`, the token and the always-on
+  switches are gone. Set them by hand, or (debug build only)
+  `adb shell run-as com.claire.companion cp` a prepared
+  `shared_prefs/claire.xml` — `run-as` needs the app to be stopped, or its
+  in-memory copy overwrites the file.
+* Put a command on the bridge's reply queue without touching the phone:
+  `curl -X POST -H "X-Claire-Token: $TOKEN" -H 'Content-Type: application/json'
+  -d '{"kind":"command","command":"photo"}' http://<laptop>:8788/say`.
+  `/reply` is drain-once, so the phone is the only reader.
+* The evidence for a photo is a new file in the bridge's `photo_dir`; for a
+  location, the `location` key of `/health`.
+* **This tree is written by more than one person at a time.** As of
+  `2026-10-07 01:27` a second writer was mid-way through streaming Fish Audio TTS
+  in `FishTts.java` and had touched `VoiceService.java`, `ClairePrefs.java` and
+  `ClaireState.java`, so the APK that builds from the working tree is *not* the
+  one section 8 observed on the phone (that was sha256 `f7b5445b…`, 7,017,395
+  bytes; the later rebuild is sha256 `8f90f7dc…`, 7,148,623 bytes, with their
+  unfinished work in it). Rebuild and re-verify after the other writer lands, and
+  do not quote an APK hash without checking which edits it contains.
+
 
 ## 9. Security, stated plainly
 
@@ -415,13 +548,140 @@ curl -sSLo /tmp/json.jar https://repo1.maven.org/maven2/org/json/json/20240303/j
 Added under `android/`: the Gradle project (`build.gradle`, `settings.gradle`,
 `gradle.properties`, `local.properties`, `gradlew`, the wrapper, `.gitignore`),
 `app/build.gradle`, `app/proguard-rules.pro`, `app/src/main/AndroidManifest.xml`,
-the thirteen app classes and three tools listed in §2, and the resources
-(`values/{strings,colors,themes,arrays}.xml`, `drawable/ic_claire.xml`,
-`layout/{activity_main,activity_settings,activity_camera,item_conversation}.xml`,
-`xml/data_extraction_rules.xml`).
+the app classes and three tools listed in §2, and the resources
+(`values/{strings,colors,themes,arrays}.xml`, `drawable/*` — including the
+notification, state and action icons — `layout/{activity_main,activity_settings,
+activity_camera,item_conversation,row_setting_action}.xml`,
+`menu/main.xml`, `xml/data_extraction_rules.xml`).
+
+Added in 0.4.0 (§12): `ClaireState.java`, `Survival.java`, `Notifier.java`,
+`CameraCapture.java`, `ServiceActionReceiver.java`, `WatchdogReceiver.java`;
+`android/app/src/androidTest/java/com/claire/companion/CompanionUiTest.java`
+(instrumentation tests — see §8.2 item 6 before running anything Gradle-built on
+the phone). The 0.4.0 layouts are Material 3 across all three screens, and
+`ConversationAdapter` is a `RecyclerView.Adapter` rather than the `BaseAdapter`
+of 0.3.0.
 
 Changed in the Python side: `src/claire/phone/bridge.py` (port, `/transcribe`,
 aliases, legacy header, `decode_wav_audio`), `src/claire/phone/__init__.py`
 (exports), `src/claire/phone/bridge.spec.md` (the same, as specification),
 `tests/test_phone_bridge.py` (the tests for all of it, every one over a real
 socket).
+
+## 12. The 0.4.0 rework: design, always-on, and the limits
+
+Four asks, and what each one cost.
+
+### 12.1 It had to look like a finished app
+
+The 0.3.0 screens were hand-rolled `LinearLayout`s with `TextView` dumps and a
+`ListView`, and they looked like a debug harness because they were one. 0.4.0
+uses `com.google.android.material:material:1.12.0` properly: `AppTheme` is
+`Theme.Material3.Dark.NoActionBar` with the M3 role attributes filled in from a
+role-oriented palette, and the screens are built from `MaterialToolbar`,
+`MaterialCardView`, `MaterialSwitch` (inside `TextInputLayout`-free settings
+groups), `TextInputLayout`/`TextInputEditText`, `MaterialButton`, `Snackbar` and
+a `RecyclerView`.
+
+The important part is not the widgets, it is that **state is modelled rather than
+printed**. `ClaireState` is a small process-wide observable — `Link{UNKNOWN, OK,
+TOKEN_REFUSED, UNREACHABLE}`, `Mic{STOPPED, LISTENING, PAUSED, DENIED}`,
+`Loc{OFF, ALWAYS, WHILE_USING, DENIED, SERVICES_OFF}`, `Cam{OFF, ARMED,
+CAPTURING, DENIED}` — which the *service* writes as things change and the screen
+only reads. Before it, the UI inferred "listening" from a static field, the link
+status from whatever the last `/health` happened to say, and everything else from
+the last conversation line; that is how an app shows a green "listening" while the
+service is dead. The four states the owner named — connected, listening, offline,
+error — are now four enums with four colours, and the status card, the chip and the
+notification are all rendered from the same snapshot.
+
+Two smaller decisions worth keeping:
+
+* The conversation is bubbles, and the **shape carries the meaning**: the owner's
+  words right-aligned in blue-green, Claire's left-aligned in teal, and the
+  phone's own actions and failures full-width and dim. A photo being sent is not
+  something either person said, and drawing it as a speech bubble would be a small
+  lie about who is talking.
+* The two MIUI exemptions and every permission are **rows with a button**, not
+  switches. The app cannot grant itself `ACCESS_BACKGROUND_LOCATION` on Android
+  11+, and a switch that silently does nothing is worse than a sentence that says
+  what to do.
+
+### 12.2 Always listening, stated honestly
+
+One service, three foreground types
+(`microphone|location|camera`), and the type mask is computed from what has
+actually been granted (`VoiceService.types()`), because requesting a type whose
+permission is missing is a `SecurityException` at `startForeground()` time. When a
+permission arrives while the service runs, the mask is widened by calling
+`startForeground()` again — the only supported way — so always-on modes begin
+without a restart.
+
+`Survival.java` holds the two exemptions that decide whether an automatic restart
+is even *legal*, and it is deliberately blunt about it: Android 14 forbids
+starting a `microphone` foreground service from the background, and
+`SYSTEM_ALERT_WINDOW` is the documented exemption that makes it allowed. So
+`canRestartInBackground()` is exactly `Settings.canDrawOverlays()` — not
+"probably", not "sometimes". The watchdog is an inexact 15-minute repeating
+`ELAPSED_REALTIME_WAKEUP` alarm; when it fires and the service is gone it starts
+it, and **when the platform refuses it posts a notification instead**, naming the
+exception class it caught. There is no third path where it pretends.
+
+What still cannot be guaranteed, in the app's own words on the Settings screen:
+without "Display over other apps" an automatic restart will be refused; without an
+unrestricted battery MIUI may freeze listening with the screen off; and a boot
+cannot start the microphone at all, so `BootReceiver` offers a notification rather
+than a service. §8.2 records which of those were and were not observed.
+
+Two failure modes found and fixed during the live run, both worth naming because
+they are invisible in a unit test: the service now drops the microphone's
+contribution while Claire is speaking (§8.1), and the on-demand location answer
+sends a fresh fix even when continuous mode is already running, instead of
+answering "already sharing" and leaving the bridge's record stale.
+
+### 12.3 Always location
+
+Continuous mode is a `LocationManager` listener pair (GPS + network) owned by the
+service, with a configurable interval and an honest `Outcome` for every way it can
+fail: `PERMISSION_DENIED`, `BACKGROUND_DENIED`, `SERVICES_OFF`, `NO_PROVIDER`,
+`FAILED`. `hasBackground()` is API-gated (below Android 10 "background" is the
+same grant as "while using"), and the difference between the two is not hidden: it
+is in the notification text, in the status card, and in the conversation line
+written when continuous mode starts. The persistent notification says
+`Location every 60s` when it is truly always-on and `Location only while the app
+is on screen` when it is not. When the owner taps **Location**, or Claire asks
+through `/say`, a one-shot fix is requested and POSTed even if the stream is
+already running.
+
+### 12.4 Photos that are never a surprise
+
+Three ways a photo happens: the owner taps Photo in the app or in the
+notification; Claire asks with `{"kind":"command","command":"photo"}` through the
+bridge's reply queue; or a periodic timer the owner set (default: off). All three
+go through one method, and all three are *visible*:
+
+* every autonomous capture posts a notification on its own `claire.capture`
+  channel (id 1004, default importance, so it can be silenced by the owner without
+  silencing the status line),
+* a line goes into the conversation saying who asked, and
+* the status card's Camera row reads `ready (Claire may ask)` / `taking a photo` /
+  `off` / `permission missing`.
+
+The Settings switch **Autonomous photos** turns the reply-command and periodic
+paths off entirely, and when Claire asks while it is off the app writes *"Claire
+asked for a photo, but autonomous photos are switched off in Settings, so none was
+taken"* into the conversation rather than doing nothing. `CameraCapture` binds
+CameraX's `ImageCapture` alone (no preview) to a `LifecycleRegistry` the service
+drives itself, because a Service is not a `LifecycleOwner` and `bindToLifecycle`
+needs one. Captures are in-memory: no JPEG is written to flash, which is the right
+default for a picture of wherever the phone is pointing.
+
+### 12.5 Long-press to copy
+
+Every bubble, in both directions, copies its text on a long press and confirms it
+with a snackbar — `toast_copied`, or `toast_copy_failed` for a line with nothing
+in it. The gesture is the only thing the row does on touch; a tap deliberately
+does nothing, and the hint above the composer says so. §8.1 records the
+instrumentation test that observed the text arriving on the real clipboard, since
+this phone will not let a shell perform the gesture.
+

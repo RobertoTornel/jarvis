@@ -112,8 +112,15 @@ Parakeet. No code changes.
 - `stt_device`: `"cpu"` (default) or `"cuda"`. The value is recorded in the
   engine's identity; the Parakeet engine executes on CPU today, so `"cuda"` is
   reported honestly rather than silently ignored.
-- Set `stt_engine` to `"faster_whisper"` to make Whisper the authoritative
-  recogniser instead; the `whisper_*` settings in the next section then apply.
+- Set `stt_engine` to `"faster_whisper"` (or `"whisper"`) only if you
+  deliberately want Whisper as the recogniser instead; the `whisper_*` settings
+  in the next section then apply. **Whisper is opt-in only and never a
+  fallback:** with `"parakeet"` configured, `faster_whisper`/`mlx_whisper` are
+  not imported, no Whisper model is downloaded or loaded, and no memory is held
+  for one. Any other `stt_engine` value raises a named error instead of quietly
+  selecting an engine. If Parakeet cannot answer, the turn is reported as a
+  named, visible degradation (`⚠️ Voice transcript degraded: …`) — it is not
+  silently re-decoded by a second recogniser.
 
 #### Streaming zipformer - the always-on recogniser (optional)
 
@@ -138,10 +145,21 @@ one place a cheap, always-on partial transcript is worth having.
 </details>
 
 <details>
-<summary><strong>Speech Recognition (Whisper)</strong></summary>
+<summary><strong>Speech Recognition (Whisper — opt-in only)</strong></summary>
 
-These settings apply when `stt_engine` is `"faster_whisper"` (Whisper as the
-authoritative recogniser). With the default `"parakeet"` the keys are ignored.
+These settings apply when `stt_engine` is `"faster_whisper"` (or `"whisper"`):
+Whisper is then the explicitly configured recogniser. With the default
+`"parakeet"` every key in this section is dead configuration — it is read for
+nothing, and no Whisper backend is imported, downloaded or loaded.
+
+The keys that go dead on the Parakeet path are `whisper_model`,
+`whisper_backend`, `whisper_device`, `whisper_compute_type`, plus the
+low-confidence policy keys `whisper_min_confidence`,
+`whisper_no_speech_threshold`, `whisper_min_audio_duration`, `whisper_vad` and
+`whisper_min_word_length`. They are kept in the schema so the opt-in path stays
+a configuration change, not a code change. (`whisper_min_word_length` is in fact
+read by no code at all, on either path — it is a vestigial key, not something
+this change made dead.)
 
 #### Language Modes
 - **Multilingual** (default, 99 languages): `"whisper_model": "medium"`

@@ -29,8 +29,9 @@ deliberately tiny: one file, the standard library only (`http.server`, `json`,
 | endpoint | method | body | answer |
 | --- | --- | --- | --- |
 | `/text` | POST | `application/json` `{"text": "..."}` | `202` `{"ok":true,"accepted":true,"chars":n}` |
+| `/say` | POST | `application/json` `{"text":"..."}` **or** `{"command":"photo"\|"location", ...}` | `200` `{"ok":true,"queued":{...},"count":n}` |
 | `/see` | POST | raw image (`image/jpeg`/`image/png`/`image/webp`), question via `?question=` or `X-Claire-Question`; **or** `application/json` `{"image_base64":"...","question":"..."}` | `200` `{"ok":true,"seen":true,"description":"..."}` or a named not-seen failure |
-| `/loc` | POST | `application/json` `{"latitude":..,"longitude":..,"accuracy":..}` (`lat`/`lon`/`lng` accepted, `accuracy_m` too) | `200` `{"ok":true,"recorded":{...}}` |
+| `/loc` | POST | `application/json` `{"latitude":..,"longitude":..,"accuracy":..}` (`lat`/`lon`/`lng` accepted, `accuracy_m` too) | `200` `{"ok":true,"recorded":true,"accuracy_m":..,"received_at":..}` — acknowledged, never read back |
 | `/reply` | GET | — | `200` `{"ok":true,"items":[...],"count":n}` — drained, once |
 | `/health` | GET | — | `200` reachability, capability verdict, **masked** token handle |
 | `/transcribe` | POST | raw audio (`audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave`); a RIFF/WAVE body is also accepted under any declared type | `200` `{"ok":true,"text":"...","chars":n,"accepted":bool,"delivered":bool,"engine":"...","seconds":s,"sample_rate":h}` |
@@ -91,6 +92,42 @@ over a real socket, including that `/where` still drains rather than replays.
 `/reply` drains: the first call returns the queue and empties it, the next
 returns `items: []`. A queue that replayed the same sentence on every poll would
 make the phone say "yes?" forever.
+
+### 2.4 `/say` is the channel back, and it exists because the bridge is a process
+
+`/text`, `/see`, `/loc` and `/transcribe` all carry something *from* the phone
+*to* Claire. `/say` carries the other way: Claire's own processes put an item
+into the same drain-once queue that `GET /reply` serves. It exists because the
+bridge normally runs as its own process — `python -m claire.phone serve` — so the
+voice loop cannot call `ReplyQueue.put_text()` on the live queue; it has to speak
+to the bridge over HTTP like any other client. Before this route there was no way
+for the daemon to push a sentence, or a command, to the phone except by being the
+same process as the bridge.
+
+The body is `application/json` and is one of:
+
+* `{"text": "good morning"}` — queued exactly as `ReplyQueue.put_text()` queues
+  it, `{"kind":"text","text":"good morning"}`;
+* `{"command": "photo"}` or `{"command": "location"}` — queued as
+  `{"kind":"command","command":"photo"}`. `kind` defaults to `command` when a
+  `command` key is present and to `text` otherwise; an explicit `kind` always
+  wins, so `{"text":"...","kind":"command","command":"photo"}` is a command that
+  still carries the text;
+* any other keys (`question`, `id`, …) are preserved verbatim, which is how a
+  photo request carries the question the phone should put to its camera.
+
+The command vocabulary is closed and tiny — exactly **`photo`** and
+**`location`**, the two things the shipped phone client already implements. A
+`kind` of `command` with a missing or unknown `command` is a named `400
+say_rejected` whose message *and* remedy name the whole vocabulary; a body with
+neither `text` nor `command`, and an empty or whitespace-only `text`, are named
+`400`s too. Nothing is queued on a refusal, so a bad `/say` cannot leave a
+half-formed item for the phone to render.
+
+The answer is `200 {"ok":true,"queued":<the item as stored>,"count":n}`, where
+`count` is the queue depth **after** the enqueue — the same number `/health`
+reports as `queue_depth`. `/reply` still drains: an item queued by `/say` is
+handed out exactly once, by the next poll, and never again.
 
 ## 3. The five invariants, and how each is enforced
 

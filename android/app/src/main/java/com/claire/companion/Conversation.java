@@ -255,29 +255,103 @@ public final class Conversation {
      */
     public static List<String> repliesFrom(String body) {
         List<String> replies = new ArrayList<>();
+        for (Item item : itemsFrom(body)) {
+            if (!item.text.isEmpty()) {
+                replies.add(item.text);
+            }
+        }
+        return replies;
+    }
+
+    /** What kind of thing the bridge handed the phone. */
+    public enum Kind {
+        /** A sentence for Claire to have said. */
+        TEXT,
+        /** Something the phone is being asked to do. */
+        COMMAND,
+        /** A shape this app does not know, kept so it can be reported rather than lost. */
+        UNKNOWN
+    }
+
+    /**
+     * One item out of {@code GET /reply}, as a typed thing rather than a string.
+     *
+     * <p>Before commands existed, everything the bridge returned was a sentence. Now the
+     * same drain-once queue carries both "Claire says…" and "Claire asks for…", and the
+     * phone has to tell them apart before it renders one as a bubble and acts on the
+     * other. That distinction is a {@link Kind}, not a string comparison scattered
+     * through the service.
+     */
+    public static final class Item {
+        public final Kind kind;
+        public final String text;
+        public final String command;
+        public final String question;
+
+        Item(Kind kind, String text, String command, String question) {
+            this.kind = kind;
+            this.text = text;
+            this.command = command;
+            this.question = question;
+        }
+    }
+
+    /**
+     * Parse a {@code GET /reply} body into typed items.
+     *
+     * <p>The bridge returns
+     * {@code {"ok":true,"items":[{"kind":"text","text":"..."}, {"kind":"command","command":"photo"}]}}.
+     * An item whose {@code kind} is missing is a text item if it has text and a command
+     * item if it has a command, which is what makes the older bridge (and the older
+     * phone app) keep working in both directions. Anything else is reported as an
+     * unreadable item rather than dropped: a phone that silently discards Claire's
+     * answer is exactly the failure this project refuses.
+     */
+    public static List<Item> itemsFrom(String body) {
+        List<Item> items = new ArrayList<>();
+        if (body == null) {
+            return items;
+        }
         try {
             JSONObject root = new JSONObject(body);
-            JSONArray items = root.optJSONArray("items");
-            if (items == null) {
-                return replies;
+            JSONArray array = root.optJSONArray("items");
+            if (array == null) {
+                return items;
             }
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject item = items.optJSONObject(i);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject item = array.optJSONObject(i);
                 if (item == null) {
-                    String raw = items.optString(i, "").trim();
+                    String raw = array.optString(i, "").trim();
                     if (!raw.isEmpty()) {
-                        replies.add(raw);
+                        items.add(new Item(Kind.TEXT, raw, "", ""));
                     }
                     continue;
                 }
+                String kind = item.optString("kind", "").trim().toLowerCase(Locale.ROOT);
                 String text = item.optString("text", "").trim();
-                if (!text.isEmpty()) {
-                    replies.add(text);
+                String command = item.optString("command", "").trim().toLowerCase(Locale.ROOT);
+                String question = item.optString("question", "").trim();
+                Kind resolved;
+                if ("command".equals(kind)) {
+                    resolved = Kind.COMMAND;
+                } else if ("text".equals(kind)) {
+                    resolved = Kind.TEXT;
+                } else if (!command.isEmpty()) {
+                    resolved = Kind.COMMAND;
+                } else if (!text.isEmpty()) {
+                    resolved = Kind.TEXT;
+                } else {
+                    resolved = Kind.UNKNOWN;
                 }
+                items.add(new Item(resolved,
+                        text,
+                        command,
+                        question));
             }
         } catch (Exception error) {
-            replies.add("reply could not be read: " + error.getMessage());
+            items.add(new Item(Kind.UNKNOWN, "reply could not be read: " + error.getMessage(),
+                    "", ""));
         }
-        return replies;
+        return items;
     }
 }

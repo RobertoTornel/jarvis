@@ -11,6 +11,7 @@ import time
 import signal
 import threading
 import contextlib
+from collections import deque
 
 # Fix OpenBLAS threading crash in bundled apps (must be before numpy imports)
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
@@ -36,7 +37,6 @@ if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
         pass
 
 from typing import Any, Optional
-from faster_whisper import WhisperModel
 
 from .config import load_settings
 from .memory.db import Database
@@ -45,6 +45,7 @@ from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
 from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
 from .listening.listener import VoiceListener
+from .listening.wake_detection import is_wake_word_detected
 from .utils.location import get_location_context, is_location_available
 
 
@@ -524,6 +525,7 @@ def submit_text_query(
     on_complete=None,
     on_busy=None,
     use_ipc: bool = False,
+    wait_until_free: bool = False,
 ) -> None:
     """Submit a text query to the reply engine (fire-and-forget).
 
@@ -536,6 +538,12 @@ def submit_text_query(
     event rather than queued. A running query can be cancelled with
     ``cancel_active_chat_query``; the reply is then dropped (``complete(None)``)
     rather than displayed.
+
+    ``wait_until_free=True`` changes only that middle sentence: instead of
+    reporting ``busy``, this call blocks on the shared query lock and runs when
+    the engine is free.  The chat window keeps the default, because there a
+    person can see the "busy" and choose; the phone's single dispatcher thread
+    passes the flag, because there the alternative is losing what the owner said.
     """
     if not text or not text.strip():
         return
@@ -563,8 +571,12 @@ def submit_text_query(
         _notify_chat("complete", None, callbacks=callbacks, use_ipc=use_ipc)
         return
 
-    # One query at a time: voice and text share the lock.
-    if not _chat_query_lock.acquire(blocking=False):
+    # One query at a time: voice and text share the lock.  ``wait_until_free``
+    # makes this a queue of one rather than a refusal, which is what the phone's
+    # dispatcher relies on so a second sentence is answered instead of dropped.
+    if wait_until_free:
+        _chat_query_lock.acquire()
+    elif not _chat_query_lock.acquire(blocking=False):
         _notify_chat("busy", None, callbacks=callbacks, use_ipc=use_ipc)
         debug_log("chat query rejected: another query is running", "chat")
         return
@@ -913,6 +925,458 @@ def _check_and_update_diary(
         _notify("complete", False)
 
 
+# --------------------------------------------------------------------------- #
+# The phone bridge: the loop's second intake
+# --------------------------------------------------------------------------- #
+
+#: How long the phone bridge keeps trying to bind before giving up, and how long
+#: it waits between attempts.  The bind is early and cheap, but the address it
+#: needs (the tailnet IP) appears late at boot, so this is deliberately generous.
+PHONE_BRIDGE_BIND_TIMEOUT_SEC = 180.0
+PHONE_BRIDGE_BIND_RETRY_SEC = 5.0
+
+#: The serving bridge, so a reply can be pushed back to the phone. Set by
+#: :func:`_start_phone_bridge`; None when the bridge is off.
+_phone_bridge: Any = None
+
+#: How long after Claire's last spoken word a phone transcript is still discarded
+#: as her own echo.  The phone's audio reaches the bridge over the network a beat
+#: after it was captured, and her voice reaches the phone's microphone through the
+#: speaker at the same moment it reaches ``is_speaking()``; without a tail window
+#: the last words of a sentence land just after ``is_speaking()`` has gone False
+#: and are answered as if the owner had said them.
+PHONE_ECHO_GRACE_SEC = 1.5
+
+#: What the phone's ambient room sounded like, newest last.  Bounded, and never
+#: sent to the reply engine: this is the "keep it, then wait to be called" half of
+#: the contract.  The conversation itself lives in the shared dialogue memory, and
+#: only an addressed utterance is allowed to write into it.  Kept so the decision
+#: is auditable and so a later change can offer the room as context without
+#: re-plumbing the sink.
+_PHONE_AMBIENT: "deque[str]" = deque(maxlen=8)
+
+#: Guard for the ambient buffer and the queue below.
+_phone_lock = threading.Lock()
+
+#: Set while Claire's own voice is audible, so the moment it stops can be stamped.
+_phone_was_speaking = False
+_phone_speech_ended_at = 0.0
+
+#: Utterances the owner addressed to Claire that the reply engine had not started
+#: on yet, oldest first.  Bounded: an unbounded queue against a hung engine is a
+#: memory leak, and a cap this small is still far more than a person speaks while
+#: waiting for one answer.
+PHONE_QUEUE_MAX = 16
+_phone_queue: "deque[str]" = deque()
+_phone_dispatching = False
+
+
+def phone_utterance_decision(
+    text: str,
+    *,
+    kind: str,
+    speaking: bool,
+    seconds_since_speech: Optional[float],
+    wake_word: str,
+    aliases: Any,
+    fuzzy_ratio: float,
+) -> str:
+    """Decide what to do with one phone utterance, as a pure function.
+
+    Returns ``"answer"`` (it was addressed to Claire), ``"ambient"`` (it was the
+    room, so keep it and do not reply) or ``"echo"`` (it was Claire's own voice
+    coming back through the phone's microphone).  Split out from the sink because
+    this is the decision the feedback loop turned on, and a pure function can be
+    tested at every corner of it without a database, a model or a socket.
+
+    ``kind`` is the bridge's own tag: ``"text"`` for ``POST /text``, ``"transcript"``
+    for ``POST /transcribe``.  A typed sentence is addressed by construction -- no
+    microphone was involved, so it cannot be Claire's voice returning, and typing
+    into the phone is as deliberate as typing into the laptop's chat window, which
+    has never needed a wake word.  Ambient audio is the opposite case, and it is
+    the path the loop ran through, so the wake word is required there and only
+    there.
+    """
+    if kind == "text":
+        return "answer"
+    if speaking:
+        return "echo"
+    if seconds_since_speech is not None and seconds_since_speech < PHONE_ECHO_GRACE_SEC:
+        return "echo"
+    lowered = (text or "").strip().lower()
+    names = {str(wake_word or "").strip().lower()}
+    for alias in aliases or ():
+        alias = str(alias or "").strip().lower()
+        if alias:
+            names.add(alias)
+    names.discard("")
+    if not names:
+        # Misconfigured to the point of having no name at all: refusing to answer
+        # is the honest failure, because answering everything is the bug.
+        return "ambient"
+    primary = str(wake_word or "").strip().lower() or sorted(names)[0]
+    if is_wake_word_detected(lowered, primary, sorted(names), fuzzy_ratio):
+        return "answer"
+    return "ambient"
+
+
+def _phone_speech_state() -> tuple:
+    """Whether Claire is speaking now, and how long ago she stopped.
+
+    The TTS engine is asked, never assumed: an engine that could not start reports
+    ``is_speaking() == False`` honestly, and this must not treat that as "audible".
+    """
+    global _phone_was_speaking, _phone_speech_ended_at
+    tts = get_tts_engine()
+    speaking = False
+    if tts is not None:
+        try:
+            speaking = bool(tts.is_speaking())
+        except Exception:  # noqa: BLE001 - a broken engine is not "speaking"
+            speaking = False
+    now = time.monotonic()
+    with _phone_lock:
+        if speaking:
+            _phone_was_speaking = True
+            _phone_speech_ended_at = 0.0
+        elif _phone_was_speaking:
+            _phone_was_speaking = False
+            _phone_speech_ended_at = now
+        ended = _phone_speech_ended_at
+    if speaking:
+        return True, None
+    if not ended:
+        return False, None
+    return False, now - ended
+
+
+def _phone_enqueue(text: str) -> None:
+    """Put an addressed utterance on the phone queue and make sure it drains.
+
+    Exactly one dispatcher thread exists at a time.  It blocks on the shared query
+    lock rather than probing it, so a second thing the owner says while Claire is
+    answering the first is *waiting*, not refused -- the previous behaviour told
+    them to "send that again in a moment", which loses the words.
+    """
+    global _phone_dispatching
+    text = str(text or "").strip()
+    if not text:
+        return
+    with _phone_lock:
+        if len(_phone_queue) >= PHONE_QUEUE_MAX:
+            debug_log("phone queue full: refusing the newest utterance", "phone")
+            return
+        _phone_queue.append(text)
+        start = not _phone_dispatching
+        if start:
+            _phone_dispatching = True
+    if start:
+        threading.Thread(
+            target=_phone_drain_queue, name="claire-phone-queue", daemon=True
+        ).start()
+
+
+def _phone_drain_queue() -> None:
+    """Answer queued phone utterances in order, one at a time."""
+    global _phone_dispatching
+    while True:
+        with _phone_lock:
+            if not _phone_queue:
+                _phone_dispatching = False
+                return
+            text = _phone_queue.popleft()
+        try:
+            _phone_answer(text)
+        except Exception as exc:  # noqa: BLE001 - one bad turn must not stop the queue
+            debug_log(f"phone queue turn failed ({type(exc).__name__})", "phone")
+
+
+def _phone_answer(text: str) -> None:
+    """Run one phone utterance through the shared reply engine."""
+    bridge = _phone_bridge
+
+    def on_complete(reply: Any) -> None:
+        """Queue Claire's answer for the phone's next ``GET /reply``.
+
+        ``_notify_chat`` passes the payload straight through (``cb(data)``), and
+        for the ``complete`` event that payload is the reply TEXT - the string
+        ``run_reply_engine`` returned - or None when the call failed.  It is not
+        a success flag; reading it as one silently queues nothing, which is
+        exactly the bug this docstring exists to stop anyone repeating.
+        """
+        if bridge is None:
+            return
+        answer = str(reply).strip() if reply is not None else ""
+        if answer:
+            bridge.push_reply(answer)
+            debug_log(f"phone reply queued ({len(answer)} chars)", "phone")
+        else:
+            # Say so on the phone rather than leaving the owner waiting on a reply
+            # that is never coming.
+            bridge.push_reply(
+                "[Claire could not answer that - the model call failed or returned nothing.]"
+            )
+
+    def on_busy() -> None:
+        # Unreachable through the queue (the dispatcher waits for the lock), kept
+        # as the honest report if that ever stops being true.
+        if bridge is not None:
+            bridge.push_reply(
+                "[Claire is already answering something else; send that again in a moment.]"
+            )
+
+    debug_log(f"phone utterance accepted ({len(text)} chars)", "phone")
+    submit_text_query(
+        text, on_complete=on_complete, on_busy=on_busy, wait_until_free=True
+    )
+
+
+def _phone_utterance_sink(utterance: Any) -> None:
+    """Decide what one phone utterance is, and answer only what was addressed.
+
+    This is the sink the bridge's ``sink_unconfigured`` error asks for.  What it
+    accepts is routed through :func:`submit_text_query`, which runs the shared
+    reply engine and the shared dialogue memory - so a sentence typed on the phone
+    and a sentence spoken into the microphone are ONE conversation, not two.
+
+    What it refuses is the point.  The phone's microphone is always open, so
+    ``/transcribe`` carries the whole room, including Claire's own voice coming
+    out of the phone's speaker.  Every one of those used to be sent straight to
+    the reply engine, so she heard herself, answered, heard the answer, and
+    answered again - indefinitely.  Now an ambient utterance that does not name
+    her is kept (bounded, in :data:`_PHONE_AMBIENT`) and never answered, and an
+    utterance that arrives while she is speaking, or within
+    :data:`PHONE_ECHO_GRACE_SEC` of her last word, is dropped as echo without even
+    being kept, because it is her own voice rather than the room.
+
+    The gate is :func:`is_wake_word_detected` - the loop's own matcher, not a
+    second one - so the phone and the laptop wake her on exactly the same words,
+    with exactly the same tolerance for a mishearing.
+
+    An addressed utterance goes on the queue (:func:`_phone_enqueue`) instead of
+    being refused when the engine is busy, because "send that again in a moment"
+    throws the owner's words away.
+
+    The utterance text is deliberately not logged: it is the owner's speech, and
+    the daemon log is not the place for it.  Only its length is.
+    """
+    utterance = utterance or {}
+    text = str(utterance.get("text") or "").strip()
+    if not text:
+        return
+
+    cfg = _global_cfg
+    kind = str(utterance.get("kind") or "transcript").strip().lower()
+    speaking, since = _phone_speech_state()
+    verdict = phone_utterance_decision(
+        text,
+        kind=kind,
+        speaking=speaking,
+        seconds_since_speech=since,
+        wake_word=str(getattr(cfg, "wake_word", "claire") or "claire"),
+        aliases=getattr(cfg, "wake_aliases", None),
+        fuzzy_ratio=float(getattr(cfg, "wake_fuzzy_ratio", 0.82) or 0.82),
+    )
+
+    if verdict == "echo":
+        # Claire's own voice, not the room: do not keep it either, or the next
+        # addressed question would be answered against a transcript of her.
+        debug_log(f"phone transcript dropped as echo ({len(text)} chars)", "phone")
+        return
+
+    if verdict == "ambient":
+        with _phone_lock:
+            _PHONE_AMBIENT.append(text)
+        debug_log(
+            f"phone ambient utterance kept, not answered ({len(text)} chars)", "phone"
+        )
+        return
+
+    if kind == "text":
+        debug_log(f"phone typed utterance accepted ({len(text)} chars)", "phone")
+    else:
+        debug_log(f"phone utterance addressed to Claire ({len(text)} chars)", "phone")
+
+    _phone_enqueue(text)
+
+
+def _warm_phone_recogniser(host: str, port: int, token: str) -> None:
+    """Pay the recogniser's one-time cost at startup instead of on the owner.
+
+    Measured with a real 3.6 s utterance against the live bridge:
+
+        first call after a fresh start : 21.94 s   (0.2x realtime)
+        second call                    :  0.07 s   (52.7x realtime)
+
+    So the model is not slow - building it is, and it used to happen on the
+    owner's first sentence, which the phone experiences as a ~22 s hang because
+    its read timeout is 120 s.  One dummy transcribe at startup moves that cost
+    where nobody is waiting for it.
+    """
+    import http.client
+    import io
+    import json
+    import time
+    import wave
+
+    # 0.2 s of silence at 16 kHz mono 16-bit - the smallest thing that is still a
+    # real WAV, so it exercises the same route a real utterance takes.
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x00\x00" * 3200)
+    body = buf.getvalue()
+
+    started = time.time()
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=300)
+        conn.request(
+            "POST",
+            "/transcribe",
+            body=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "audio/wav",
+                "Content-Length": str(len(body)),
+            },
+        )
+        response = conn.getresponse()
+        response.read()
+        elapsed = time.time() - started
+        if response.status == 200:
+            debug_log(
+                f"phone bridge warmed the recogniser in {elapsed:.1f}s "
+                "(the first phone utterance no longer pays it)",
+                "phone",
+            )
+        else:
+            debug_log(
+                f"phone bridge warm-up returned {response.status} after "
+                f"{elapsed:.1f}s; the first phone utterance will pay the cost",
+                "phone",
+            )
+        conn.close()
+    except Exception as exc:  # noqa: BLE001 - warming must never be fatal
+        debug_log(
+            f"phone bridge warm-up failed ({type(exc).__name__}); the first phone "
+            "utterance will pay the cost",
+            "phone",
+        )
+
+
+def _start_phone_bridge(listener: Any = None) -> None:
+    """Serve the bridge from THIS process, wired to THIS loop.
+
+    Run separately (``python -m claire.phone serve``) the bridge has no loop to
+    deliver into and can only answer "no utterance sink is wired up" - which is
+    exactly what the owner hit.  Started here, its sink is the running daemon, so
+    a phone utterance reaches the same conversation as speech.
+
+    ``listener`` is the running VoiceListener, and it supplies the recogniser: the
+    bridge is given the SAME authoritative engine the voice loop uses, not a
+    second one.  Left to itself the bridge builds its own Parakeet, and two NeMo
+    instances on one GPU is not a doubling of memory but a CUDA fault -
+    ``an illegal memory access was encountered`` - which made every
+    ``/transcribe`` return 502 while voice carried on working.
+
+    Opt out with ``CLAIRE_PHONE_BRIDGE=0``.  A non-loopback bind additionally
+    requires ``CLAIRE_PHONE_ALLOW_PUBLIC=1``: reaching the bridge from a phone
+    means listening on the tailnet, and opening a port to a whole network must
+    never be something that happens by accident.
+    """
+    if os.environ.get("CLAIRE_PHONE_BRIDGE", "1").strip().lower() in ("0", "false", "no"):
+        debug_log("phone bridge disabled by CLAIRE_PHONE_BRIDGE", "phone")
+        return
+
+    host = (os.environ.get("CLAIRE_PHONE_HOST") or "").strip() or None
+    port_text = (os.environ.get("CLAIRE_PHONE_PORT") or "").strip()
+    port = int(port_text) if port_text.isdigit() else None
+    allow_public = (
+        os.environ.get("CLAIRE_PHONE_ALLOW_PUBLIC", "0").strip().lower()
+        in ("1", "true", "yes")
+    )
+
+    def _serve() -> None:
+        """Bind, serve, then warm - retrying the bind until the network is up.
+
+        The bind has to wait for the tailnet address to exist.  At boot Claire
+        starts from ``default.target`` while Tailscale is still coming up, and a
+        bind to an address that is not there yet fails immediately - which is
+        exactly how the bridge bound fine on a restart but was missing after a
+        reboot.  So keep trying for a couple of minutes instead of giving up on
+        the first attempt.
+        """
+        import time as _time
+
+        from .phone.bridge import PhoneBridge, create_server
+
+        transcriber_factory = None
+        if listener is not None:
+            # Reuse the loop's authoritative recogniser rather than building a
+            # second one. Private on purpose: it is the engine's single owner,
+            # and reaching it any other way would create a rival instance.
+            transcriber_factory = getattr(
+                listener, "_get_authoritative_stt_engine", None
+            )
+
+        bridge = PhoneBridge(
+            sink=_phone_utterance_sink, transcriber_factory=transcriber_factory
+        )
+
+        deadline = _time.monotonic() + PHONE_BRIDGE_BIND_TIMEOUT_SEC
+        attempt = 0
+        server = None
+        while True:
+            attempt += 1
+            try:
+                server = create_server(
+                    bridge, host=host, port=port, allow_public_bind=allow_public
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - retry, then give up honestly
+                if _time.monotonic() >= deadline:
+                    debug_log(
+                        f"phone bridge gave up binding after {attempt} attempts "
+                        f"({type(exc).__name__}: {exc}); voice is unaffected",
+                        "phone",
+                    )
+                    return
+                if attempt == 1:
+                    debug_log(
+                        f"phone bridge waiting for the network to accept a bind "
+                        f"({type(exc).__name__}); retrying",
+                        "phone",
+                    )
+                _time.sleep(PHONE_BRIDGE_BIND_RETRY_SEC)
+
+        global _phone_bridge
+        _phone_bridge = bridge
+        threading.Thread(
+            target=server.serve_forever, name="claire-phone-bridge", daemon=True
+        ).start()
+        bound_host, bound_port = server.server_address[0], server.server_address[1]
+        print(
+            f"\U0001f4f1 Phone bridge listening on http://{bound_host}:{bound_port}",
+            flush=True,
+        )
+        debug_log(f"phone bridge serving on {bound_host}:{bound_port}", "phone")
+        try:
+            token = bridge.token()
+        except Exception as exc:  # noqa: BLE001
+            debug_log(
+                f"phone bridge warm-up skipped, no token ({type(exc).__name__})",
+                "phone",
+            )
+            return
+        _warm_phone_recogniser(bound_host, bound_port, token)
+
+    threading.Thread(
+        target=_serve, name="claire-phone-serve", daemon=True
+    ).start()
+
+
 def main(smoke_test: bool = False) -> None:
     """Main daemon entry point.
 
@@ -941,17 +1405,19 @@ def main(smoke_test: bool = False) -> None:
     debug_log("daemon started", "claire")
     print("✓ Daemon started", flush=True)
     print(f"🧠 Using chat model: {cfg.llm_chat_model}", flush=True)
-    # Name the recogniser that actually transcribes turns. This banner said
-    # "Using whisper model: <name>" unconditionally, which described the
-    # degraded fallback as if it were the design - misleading once the
-    # authoritative Parakeet engine (D3/D4) is what answers. Whisper is still
-    # reported, because it is the documented fallback and its model matters.
-    _stt_name = str(getattr(cfg, "stt_engine", "") or "whisper").strip().lower()
-    if _stt_name in ("", "whisper"):
+    # Name the recogniser that actually transcribes turns. This banner first
+    # said "Using whisper model: <name>" unconditionally, then promised
+    # "(whisper <model> is the degraded fallback)". Both are false now that
+    # Whisper is opt-in only (decision D4: one listening model): with Parakeet
+    # configured nothing imports or loads a second engine, so advertising a
+    # Whisper fallback would be a lie printed at every boot. Whisper is named
+    # only when it is the explicitly configured recogniser.
+    _stt_name = str(getattr(cfg, "stt_engine", "") or "parakeet").strip().lower()
+    if _stt_name in ("whisper", "faster_whisper", "faster-whisper"):
         print(f"🎤 Using whisper model: {cfg.whisper_model}", flush=True)
     else:
-        print(f"🎤 Authoritative recogniser: {_stt_name} "
-              f"(whisper {cfg.whisper_model} is the degraded fallback)", flush=True)
+        print(f"🎤 Authoritative recogniser: {_stt_name or 'parakeet'} "
+              f"(the one listening model; no fallback engine)", flush=True)
 
     # MCP preflight: discover and cache external MCP tools
     mcps = getattr(cfg, "mcps", {}) or {}
@@ -1102,6 +1568,11 @@ def main(smoke_test: bool = False) -> None:
         on_low_confidence=_queue_low_confidence,
     )
     voice_thread.start()
+
+    # The phone's intake. Wired AFTER the listener so the sink reaches a live
+    # loop; it is a background thread, so a bridge that cannot bind (or a
+    # recogniser that cannot load) never delays or breaks voice.
+    _start_phone_bridge(voice_thread)
 
     if smoke_test:
         print("SMOKE_TEST_INIT_OK", flush=True)

@@ -30,7 +30,11 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture
 def synthetic_listener(monkeypatch):
+    # ``stt_engine='faster_whisper'`` makes ``_transcribe_audio`` — the
+    # deterministic stub these tests inject — the active decode path. With the
+    # production default (Parakeet) that path is unreachable by design.
     cfg = replace(load_settings(), voice_debug=False, vad_enabled=False,
+                  stt_engine='faster_whisper',
                   whisper_backend='faster-whisper', whisper_device='cpu')
     monkeypatch.setattr(capture, 'create_intent_judge', lambda _cfg: None)
     monkeypatch.setattr(capture, 'FASTER_WHISPER_AVAILABLE', True)

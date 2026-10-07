@@ -1,20 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- One conversation row.
+
+     The shape carries the meaning: the owner's words and Claire's words are bubbles
+     pushed to opposite sides with different container colours, while the phone's own
+     actions and the failures are full-width, quieter, and labelled — because "the
+     phone sent a photo" is not something either person said, and rendering it as a
+     bubble would be a small lie about who is talking.
+
+     Long-pressing the bubble copies it; that is wired in ConversationAdapter and it is
+     why the bubble is clickable/focusable. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:paddingTop="8dp"
-    android:paddingBottom="8dp">
+    android:paddingTop="5dp"
+    android:paddingBottom="5dp">
 
     <TextView
-        android:id="@+id/line_meta"
+        android:id="@+id/who"
         style="@style/MetaText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="2dp"
+        android:text="@string/who_phone" />
 
-    <TextView
-        android:id="@+id/line_text"
-        style="@style/RowText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/bubble"
+        style="@style/BubbleMeta"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:clickable="true"
+        android:focusable="true"
+        android:longClickable="true"
+        android:minWidth="120dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:id="@+id/text"
+                style="@style/TextAppearance.Material3.BodyMedium"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/text" />
+
+            <TextView
+                android:id="@+id/meta"
+                style="@style/MetaText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp" />
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
 </LinearLayout>

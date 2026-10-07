@@ -1,6 +1,6 @@
 package com.claire.companion;
 
-import android.app.NotificationManager;
+
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -40,15 +40,9 @@ public class BootReceiver extends BroadcastReceiver {
         }
         Notifier.ensureChannels(context);
         try {
-            NotificationManager manager =
-                    (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (manager == null) {
-                return;
-            }
-            manager.notify(Notifier.NUDGE_NOTIFICATION_ID, Notifier.nudge(context,
-                    context.getString(R.string.app_name),
+            Notifier.nudge(context, context.getString(R.string.app_name),
                     "Tap to start listening. Android does not let an app open the "
-                            + "microphone on its own at boot."));
+                            + "microphone on its own at boot.");
         } catch (SecurityException denied) {
             // POST_NOTIFICATIONS is not granted; there is no other channel to use.
         }

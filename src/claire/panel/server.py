@@ -52,12 +52,17 @@ import json
 import logging
 import os
 import re
+import sqlite3
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import date as _date
+from datetime import datetime as _datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from claire.platform.keys import DEFAULT_ENV_SOURCES, KeyStoreError
 from claire.utils.redact import scrub_secrets
@@ -73,6 +78,8 @@ __all__ = [
     "MAX_BODY_BYTES",
     "PANEL_VERSION",
     "PROVIDER_KEY_NAMES",
+    "POST_ROUTES",
+    "ROUTE_CHAT",
     "ROUTE_HEALTH",
     "ROUTE_INDEX",
     "ROUTE_SELECT",
@@ -82,7 +89,10 @@ __all__ = [
     "ActionsStatus",
     "CalendarEvent",
     "CalendarStatus",
+    "ChatResult",
     "ConfigCredential",
+    "DiaryEntry",
+    "DiaryStatus",
     "KeyStatus",
     "PanelRequest",
     "PanelResponse",
@@ -90,11 +100,14 @@ __all__ = [
     "RouterStatus",
     "SelfCheckStatus",
     "SelfCheckView",
+    "TranscriptStatus",
+    "TurnRecord",
     "WriteResult",
     # errors
     "PanelBadRequest",
     "PanelBindError",
     "PanelError",
+    "PanelLLMError",
     "PanelMethodNotAllowed",
     "PanelOriginError",
     "PanelRouteNotFound",
@@ -107,8 +120,10 @@ __all__ = [
     # state
     "PanelState",
     "RealPanelState",
+    "TranscriptBuffer",
     # rendering / dispatch
     "dispatch",
+    "handle_chat",
     "render_error_page",
     "render_index",
     "render_health",
@@ -169,9 +184,38 @@ ROUTE_SELF_CHECK = "/self-check"
 ROUTE_HEALTH = "/healthz"
 ROUTE_FAVICON = "/favicon.ico"
 ROUTE_SELECT = "/select"
+ROUTE_CHAT = "/chat"
 
 #: Every path that serves a page.  Tests iterate this; nothing else is served.
 GET_ROUTES: tuple[str, ...] = (ROUTE_INDEX, ROUTE_SELF_CHECK, ROUTE_HEALTH, ROUTE_FAVICON)
+
+#: Every path that accepts a form POST.  A GET to one of these is a 405, not a
+#: silent no-op, so a link that should have been a form is caught immediately.
+POST_ROUTES: tuple[str, ...] = (ROUTE_SELECT, ROUTE_CHAT)
+
+#: The longest message the chat box will forward to the model.  Bounded so a
+#: pasted file cannot be pushed into the prompt (or the backend's timeout) by
+#: accident; refused by name, never silently truncated.
+MAX_CHAT_CHARS = 4000
+
+#: How long the panel waits for one chat completion.
+CHAT_TIMEOUT_SECONDS = 90.0
+
+#: How many turns the panel's own transcript ring buffer keeps.
+TRANSCRIPT_LIMIT = 50
+
+#: The system prompt for a panel chat turn.  Deliberately short and honest about
+#: the channel: this is typed text from the owner's browser, not a spoken turn,
+#: and the panel shows the reply verbatim rather than speaking it.
+PANEL_CHAT_SYSTEM_PROMPT = (
+    "You are Claire, a local voice assistant, answering your owner through the "
+    "local web panel instead of by voice. Keep replies short, warm and plain; "
+    "they are read in a small browser card. Do not claim to have taken an action "
+    "you did not take."
+)
+
+#: How many daily diary summaries the conversation section shows.
+DIARY_LIMIT = 7
 
 #: Where Claire appends one JSON object per completed action.
 ACTION_LOG_ENV_VAR = "CLAIRE_ACTION_LOG"
@@ -398,6 +442,50 @@ class PanelSourceError(PanelError):
         )
 
 
+class PanelLLMError(PanelError):
+    """The model was asked for a reply and did not give one.
+
+    This exists because the backend's ``direct()`` signals every failure as
+    ``None`` — an unreachable endpoint, a bad model id, a refused key and a
+    server-side error are indistinguishable from inside.  The panel refuses to
+    render that as an empty reply box: it names the provider, the model and the
+    endpoint it actually asked, so the failure can be acted on.
+    """
+
+    status = 502
+    code = "llm-unavailable"
+
+    def __init__(self, provider: str, model: str, base_url: str, detail: str = "") -> None:
+        where = " ".join(
+            part
+            for part in (
+                f"provider {provider!r}" if provider else "",
+                f"model {model!r}" if model else "",
+                f"at {base_url}" if base_url else "",
+            )
+            if part
+        )
+        message = (
+            f"the model returned nothing for this message"
+            + (f" ({where})." if where else ".")
+        )
+        if detail:
+            message += f" The backend reported: {detail}"
+        message += (
+            " The LLM backend signals every failure the same way - no reply - so "
+            "this covers an unreachable endpoint, an unloaded model, a missing or "
+            "refused credential, and a server-side error alike."
+        )
+        super().__init__(
+            message,
+            fix=(
+                "Check the self-check page for the LLM endpoint, confirm the model "
+                "id in the selector, and set the credential out-of-band if it is "
+                "missing."
+            ),
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Escaping and scrubbing
 # --------------------------------------------------------------------------- #
@@ -583,6 +671,88 @@ class ActionsStatus:
     fix: str | None = None
 
 
+#: The roles a transcript turn may carry.  ``note`` is the panel speaking in its
+#: own voice — a named failure, or the fact that no reply came — so a failed turn
+#: is never rendered as Claire having said something she did not say.
+TURN_ROLES: tuple[str, ...] = ("you", "claire", "note")
+
+
+@dataclass(frozen=True)
+class TurnRecord:
+    """One turn of the panel's own conversation, as it will be rendered.
+
+    ``text`` is scrubbed on construction: the owner types into this box, and a
+    pasted key must not become a rendered one.  ``at`` is a clock string the
+    panel produced, never a value from the request.
+    """
+
+    role: str
+    text: str = ""
+    at: str = ""
+
+    def __post_init__(self) -> None:
+        if self.role not in TURN_ROLES:
+            object.__setattr__(self, "role", "note")
+        object.__setattr__(self, "text", _scrub(self.text))
+        object.__setattr__(self, "at", _scrub(self.at))
+
+
+@dataclass(frozen=True)
+class TranscriptStatus:
+    """The panel's transcript, with an honest account of where it lives.
+
+    ``durable`` is False and ``source`` says so: these turns are held in this
+    process's memory only.  The persistent record is the memory layer's daily
+    diary, which is a different (and summarised) thing — see
+    :class:`DiaryStatus`.
+    """
+
+    turns: tuple[TurnRecord, ...] = ()
+    source: str = ""
+    durable: bool = False
+    note: str = ""
+    error: str | None = None
+    fix: str | None = None
+
+
+@dataclass(frozen=True)
+class DiaryEntry:
+    """One persisted daily conversation summary from the memory database."""
+
+    date: str = ""
+    recorded_at: str = ""
+    summary: str = ""
+    topics: str = ""
+    source_app: str = ""
+
+
+@dataclass(frozen=True)
+class DiaryStatus:
+    """The persisted conversation diary, or the named reason it is unreadable.
+
+    Read-only, and read with a read-only SQLite URI: the panel never creates,
+    migrates or writes the owner's memory database.
+    """
+
+    path: str = ""
+    exists: bool = False
+    entries: tuple[DiaryEntry, ...] = ()
+    error: str | None = None
+    fix: str | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    """One successful chat completion, with the route that produced it."""
+
+    text: str = ""
+    provider: str = ""
+    model: str = ""
+    base_url: str = ""
+    elapsed_ms: int = 0
+
+
 @dataclass(frozen=True)
 class WriteResult:
     """What a successful selection write actually changed."""
@@ -756,7 +926,12 @@ def parse_target(target: str) -> tuple[str, dict[str, list[str]]]:
     return path, query
 
 
-def check_write_origin(request: PanelRequest, *, server_port: int | None = None) -> str:
+def check_write_origin(
+    request: PanelRequest,
+    *,
+    server_port: int | None = None,
+    route: str = ROUTE_SELECT,
+) -> str:
     """Refuse a write whose ``Origin``/``Host`` do not agree on loopback.
 
     A browser always sends ``Origin`` on a cross-origin form POST, so a page the
@@ -764,7 +939,12 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
     configuration: that page's Origin is its own, not loopback.  A missing
     ``Origin`` is refused too — silence is not a same-origin proof.  Returns the
     validated origin (useful for a log line) or raises :class:`PanelOriginError`.
+
+    ``route`` names the endpoint in every refusal.  It is a parameter because the
+    guard now protects more than one: a refusal on ``/chat`` used to say
+    "POST /select was refused", which points the owner at the wrong form.
     """
+    where = f"POST {route} was refused: "
     headers = request.headers
     origin = headers.get("Origin")
     site_header = headers.get("Sec-Fetch-Site")
@@ -786,12 +966,12 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
             return "same-origin"
         if not origin:
             raise PanelOriginError(
-                "POST /select was refused: no Origin header, so the request is not "
+                where + "no Origin header, so the request is not "
                 "provably from the panel page.",
                 fix=PanelOriginError.default_fix,
             )
         raise PanelOriginError(
-            "POST /select was refused: the Origin is opaque ('null') and no "
+            where + "the Origin is opaque ('null') and no "
             "Sec-Fetch-Site: same-origin accompanies it, so the request is not "
             "provably from the panel page.",
             fix=PanelOriginError.default_fix,
@@ -799,21 +979,21 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
     parsed = urlsplit(str(origin))
     if parsed.scheme.lower() != "http":
         raise PanelOriginError(
-            f"POST /select was refused: Origin scheme {parsed.scheme!r} is not "
+            where + f"Origin scheme {parsed.scheme!r} is not "
             "'http' (this panel is plain HTTP).",
             fix=PanelOriginError.default_fix,
         )
     origin_host = (parsed.hostname or "").lower()
     if not is_loopback_host(origin_host):
         raise PanelOriginError(
-            f"POST /select was refused: Origin host {origin_host!r} is not "
+            where + f"Origin host {origin_host!r} is not "
             "loopback, so this is a cross-origin request.",
             fix=PanelOriginError.default_fix,
         )
     host_header = headers.get("Host")
     if not host_header:
         raise PanelOriginError(
-            "POST /select was refused: the request carries no Host header, so "
+            where + "the request carries no Host header, so "
             "the origin cannot be checked.",
             fix=PanelOriginError.default_fix,
         )
@@ -821,7 +1001,7 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
     host_host = (host_parsed.hostname or "").lower()
     if host_host != origin_host:
         raise PanelOriginError(
-            f"POST /select was refused: Origin host {origin_host!r} does not "
+            where + f"Origin host {origin_host!r} does not "
             f"match Host {host_host!r}.",
             fix=PanelOriginError.default_fix,
         )
@@ -830,14 +1010,14 @@ def check_write_origin(request: PanelRequest, *, server_port: int | None = None)
         for label, port in (("Origin", parsed.port), ("Host", host_parsed.port)):
             if port is not None and int(port) != int(expected_port):
                 raise PanelOriginError(
-                    f"POST /select was refused: the {label} port {port} is not "
+                    where + f"the {label} port {port} is not "
                     f"the port this panel is running on ({expected_port}).",
                     fix=PanelOriginError.default_fix,
                 )
     site = headers.get("Sec-Fetch-Site")
     if site is not None and str(site).strip().lower() not in ("same-origin", "none", ""):
         raise PanelOriginError(
-            f"POST /select was refused: Sec-Fetch-Site is {site!r}, not "
+            where + f"Sec-Fetch-Site is {site!r}, not "
             "same-origin.",
             fix=PanelOriginError.default_fix,
         )
@@ -883,6 +1063,110 @@ def parse_form(request: PanelRequest) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
+class TranscriptBuffer:
+    """A bounded, thread-safe ring buffer of conversation turns.
+
+    Why this exists, and why it is not a database
+    --------------------------------------------
+    The codebase's verbatim conversation lives in
+    :class:`claire.memory.conversation.DialogueMemory` — a plain list held in the
+    **daemon process's** memory.  Nothing writes it to disk, and the panel is a
+    separate process, so it cannot read it.  The only *persisted* record is the
+    memory layer's daily diary (``conversation_summaries``), which is a summary,
+    not a transcript.
+
+    So the panel keeps its own turns here and says so on the page.  This is
+    deliberately the honest option rather than a fabricated "conversation
+    history": it holds only what was actually sent through this panel, it is lost
+    on restart, and :class:`TranscriptStatus.durable` is False.
+    """
+
+    def __init__(self, limit: int = TRANSCRIPT_LIMIT) -> None:
+        self._limit = max(1, int(limit))
+        self._turns: deque[TurnRecord] = deque(maxlen=self._limit)
+        self._lock = threading.Lock()
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    def record(self, role: str, text: str, at: str = "") -> TurnRecord:
+        """Append one turn and return it as recorded."""
+        turn = TurnRecord(role=role, text=text, at=at)
+        with self._lock:
+            self._turns.append(turn)
+        return turn
+
+    def turns(self) -> tuple[TurnRecord, ...]:
+        """The turns oldest-first.  The renderer reverses them."""
+        with self._lock:
+            return tuple(self._turns)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._turns.clear()
+
+    def __len__(self) -> int:  # pragma: no cover - convenience
+        with self._lock:
+            return len(self._turns)
+
+
+def default_chat_call(
+    message: str,
+    *,
+    timeout_sec: float = CHAT_TIMEOUT_SECONDS,
+    settings: Any | None = None,
+) -> ChatResult:
+    """Send one message through **the project's one LLM stack**.
+
+    This is the authoritative path and nothing else: ``claire.config`` resolves
+    the selected provider, model, endpoint and credential, and
+    :func:`claire.llm.get_llm_backend` returns the very backend object the daemon
+    and the reply engine use.  It deliberately does **not** open an HTTP
+    connection of its own — a second client calling the provider directly is the
+    duplicated-stack mistake this project already made once with transcription.
+
+    Returns a :class:`ChatResult`, or raises :class:`PanelLLMError` when the
+    backend reports no reply.  ``settings`` is injectable so a test never reaches
+    the network and never depends on the owner's config.
+    """
+    if settings is None:
+        from claire.config import load_settings
+
+        settings = load_settings()
+    provider = str(getattr(settings, "llm_provider", "") or "")
+    model = str(getattr(settings, "llm_chat_model", "") or "")
+    base_url = str(getattr(settings, "llm_base_url", "") or getattr(settings, "ollama_base_url", "") or "")
+    started = time.monotonic()
+    try:
+        from claire.llm import get_llm_backend
+
+        backend = get_llm_backend(settings)
+    except Exception as exc:  # noqa: BLE001 - a broken backend is a finding
+        raise PanelLLMError(provider, model, base_url, f"{type(exc).__name__}: {_scrub(exc)}") from exc
+    try:
+        reply = backend.direct(
+            model,
+            PANEL_CHAT_SYSTEM_PROMPT,
+            message,
+            timeout_sec=timeout_sec,
+            thinking=False,
+            max_tokens=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - report it, never swallow it
+        raise PanelLLMError(provider, model, base_url, f"{type(exc).__name__}: {_scrub(exc)}") from exc
+    if reply is None or not str(reply).strip():
+        raise PanelLLMError(provider, model, base_url)
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    return ChatResult(
+        text=str(reply),
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        elapsed_ms=elapsed_ms,
+    )
+
+
 class PanelState:
     """Everything the page shows, as an injectable source.
 
@@ -921,6 +1205,34 @@ class PanelState:
 
     def last_actions(self) -> ActionsStatus:
         raise PanelStateError("last_actions")
+
+    def transcript(self) -> TranscriptStatus:
+        """The panel's own turns.  Empty is a valid answer, not an error."""
+        return TranscriptStatus(
+            turns=(),
+            source="this panel's process memory",
+            durable=False,
+            note=(
+                "No turns yet. Claire's live voice conversation is held in memory "
+                "inside the daemon process, which a separate process cannot read, "
+                "and nothing writes a verbatim transcript to disk."
+            ),
+        )
+
+    def diary(self) -> DiaryStatus:
+        """The persisted daily summaries, or a named reason there are none."""
+        return DiaryStatus(
+            note=(
+                "This state does not read a memory database, so no persisted "
+                "conversation diary is available."
+            )
+        )
+
+    # -- chat ------------------------------------------------------------- #
+
+    def chat_reply(self, message: str, *, timeout_sec: float = CHAT_TIMEOUT_SECONDS) -> ChatResult:
+        """Answer one typed message through the one LLM stack. Raises to refuse."""
+        raise PanelStateError("chat_reply")
 
     # -- selector ---------------------------------------------------------- #
 
@@ -961,6 +1273,9 @@ class RealPanelState(PanelState):
         router_path: "str | os.PathLike[str] | None" = None,
         schedule_path: "str | os.PathLike[str] | None" = None,
         action_log_path: "str | os.PathLike[str] | None" = None,
+        diary_path: "str | os.PathLike[str] | None" = None,
+        transcript: TranscriptBuffer | None = None,
+        chat_call: Callable[..., ChatResult] | None = None,
         environ: Mapping[str, str] | None = None,
         now: Callable[[], Any] | None = None,
         self_check_factory: Callable[[], Any] | None = None,
@@ -970,10 +1285,18 @@ class RealPanelState(PanelState):
         self._router_path = router_path
         self._schedule_path = schedule_path
         self._action_log_path = action_log_path
+        self._diary_path = diary_path
         self._environ = environ
         self._now = now or _date.today
         self._self_check_factory = self_check_factory
         self._self_check_cache: tuple[float, SelfCheckStatus] | None = None
+        # The panel's own conversation, held in this process only.  A caller can
+        # inject one (tests) or share one; by default it is private to this state.
+        self.transcript_buffer = transcript if transcript is not None else TranscriptBuffer()
+        #: The one LLM seam.  Defaults to the project's real stack; injectable so
+        #: no test ever reaches the network.
+        self._chat_call = chat_call
+        self._chat_lock = threading.Lock()
 
     # -- helpers ---------------------------------------------------------- #
 
@@ -1256,6 +1579,130 @@ class RealPanelState(PanelState):
             return Path(str(override)).expanduser()
         return Path(DEFAULT_ACTION_LOG).expanduser()
 
+    def diary_path(self) -> Path:
+        """Where ``claire.memory`` keeps its database, per the same config.
+
+        The path is resolved the way ``claire.config`` resolves it (the
+        ``db_path`` field, ``~`` expanded, defaulting to
+        ``~/.local/share/claire/claire.db``) rather than being invented here.
+        """
+        if self._diary_path is not None:
+            return Path(self._diary_path).expanduser()
+        configured = str(self._config().get("db_path", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser()
+        from claire.config import get_default_config
+
+        return Path(str(get_default_config()["db_path"])).expanduser()
+
+    def diary(self) -> DiaryStatus:
+        """Read the persisted daily summaries — read-only, and never created.
+
+        ``mode=ro`` matters: opening the owner's memory database for writing
+        would create it if it were missing and would let a page view migrate a
+        schema.  The panel only ever reads.
+        """
+        path = self.diary_path()
+        if not path.exists():
+            return DiaryStatus(
+                path=str(path),
+                exists=False,
+                note=(
+                    "No memory database yet, so the memory layer has persisted no "
+                    "conversation summaries. It is created the first time Claire "
+                    "writes to memory; this panel never creates it."
+                ),
+            )
+        uri = "file:" + quote(str(path)) + "?mode=ro"
+        try:
+            connection = sqlite3.connect(uri, uri=True, timeout=2.0)
+        except sqlite3.Error as exc:
+            return DiaryStatus(
+                path=str(path),
+                exists=True,
+                error=f"{type(exc).__name__}: {_scrub(exc)}",
+                fix=f"Check that {path} is a readable SQLite database.",
+            )
+        try:
+            connection.row_factory = sqlite3.Row
+            try:
+                rows = connection.execute(
+                    "SELECT date_utc, ts_utc, summary, topics, source_app "
+                    "FROM conversation_summaries "
+                    "ORDER BY date_utc DESC, id DESC LIMIT ?",
+                    (DIARY_LIMIT,),
+                ).fetchall()
+            except sqlite3.Error as exc:
+                return DiaryStatus(
+                    path=str(path),
+                    exists=True,
+                    error=f"{type(exc).__name__}: {_scrub(exc)}",
+                    fix=(
+                        "The memory database has no readable "
+                        "conversation_summaries table; run the daemon once so the "
+                        "memory layer can create it."
+                    ),
+                )
+        finally:
+            connection.close()
+        entries = tuple(
+            DiaryEntry(
+                date=str(row["date_utc"] or ""),
+                recorded_at=str(row["ts_utc"] or ""),
+                summary=str(row["summary"] or ""),
+                topics=str(row["topics"] or ""),
+                source_app=str(row["source_app"] or ""),
+            )
+            for row in rows
+        )
+        return DiaryStatus(path=str(path), exists=True, entries=entries)
+
+    # -- conversation ------------------------------------------------------ #
+
+    def transcript(self) -> TranscriptStatus:
+        turns = self.transcript_buffer.turns()
+        return TranscriptStatus(
+            turns=turns,
+            source="this panel's process memory",
+            durable=False,
+            note=(
+                "Turns sent through this page, held in the panel process only — lost "
+                "when the panel restarts. Claire's live voice conversation lives in "
+                "memory inside the daemon process, which the panel cannot read, and "
+                "nothing writes a verbatim transcript to disk. The daily summaries "
+                "below are the persisted record, and they are summaries."
+            ),
+        )
+
+    def chat_reply(self, message: str, *, timeout_sec: float = CHAT_TIMEOUT_SECONDS) -> ChatResult:
+        """Answer through the one LLM stack, recording both turns as it goes.
+
+        The owner's turn is recorded *before* the call, so a failure still shows
+        what was asked, and a ``note`` turn carries the named failure — a failed
+        turn is never rendered as Claire having replied.
+        """
+        stamp = _datetime.now().strftime("%H:%M:%S")
+        self.transcript_buffer.record("you", message, stamp)
+        call = self._chat_call or default_chat_call
+        # One chat call at a time: this is a single conversational thread, and the
+        # ring buffer's ordering must match the order the model saw the turns.
+        with self._chat_lock:
+            try:
+                result = call(message, timeout_sec=timeout_sec)
+            except PanelError as exc:
+                self.transcript_buffer.record(
+                    "note", f"no reply — {exc.code}: {exc.message}", stamp
+                )
+                raise
+            except Exception as exc:  # noqa: BLE001 - a backend failure is a finding
+                error = PanelLLMError("", "", "", f"{type(exc).__name__}: {_scrub(exc)}")
+                self.transcript_buffer.record(
+                    "note", f"no reply — {error.code}: {error.message}", stamp
+                )
+                raise error from exc
+        self.transcript_buffer.record("claire", result.text, stamp)
+        return result
+
     def last_actions(self) -> ActionsStatus:
         path = self.action_log_path()
         if not path.exists():
@@ -1381,41 +1828,194 @@ class RealPanelState(PanelState):
 # --------------------------------------------------------------------------- #
 
 _CSS = """
-:root { color-scheme: dark; }
+/* ---- tokens ------------------------------------------------------------ */
+:root {
+  color-scheme: dark light;
+  --bg: #101317;
+  --bg-soft: #161a20;
+  --card: #1a1e25;
+  --card-2: #1f242c;
+  --ink: #e8ebef;
+  --ink-soft: #a7b0bb;
+  --ink-faint: #828b97;
+  --line: #2a3039;
+  --line-soft: #232931;
+  --accent: #6ea8fe;
+  --accent-ink: #0b1220;
+  --ok: #56d68a;
+  --warn: #f0b429;
+  --bad: #ff7b72;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px -18px rgba(0, 0, 0, .8);
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f7f9;
+    --bg-soft: #eef0f4;
+    --card: #ffffff;
+    --card-2: #f4f6f9;
+    --ink: #171b21;
+    --ink-soft: #4d5763;
+    --ink-faint: #6b7480;
+    --line: #d9dee6;
+    --line-soft: #e6eaf0;
+    --accent: #1d5fd0;
+    --accent-ink: #ffffff;
+    --ok: #16794a;
+    --warn: #8a5b00;
+    --bad: #b4231a;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 10px 24px -20px rgba(16, 24, 40, .45);
+  }
+}
+
+/* ---- base -------------------------------------------------------------- */
 * { box-sizing: border-box; }
-body { margin: 0; padding: 1.25rem; background: #14161a; color: #e6e8eb;
-       font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.05rem; margin: 0 0 .6rem; letter-spacing: .02em; }
-a { color: #7cc4ff; }
-.sub { color: #9aa3ad; margin: 0 0 1rem; }
-section { background: #1b1e24; border: 1px solid #2a2f38; border-radius: 8px;
-          padding: .9rem 1rem; margin: 0 0 1rem; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid #262b33;
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  padding: 0 1rem 2.5rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 var(--sans);
+  overflow-wrap: break-word;
+}
+h1 { font-size: 1.15rem; margin: 0; letter-spacing: -.01em; font-weight: 650; }
+h2 { font-size: .95rem; margin: 0; font-weight: 650; letter-spacing: .005em; }
+h3 { font-size: .78rem; margin: 0 0 .35rem; font-weight: 650; color: var(--ink-faint);
+     text-transform: uppercase; letter-spacing: .06em; }
+p { margin: .35rem 0; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:hover { text-decoration-thickness: 2px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.muted { color: var(--ink-soft); }
+.faint { color: var(--ink-faint); }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+.num { font-variant-numeric: tabular-nums; }
+
+/* ---- masthead ---------------------------------------------------------- */
+.top { border-bottom: 1px solid var(--line); background: var(--bg-soft);
+       margin: 0 -1rem 1rem; padding: .85rem 1rem .9rem; }
+.top-inner { max-width: 1180px; margin: 0 auto; }
+.brand { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.brand .dot { width: .55rem; height: .55rem; border-radius: 50%; background: var(--ok);
+              box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+.tag { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--ink-faint); border: 1px solid var(--line); border-radius: 999px;
+       padding: .1rem .45rem; }
+.sub { color: var(--ink-soft); font-size: .82rem; margin: .35rem 0 0; }
+
+/* ---- layout ------------------------------------------------------------ */
+main { max-width: 1180px; margin: 0 auto; display: grid; gap: 1rem;
+       grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+       align-items: start; }
+main > section.wide { grid-column: 1 / -1; }
+section.card { background: var(--card); border: 1px solid var(--line);
+               border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between;
+             gap: .5rem; flex-wrap: wrap; padding: .7rem .95rem;
+             border-bottom: 1px solid var(--line-soft); background: var(--card-2); }
+.card-body { padding: .85rem .95rem 1rem; overflow-x: auto; }
+.card-body > :first-child { margin-top: 0; }
+.card-body > :last-child { margin-bottom: 0; }
+
+/* ---- tables ------------------------------------------------------------ */
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { text-align: left; padding: .38rem .5rem; border-bottom: 1px solid var(--line-soft);
          vertical-align: top; }
-th { color: #9aa3ad; font-weight: 600; }
-code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
-.ok { color: #5fd08a; } .warn { color: #f0b429; } .bad { color: #ff6b6b; }
-.muted { color: #9aa3ad; }
-.pill { display: inline-block; padding: .05rem .45rem; border-radius: 999px;
-        border: 1px solid #39404b; font-size: .8rem; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #101216;
-      border: 1px solid #33261a; border-left: 4px solid #ff6b6b; border-radius: 6px;
-      padding: .7rem .8rem; margin: .5rem 0 0; color: #ffd7d7; }
-.fix { background: #101216; border: 1px solid #2a2f38; border-left: 4px solid #7cc4ff;
-       border-radius: 6px; padding: .6rem .8rem; margin: .5rem 0 0; }
-form { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; margin-top: .6rem; }
-label { display: flex; flex-direction: column; gap: .2rem; color: #9aa3ad; font-size: .85rem; }
-select, input { background: #101216; color: #e6e8eb; border: 1px solid #39404b;
-                border-radius: 6px; padding: .35rem .5rem; font: inherit; }
-button { background: #2a6df4; color: #fff; border: 0; border-radius: 6px;
-         padding: .45rem .9rem; font: inherit; cursor: pointer; }
-footer { color: #6f7883; font-size: .85rem; margin-top: .5rem; }
-.bar { height: 8px; background: #101216; border: 1px solid #39404b; border-radius: 999px;
-       overflow: hidden; margin: .35rem 0; }
-.bar > i { display: block; height: 100%; background: #5fd08a; }
-.bar.over > i { background: #ff6b6b; }
+thead th { color: var(--ink-faint); font-weight: 600; font-size: .76rem;
+           text-transform: uppercase; letter-spacing: .05em; }
+tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+/* ---- bits -------------------------------------------------------------- */
+.pill { display: inline-block; padding: .08rem .5rem; border-radius: 999px;
+        border: 1px solid var(--line); color: var(--ink-soft); font-size: .74rem;
+        letter-spacing: .02em; white-space: nowrap; }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono);
+      font-size: .84rem; background: var(--bg); border: 1px solid var(--line);
+      border-left: 3px solid var(--bad); border-radius: var(--radius-sm);
+      padding: .6rem .7rem; margin: .5rem 0 0; color: var(--ink); }
+.fix { background: var(--card-2); border: 1px solid var(--line);
+       border-left: 3px solid var(--accent); border-radius: var(--radius-sm);
+       padding: .55rem .7rem; margin: .5rem 0 0; font-size: .88rem; }
+.bar { height: 8px; background: var(--bg); border: 1px solid var(--line);
+       border-radius: 999px; overflow: hidden; margin: .45rem 0 .3rem; }
+.bar > i { display: block; height: 100%; background: var(--ok); }
+.bar.over > i { background: var(--bad); }
+.empty { color: var(--ink-faint); font-style: italic; margin: .3rem 0 0; }
+
+/* ---- forms ------------------------------------------------------------- */
+form { display: flex; flex-wrap: wrap; gap: .7rem; align-items: flex-end;
+       margin: .2rem 0 .6rem; }
+label.field { display: flex; flex-direction: column; gap: .25rem; color: var(--ink-soft);
+              font-size: .8rem; font-weight: 550; min-width: 0; flex: 1 1 12rem; }
+select, input, textarea {
+  background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: .42rem .55rem; font: inherit; width: 100%;
+  min-width: 0;
+}
+select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+textarea { resize: vertical; min-height: 4.4rem; line-height: 1.5; }
+button { background: var(--accent); color: var(--accent-ink); border: 0;
+         border-radius: var(--radius-sm); padding: .48rem .95rem; font: inherit;
+         font-weight: 600; cursor: pointer; }
+button:hover { filter: brightness(1.07); }
+button:active { transform: translateY(1px); }
+form.chat { display: grid; gap: .55rem; margin: 0; }
+form.chat .row { display: flex; align-items: center; justify-content: space-between;
+                 gap: .5rem; flex-wrap: wrap; }
+.hint { color: var(--ink-faint); font-size: .78rem; }
+
+/* ---- conversation ------------------------------------------------------ */
+.turns { list-style: none; margin: 0; padding: 0; display: flex;
+         flex-direction: column; gap: .6rem; }
+.turn { border: 1px solid var(--line); border-radius: var(--radius-sm);
+        padding: .5rem .65rem; background: var(--card-2); max-width: 62ch; }
+.turn header { display: flex; align-items: baseline; gap: .5rem; margin-bottom: .2rem; }
+.turn .who { font-size: .74rem; font-weight: 700; letter-spacing: .05em;
+             text-transform: uppercase; color: var(--ink-faint); }
+.turn .at { font-size: .72rem; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.turn p { margin: 0; white-space: pre-wrap; }
+.turn.you { border-left: 3px solid var(--accent); align-self: flex-end;
+            background: color-mix(in srgb, var(--accent) 8%, var(--card-2)); }
+.turn.claire { border-left: 3px solid var(--ok); }
+.turn.note { border-left: 3px solid var(--warn); background: transparent; }
+.turn.note p { color: var(--warn); }
+.diary { list-style: none; margin: .8rem 0 0; padding: .7rem 0 0;
+         border-top: 1px dashed var(--line); display: grid; gap: .6rem; }
+.diary li { border-left: 3px solid var(--line); padding-left: .6rem; }
+.diary .meta { font-size: .76rem; color: var(--ink-faint); display: flex; gap: .5rem;
+               flex-wrap: wrap; }
+.diary p { margin: .15rem 0 0; }
+
+/* ---- footer ------------------------------------------------------------ */
+footer { max-width: 1180px; margin: 1.25rem auto 0; padding-top: .8rem;
+         border-top: 1px solid var(--line); color: var(--ink-faint); font-size: .82rem; }
+
+/* ---- narrow ------------------------------------------------------------ */
+@media (max-width: 560px) {
+  body { padding: 0 .7rem 2rem; font-size: 14.5px; }
+  main { grid-template-columns: minmax(0, 1fr); gap: .8rem; }
+  .top { margin: 0 -.7rem 1rem; padding: .7rem; }
+  th, td { padding: .34rem .35rem; }
+  table { font-size: .85rem; }
+  .turn { max-width: 100%; }
+  form.chat button { width: 100%; }
+  button { padding: .62rem .95rem; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  a, button { transition: filter .12s ease, background-color .12s ease; }
+}
 """
 
 
@@ -1430,8 +2030,45 @@ def _page(title: str, body: str) -> str:
     )
 
 
-def _section(title: str, inner: str) -> str:
-    return f"<section>\n<h2>{_esc(title)}</h2>\n{inner}\n</section>"
+def _section(
+    title: str,
+    inner: str,
+    *,
+    anchor: str = "",
+    badge: str = "",
+    wide: bool = False,
+) -> str:
+    """One card: a heading, an optional status pill, and its body.
+
+    ``wide`` makes the card span the whole grid; ``anchor`` gives it a fragment
+    id so a form POST can redirect straight to it.  The layout grid keys off the
+    ``card`` class, so that name is load-bearing.
+    """
+    attrs = ' class="card wide"' if wide else ' class="card"'
+    if anchor:
+        attrs += f' id="{_esc(anchor)}"'
+    pill = f'<span class="pill">{_esc(badge)}</span>' if badge else ""
+    return (
+        f"<section{attrs}>\n"
+        f'<div class="card-head"><h2>{_esc(title)}</h2>{pill}</div>\n'
+        f'<div class="card-body">\n{inner}\n</div>\n'
+        "</section>"
+    )
+
+
+def _masthead(bind_host: str, bind_port: int) -> str:
+    """The one-line banner: what this is, where it lives, and what it will not do."""
+    return (
+        '<header class="top">\n<div class="top-inner">\n'
+        '<div class="brand">\n<span class="dot" aria-hidden="true"></span>\n'
+        "<h1>Claire</h1>\n"
+        '<span class="tag">local panel</span>\n'
+        "</div>\n"
+        '<p class="sub">Bound to <span class="mono">'
+        f"{_esc(bind_host)}:{_esc(bind_port)}</span> &middot; loopback only &middot; "
+        "plain HTTP, no login &middot; never shows a key value.</p>\n"
+        "</div>\n</header>"
+    )
 
 
 def _problem(message: str, fix: str | None) -> str:
@@ -1537,17 +2174,19 @@ def _selector_form(state: PanelState, info: ProviderModel) -> str:
     providers = safe(state.available_providers, PanelState.PROVIDERS)
     models = safe(state.available_models, (info.model,))
     return (
-        '<form method="post" action="/select">\n'
-        '<label>Provider<select name="provider">'
+        f'<form method="post" action="{ROUTE_SELECT}">\n'
+        '<label class="field" for="provider">Provider'
+        f'<select id="provider" name="provider">'
         f"{options(providers, info.provider)}</select></label>\n"
-        '<label>Model<input name="model" list="known-models" size="34" '
+        '<label class="field" for="model">Model'
+        '<input id="model" name="model" list="known-models" '
         f'value="{_esc(info.model)}" required></label>\n'
         "<datalist id=\"known-models\">"
         + "".join(f'<option value="{_esc(m)}"></option>' for m in models)
         + "</datalist>\n"
         '<button type="submit">Save selection</button>\n'
         "</form>\n"
-        '<p class="muted">The selector writes <span class="mono">llm_provider</span> and the '
+        '<p class="hint">The selector writes <span class="mono">llm_provider</span> and the '
         "matching model field to Claire's config. Keys are <strong>not</strong> set here: there "
         "is no key field on this page, and a POST that carries one is refused. Set a key "
         "out-of-band in the key store, or export the provider's environment variable before "
@@ -1745,6 +2384,106 @@ def _actions_section(state: PanelState) -> str:
     return _section("Last actions", _guard("action journal", build))
 
 
+def _turn_html(turn: TurnRecord) -> str:
+    label = {"you": "You", "claire": "Claire", "note": "Panel"}.get(turn.role, "Panel")
+    stamp = f'<span class="at mono">{_esc(turn.at)}</span>' if turn.at else ""
+    return (
+        f'<li class="turn {_esc(turn.role)}">\n'
+        f'<header><span class="who">{_esc(label)}</span>{stamp}</header>\n'
+        f"<p>{_esc(turn.text)}</p>\n"
+        "</li>"
+    )
+
+
+def _diary_html(status: DiaryStatus) -> str:
+    """The persisted daily summaries, rendered as the memory layer's own record."""
+    if status.error:
+        return _problem(status.error, status.fix)
+    if not status.entries:
+        note = status.note or (
+            "The memory database holds no conversation summaries yet."
+        )
+        return f'<p class="empty">{_esc(note)}</p>'
+    items = []
+    for entry in status.entries:
+        topics = (
+            f'<span>topics: {_esc(entry.topics)}</span>' if entry.topics else ""
+        )
+        source = f"<span>{_esc(entry.source_app)}</span>" if entry.source_app else ""
+        items.append(
+            "<li>\n"
+            f'<div class="meta"><span class="mono">{_esc(entry.date)}</span>'
+            f"{source}{topics}</div>\n"
+            f"<p>{_esc(entry.summary)}</p>\n"
+            "</li>"
+        )
+    return (
+        f'<ul class="diary">{"".join(items)}</ul>'
+        f'<p class="hint mono">{_esc(status.path)}</p>'
+    )
+
+
+def _conversation_section(state: PanelState) -> str:
+    seen: list[TranscriptStatus] = []
+
+    def build() -> str:
+        status = state.transcript()
+        seen.append(status)
+        turns = tuple(status.turns)
+        parts: list[str] = []
+        if turns:
+            # Newest visible: the reply the owner just asked for is at the top.
+            parts.append(
+                f'<ul class="turns">{"".join(_turn_html(t) for t in reversed(turns))}</ul>'
+            )
+        else:
+            parts.append('<p class="empty">No turns yet.</p>')
+        if status.note:
+            # Always, not only when the transcript is empty: the disclaimer that
+            # these turns are not a durable record matters *most* once the page is
+            # showing turns, because that is when it starts to look like an archive.
+            parts.append(f'<p class="hint">{_esc(status.note)}</p>')
+        if status.error:
+            parts.append(_problem(status.error, status.fix))
+        return "\n".join(parts)
+
+    inner = _guard("transcript", build)
+    # The badge reports what the source claimed rather than asserting one and
+    # hoping. A source that says it is durable is badged as durable; a transcript
+    # that could not be read is badged as the weaker of the two.
+    durable = seen[0].durable if seen else False
+    badge = "on disk" if durable else "in memory"
+    inner += (
+        "\n<h3>Persisted diary</h3>\n"
+        '<p class="hint">The memory layer writes one summarised entry per day. '
+        "These are summaries, not a verbatim transcript.</p>\n"
+        + _guard("conversation diary", lambda: _diary_html(state.diary()))
+    )
+    return _section("Conversation", inner, anchor="conversation", badge=badge, wide=True)
+
+
+def _chat_section(state: PanelState) -> str:
+    """The chat form. It posts to the same guard the selector does."""
+    inner = (
+        f'<form class="chat" method="post" action="{ROUTE_CHAT}">\n'
+        '<label class="field" for="message">Message to Claire\'s model</label>\n'
+        f'<textarea id="message" name="message" rows="3" maxlength="{MAX_CHAT_CHARS}" '
+        'placeholder="Type here and press Send - the reply appears above." '
+        "required></textarea>\n"
+        '<div class="row">\n'
+        '<span class="hint">Answered through the same provider, model and backend '
+        "the daemon uses. Nothing is spoken, and nothing is stored on disk. "
+        "Type no secrets here: this text is sent to the model and shown back "
+        "on this page.</span>\n"
+        '<button type="submit">Send</button>\n'
+        "</div>\n"
+        "</form>"
+    )
+    # Wide, like the transcript it feeds: the box is the page's main verb, and the
+    # reply the owner is about to read will be rendered at this width above it.
+    return _section("Chat", inner, anchor="chat", wide=True)
+
+
 def render_index(
     state: PanelState,
     *,
@@ -1755,18 +2494,20 @@ def render_index(
     """The one page: everything the owner came for, server-rendered."""
     body = "\n".join(
         [
-            "<h1>Claire panel</h1>",
-            f'<p class="sub">Local only - bound to <span class="mono">'
-            f"{_esc(bind_host)}:{_esc(bind_port)}</span>, plain HTTP, no login. "
-            "It never shows a key value.</p>",
+            _masthead(bind_host, bind_port),
+            "<main>",
+            _conversation_section(state),
+            _chat_section(state),
             _provider_section(state, changed=changed),
             _keys_section(state),
             _router_section(state),
             _calendar_section(state),
             _self_check_section(state),
             _actions_section(state),
+            "</main>",
             f'<footer>Refresh for current state. Text report: '
-            f'<a href="{ROUTE_SELF_CHECK}">{ROUTE_SELF_CHECK}</a>.</footer>',
+            f'<a href="{ROUTE_SELF_CHECK}">{ROUTE_SELF_CHECK}</a> '
+            f'&middot; machine-readable: <a href="{ROUTE_HEALTH}">{ROUTE_HEALTH}</a>.</footer>',
         ]
     )
     return PanelResponse(status=200, body=_page("Claire panel", body).encode("utf-8"))
@@ -1829,9 +2570,21 @@ def render_error_page(exc: PanelError) -> PanelResponse:
     cause reads of the owner's files, so a traversal attempt reads nothing.
     """
     body = [
-        "<h1>Claire panel</h1>",
-        f'<p class="sub">Refused - <span class="mono">{_esc(exc.code)}</span></p>',
-        _section("Request refused", _problem(f"{exc.code}: {exc.message}", exc.fix)),
+        '<header class="top">\n<div class="top-inner">\n'
+        '<div class="brand">\n<span class="dot" aria-hidden="true"></span>\n'
+        "<h1>Claire</h1>\n"
+        f'<span class="tag">refused: {_esc(exc.code)}</span>\n'
+        "</div>\n"
+        '<p class="sub">The panel refused this request and read nothing to do it.</p>\n'
+        "</div>\n</header>",
+        "<main>",
+        _section(
+            "Request refused",
+            _problem(f"{exc.code}: {exc.message}", exc.fix),
+            badge=exc.code,
+            wide=True,
+        ),
+        "</main>",
         f'<footer><a href="{ROUTE_INDEX}">Back to the panel</a></footer>',
     ]
     return PanelResponse(status=exc.status, body=_page("Claire panel - refused", "\n".join(body)).encode("utf-8"))
@@ -1859,23 +2612,61 @@ def _redirect(location: str) -> PanelResponse:
     )
 
 
+def refuse_key_fields(form: Mapping[str, str], route: str) -> None:
+    """Refuse any posted field whose name is credential-shaped.
+
+    Shared by every write endpoint on purpose: the panel has no key field
+    anywhere, and a POST that carries one is refused by name rather than ignored,
+    so "the panel never accepts a key" holds on routes that do not exist yet too.
+    """
+    forbidden = sorted(name for name in form if name.strip().lower() in FORBIDDEN_KEY_FIELDS)
+    if not forbidden:
+        return
+    raise PanelOriginError(
+        f"POST {route} was refused: the body carries "
+        f"{', '.join(repr(name) for name in forbidden)}, and this page never "
+        "accepts a key value.",
+        fix=(
+            "Set a key out-of-band instead: store it with "
+            "`python -m claire.platform.service --help` style tooling or "
+            "KeyStore.store(), or export the provider's environment variable. "
+            "The panel form has no key field by design."
+        ),
+    )
+
+
+def handle_chat(state: PanelState, request: PanelRequest) -> PanelResponse:
+    """The chat endpoint: the same guards as the selector, then one model turn.
+
+    On success it answers 303 back to the panel, so a refresh cannot re-send the
+    message, and the new turns are the first thing on the page.  A model that
+    gives no reply is a named 502, never an empty box.
+    """
+    check_write_origin(request, route=ROUTE_CHAT)
+    form = parse_form(request)
+    refuse_key_fields(form, ROUTE_CHAT)
+    message = str(form.get("message", "") or "").strip()
+    if not message:
+        raise PanelBadRequest(
+            "the chat form carried no message.",
+            fix="Type something in the chat box and send it again.",
+        )
+    if len(message) > MAX_CHAT_CHARS:
+        raise PanelBadRequest(
+            f"the message is {len(message)} characters; the chat box forwards at "
+            f"most {MAX_CHAT_CHARS}.",
+            fix=f"Shorten the message to {MAX_CHAT_CHARS} characters or fewer.",
+        )
+    state.chat_reply(message, timeout_sec=CHAT_TIMEOUT_SECONDS)
+    return _redirect(f"{ROUTE_INDEX}#conversation")
+
+
 def handle_select(state: PanelState, request: PanelRequest) -> PanelResponse:
     """The write endpoint: validate origin, refuse key fields, write, redirect."""
-    check_write_origin(request)
+    check_write_origin(request, route=ROUTE_SELECT)
     form = parse_form(request)
-    forbidden = sorted(name for name in form if name.strip().lower() in FORBIDDEN_KEY_FIELDS)
-    if forbidden:
-        raise PanelOriginError(
-            "POST /select was refused: the body carries "
-            f"{', '.join(repr(name) for name in forbidden)}, and this page never "
-            "accepts a key value.",
-            fix=(
-                "Set a key out-of-band instead: store it with "
-                "`python -m claire.platform.service --help` style tooling or "
-                "KeyStore.store(), or export the provider's environment variable. "
-                "The panel form has no key field by design."
-            ),
-        )
+    refuse_key_fields(form, ROUTE_SELECT)
+
     provider_raw = str(form.get("provider", "") or "").strip()
     model = str(form.get("model", "") or "").strip()
     if not provider_raw:
@@ -1925,12 +2716,14 @@ def dispatch(state: PanelState, request: PanelRequest) -> PanelResponse:
         path, query = parse_target(request.path)
     except PanelError as exc:
         return render_error_page(exc)
-    if path == ROUTE_SELECT:
+    if path in (ROUTE_SELECT, ROUTE_CHAT):
         if request.method != "POST":
             return render_error_page(
                 PanelMethodNotAllowed(request.method, path, allowed=("POST",))
             )
         try:
+            if path == ROUTE_CHAT:
+                return handle_chat(state, request)
             return handle_select(state, request)
         except PanelError as exc:
             return render_error_page(exc)
@@ -1972,7 +2765,17 @@ def _request_from_handler(handler: BaseHTTPRequestHandler) -> PanelRequest:
         except ValueError:
             declared = None
     body = b""
-    if declared is not None and 0 < declared <= MAX_BODY_BYTES:
+    if handler.headers.get("Transfer-Encoding"):
+        # The panel does not de-chunk.  A chunked body has no Content-Length, so
+        # nothing would be read and the body bytes would be parsed as the *next*
+        # request on this keep-alive connection - request smuggling inside the
+        # panel.  Answering and closing is the only safe pair.
+        handler.close_connection = True
+    elif length and declared is None:
+        # A Content-Length we cannot parse means the body's end is unknown: read
+        # nothing, and end the connection rather than guess where it stops.
+        handler.close_connection = True
+    elif declared is not None and 0 < declared <= MAX_BODY_BYTES:
         body = handler.rfile.read(declared)
     elif declared is not None and declared > MAX_BODY_BYTES:
         handler.close_connection = True
@@ -2110,7 +2913,13 @@ def serve(
     """Serve until interrupted. The only place a socket is opened."""
     server = create_server(state or RealPanelState(), host, port, allow_remote=allow_remote)
     bound_host, bound_port = server.server_address[0], server.server_address[1]
-    _LOGGER.info("Claire panel on http://%s:%s/ (plain HTTP, loopback)", bound_host, bound_port)
+    # Say "loopback" only when it is true.  Hard-coding it meant the one line an
+    # operator reads at startup assured them the panel was loopback-only at the
+    # exact moment they had opened it to the network.
+    reach = "loopback" if is_loopback_host(str(bound_host)) else "REACHABLE FROM THE NETWORK"
+    _LOGGER.info(
+        "Claire panel on http://%s:%s/ (plain HTTP, %s)", bound_host, bound_port, reach
+    )
     print(f"Claire panel: http://{bound_host}:{bound_port}/  (Ctrl-C to stop)")
     try:
         server.serve_forever()

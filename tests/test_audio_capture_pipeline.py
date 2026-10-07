@@ -16,7 +16,11 @@ pytestmark = pytest.mark.unit
 
 def listener(rate=48000):
     obj = VoiceListener.__new__(VoiceListener)
-    obj.cfg = SimpleNamespace(voice_min_energy=0.0045, voice_debug=False)
+    # These tests drive the pipeline through ``_transcribe_audio``, which is the
+    # opt-in Whisper decode entry point: Whisper is not reachable unless
+    # ``stt_engine`` names it (Parakeet is the one authoritative recogniser).
+    obj.cfg = SimpleNamespace(voice_min_energy=0.0045, voice_debug=False,
+                              stt_engine="faster_whisper")
     obj._samplerate = 16000
     obj._stream_samplerate = rate
     obj._frame_samples = rate * 20 // 1000
@@ -371,7 +375,8 @@ def test_utterance_finalisation_continues_while_whisper_is_busy():
         obj._silence_frames = 0
         obj.echo_detector = SimpleNamespace(_utterance_start_time=1.0, _tts_start_time=0,
                                             _last_tts_finish_time=0, echo_tolerance=0.3)
-        obj.cfg = SimpleNamespace(voice_debug=False, whisper_min_audio_duration=0.3)
+        obj.cfg = SimpleNamespace(voice_debug=False, whisper_min_audio_duration=0.3,
+                                  stt_engine="faster_whisper")
         obj.tts = None
         obj._calculate_audio_energy = lambda frames: 0.1
 

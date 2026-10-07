@@ -126,6 +126,10 @@ def mark_backend_unavailable(monkeypatch):
 
     monkeypatch.setattr(listener, "WhisperModel", None)
     monkeypatch.setattr(listener, "FASTER_WHISPER_AVAILABLE", False, raising=False)
+    # Whisper is imported lazily on the opt-in path now (a Parakeet-configured
+    # process never imports it), so "not installed" must be expressed by
+    # blocking that lazy import as well as by clearing the cached class.
+    monkeypatch.setattr(listener, "_ensure_faster_whisper_imported", lambda: False)
 
 
 # --------------------------------------------------------------------------- #

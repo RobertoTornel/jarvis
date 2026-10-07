@@ -9,6 +9,7 @@ fake, and every missing-file / missing-backend path runs for real.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -541,8 +542,30 @@ def test_heavy_backends_are_imported_lazily(tmp_path, monkeypatch):
 
 
 def test_module_import_pulls_no_heavy_backend():
-    for heavy in ("nemo", "nemo.collections.asr", "onnxruntime", "torch"):
-        assert heavy not in sys.modules, f"{heavy} should not be imported at module import time"
+    """Importing the module must not drag in a heavy backend.
+
+    Checked in a subprocess on purpose.  ``sys.modules`` is process-global, so
+    asserting on it in-process makes this test a report on every *other* test
+    that ran first rather than on the module itself - and it duly went red
+    intermittently once threaded tests entered the suite, while passing alone
+    and while an import hook recorded no heavy import at all.  A fresh
+    interpreter asks the question that was actually meant.
+    """
+    code = (
+        "import sys\n"
+        "from claire.listening.stt import parakeet  # noqa: F401\n"
+        "heavy = [m for m in (\"nemo\", \"nemo.collections.asr\", \"onnxruntime\", \"torch\")\n"
+        "         if m in sys.modules]\n"
+        "print(\",\".join(heavy))\n"
+        "sys.exit(1 if heavy else 0)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, (
+        "importing claire.listening.stt.parakeet pulled in a heavy backend in a "
+        f"fresh interpreter: {result.stdout.strip() or result.stderr.strip()}"
+    )
 
 
 def test_engine_satisfies_stt_engine_protocol(tmp_path, monkeypatch):

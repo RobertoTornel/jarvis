@@ -1,10 +1,11 @@
-"""The existing faster-whisper path, exposed behind :class:`SttEngine`.
+"""The opt-in faster-whisper path, exposed behind :class:`SttEngine`.
 
-Claire's authoritative recogniser is Parakeet (decision D4), but the
-faster-whisper path is kept as the offline fallback: it is the recogniser that
-already works without the Parakeet model, and it must stay reachable through the
-*same* interface so swapping it in is a configuration change, never a fork in
-the code.
+Claire's authoritative recogniser is Parakeet (decision D4); Whisper is
+**opt-in only** and is never a fallback for it. This engine is built when — and
+only when — ``stt_engine`` names Whisper explicitly
+(:func:`create_stt_engine` raises for any other token). A Parakeet-configured
+process never imports this module's backend library, never downloads a Whisper
+model and never holds one in memory.
 
 This module deliberately contains almost no speech code. It is a thin adapter
 over what the project already has:
@@ -247,6 +248,12 @@ class WhisperSttEngine:
                 return self._model
 
             listener = self._listener_module()
+            # The listener imports faster-whisper lazily (Parakeet is the only
+            # eager recogniser), so ask it to import on this, the opt-in path,
+            # before concluding that the backend is missing.
+            ensure = getattr(listener, "_ensure_faster_whisper_imported", None)
+            if callable(ensure):
+                ensure()
             model_cls = getattr(listener, "WhisperModel", None)
             available = getattr(listener, "FASTER_WHISPER_AVAILABLE", False)
             if model_cls is None or not available:

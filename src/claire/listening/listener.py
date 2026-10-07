@@ -44,9 +44,31 @@ if TYPE_CHECKING:
     from ..memory.conversation import DialogueMemory
 
 
+# Acoustic echo protection.
+#
+# Text similarity cannot separate a *garbled* echo from real speech: Whisper
+# turns Claire's own voice into "Yeah."/"There", which scores far below any
+# fuzzy threshold against her reply text. The reliable signals are acoustic and
+# temporal, so the follow-up window is gated on them instead:
+#
+#   * ``captured_during_tts`` is decided at capture time from the TTS clock and
+#     is true for any utterance whose audio overlapped Claire speaking, up to
+#     ``echo_tolerance`` past her finish.
+#   * ``POST_TTS_TAIL_GUARD_SECONDS`` extends that rejection past the TTS finish
+#     so the room's acoustic tail (reverb + speaker/mic latency, several hundred
+#     ms in a real room) cannot be mistaken for the human's follow-up. The old
+#     0.3 s ``echo_tolerance`` alone was demonstrably too short.
+POST_TTS_TAIL_GUARD_SECONDS = 0.6
+
+# At most one hot-window follow-up per explicit wake word. This is the loop
+# breaker: even if a garbled echo slips past the acoustic gate, Claire's reply
+# cannot re-arm the window off itself — the human must say "Claire" again.
+MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1
+
+
 @dataclass(frozen=True)
 class LowConfidenceEvent:
-    """A rejected Whisper segment, available in memory to listener consumers."""
+    """A rejected recognition segment, available in memory to listener consumers."""
 
     confidence: float
     transcript: str
@@ -136,9 +158,20 @@ except OSError as e:
         print("     On Linux, ensure PortAudio is installed: sudo apt install libportaudio2", flush=True)
     del _sys
 
-# Whisper backend imports - try MLX first on Apple Silicon, fall back to faster-whisper
+# Whisper is **opt-in only**: Parakeet is the one authoritative recogniser
+# (decision D4) and Whisper is never a fallback for it. Nothing here may import
+# a Whisper backend at module load, because a process configured for Parakeet
+# must never pull one into memory or even into ``sys.modules``. The names below
+# stay as the module-level seam that tests patch; the real imports happen inside
+# the functions that run the opt-in path (``_ensure_*_whisper_imported``).
 MLX_WHISPER_AVAILABLE = False
 FASTER_WHISPER_AVAILABLE = False
+WhisperModel: Any = None   # bound by _ensure_faster_whisper_imported()
+mlx_whisper: Any = None    # bound by _ensure_mlx_whisper_imported()
+
+#: Transcript source recorded when Whisper is the explicitly configured
+#: recogniser (opt-in only). Mirrors ``stt.whisper_engine.ENGINE_NAME``.
+WHISPER_SOURCE = "faster_whisper"
 
 def _is_apple_silicon() -> bool:
     """Check if running on Apple Silicon Mac."""
@@ -311,23 +344,47 @@ def _print_cuda_unavailable_hint(missing_libs: list[str]) -> None:
     )
 
 
-try:
-    if _is_apple_silicon():
-        import mlx_whisper
-        MLX_WHISPER_AVAILABLE = True
-        debug_log("mlx-whisper loaded successfully", "voice")
-except Exception as _mlx_err:
-    mlx_whisper = None
-    if _is_apple_silicon():
-        debug_log(f"mlx-whisper unavailable, falling back to faster-whisper: {_mlx_err}", "voice")
+def _ensure_faster_whisper_imported() -> bool:
+    """Import faster-whisper on first use of the opt-in Whisper path.
 
-try:
-    from faster_whisper import WhisperModel
+    Returns ``True`` when ``WhisperModel`` is bound. Deliberately never called
+    while a Parakeet recogniser is configured, so ``faster_whisper`` stays out
+    of ``sys.modules`` in that process. A test that patched ``WhisperModel``
+    (or the availability flag) wins, because the import only happens when the
+    name is still unbound.
+    """
+    global WhisperModel, FASTER_WHISPER_AVAILABLE
+    if WhisperModel is not None:
+        return True
+    try:
+        from faster_whisper import WhisperModel as _WhisperModel
+    except Exception:
+        # Catch broad: the faster-whisper import chain can raise ValueError
+        # (e.g. "psutil.__spec__ is not set") in some environments.
+        FASTER_WHISPER_AVAILABLE = False
+        return False
+    WhisperModel = _WhisperModel
     FASTER_WHISPER_AVAILABLE = True
-except Exception:
-    # Catch broad: the faster-whisper import chain can raise ValueError
-    # (e.g. "psutil.__spec__ is not set") in some environments.
-    WhisperModel = None
+    return True
+
+
+def _ensure_mlx_whisper_imported() -> bool:
+    """Import mlx-whisper on first use of the opt-in Whisper path on Apple silicon."""
+    global mlx_whisper, MLX_WHISPER_AVAILABLE
+    if MLX_WHISPER_AVAILABLE and mlx_whisper is not None:
+        return True
+    if not _is_apple_silicon():
+        return False
+    try:
+        import mlx_whisper as _mlx_whisper
+    except Exception as exc:
+        MLX_WHISPER_AVAILABLE = False
+        debug_log(f"mlx-whisper unavailable, using faster-whisper: {exc}", "voice")
+        return False
+    mlx_whisper = _mlx_whisper
+    MLX_WHISPER_AVAILABLE = True
+    debug_log("mlx-whisper loaded successfully", "voice")
+    return True
 
 
 def _is_faster_whisper_turbo_supported() -> bool:
@@ -411,9 +468,18 @@ def _clear_corrupted_whisper_cache(error_message: str) -> bool:
 
 def _load_faster_whisper_model(model_name: str, *, device: str, compute_type: str,
                                cpu_threads: int):
-    """Load complete local files after isolated preparation on every load path."""
+    """Load complete local files after isolated preparation on every load path.
+
+    The faster-whisper import happens here, on the opt-in path only, so a
+    Parakeet-configured process never imports it.
+    """
     from .model_download import prepare_faster_whisper_model
 
+    if not _ensure_faster_whisper_imported() or WhisperModel is None:
+        raise RuntimeError(
+            "faster-whisper is not installed, but stt_engine names it as the "
+            "recogniser. Install it or set stt_engine='parakeet'."
+        )
     path = prepare_faster_whisper_model(model_name)
     print(f"     🎤 Loading Whisper '{model_name}' (device={device}, compute={compute_type})...", flush=True)
     return WhisperModel(path, device=device, compute_type=compute_type,
@@ -499,7 +565,7 @@ class VoiceListener(threading.Thread):
         self._whisper_cpu_recovery_attempted = False
         self._slow_transcription_streak = 0
         self._slow_transcription_warned = False
-        self.transcribe_lock = threading.Lock()  # Shared lock for Whisper model access
+        self.transcribe_lock = threading.Lock()  # Shared lock for opt-in Whisper model access
         self._audio_q: queue.Queue = queue.Queue(maxsize=64)
         self._transcription_jobs_q: queue.Queue = queue.Queue(maxsize=8)
         self._transcription_results_q: queue.Queue = queue.Queue(maxsize=8)
@@ -541,7 +607,8 @@ class VoiceListener(threading.Thread):
             hot_window_seconds=float(getattr(self.cfg, "hot_window_seconds", 3.0)),
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
             voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 2.0)),
-            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0))
+            max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 60.0)),
+            hot_window_turn_limit=MAX_CONSECUTIVE_HOT_WINDOW_TURNS,
         )
 
         # Energy tracking for echo detection
@@ -668,6 +735,12 @@ class VoiceListener(threading.Thread):
         # utterance would vouch for subsequent unrelated utterances via the
         # `_wake_timestamp is not None` guard in the intent-judge accept path.
         self._wake_timestamp = None
+
+        # An explicit wake word is a fresh human turn: it restarts the
+        # hot-window renewal chain so this reply may again open one follow-up
+        # window (the loop-breaker in StateManager).
+        if self._wake_word_seen(text_lower, provisional_lower):
+            self.state_manager.note_wake_word_engagement()
 
         start_time_str = datetime.fromtimestamp(utterance_start_time).strftime('%H:%M:%S.%f')[:-3] if utterance_start_time > 0 else "N/A"
         end_time_str = datetime.fromtimestamp(utterance_end_time).strftime('%H:%M:%S.%f')[:-3] if utterance_end_time > 0 else "N/A"
@@ -803,6 +876,47 @@ class VoiceListener(threading.Thread):
                     debug_log(f"echo rejected during TTS: '{text_lower[:50]}'", "echo")
                     print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
                     return
+
+        # --- Acoustic echo gate (the mis-transcribed-echo defence) ---
+        # This runs before the text-salvage and intent-judge paths on purpose.
+        # Text similarity cannot recognise a *garbled* echo, so no text-based
+        # check can be trusted here: the decision is made on when the audio was
+        # captured relative to Claire's own speech.
+        #
+        #  (a) `captured_during_tts` is set at capture time from the TTS clock,
+        #      so it is true for any utterance whose audio overlapped her voice
+        #      (including the echo_tolerance tail).
+        #  (b) An utterance that begins after she finished is still rejected
+        #      until POST_TTS_TAIL_GUARD_SECONDS have passed, covering the room's
+        #      acoustic tail that the 0.3 s echo_tolerance missed.
+        #
+        # The one legitimate exception is an explicit wake word: "Claire!" said
+        # over her voice is a deliberate human interruption, verified with the
+        # same detector the wake-word path uses.
+        tts_finish_time = self.echo_detector._last_tts_finish_time if same_tts_context else 0.0
+        in_post_tts_tail = (
+            tts_finish_time > 0
+            and utterance_start_time > 0
+            and tts_finish_time <= utterance_start_time
+            < tts_finish_time + POST_TTS_TAIL_GUARD_SECONDS
+        )
+        if received_during_tts or in_post_tts_tail:
+            addressed_by_name = self._wake_word_seen(text_lower, provisional_lower)
+            if addressed_by_name:
+                debug_log(
+                    f"audio overlapped TTS but wake word present — honoured: "
+                    f"'{text_lower[:50]}'",
+                    "voice",
+                )
+            else:
+                debug_log(
+                    f"🔇 acoustic echo gate: rejected audio captured during/just "
+                    f"after TTS (captured_during_tts={received_during_tts}, "
+                    f"post_tts_tail={in_post_tts_tail}): '{text_lower[:50]}'",
+                    "echo",
+                )
+                print(f"  🔇 Heard (echo): \"{text_lower[:50]}{'...' if len(text_lower) > 50 else ''}\"", flush=True)
+                return
 
         # Salvage user speech from merged echo+speech chunks.
         # When Whisper delivers a single transcript containing TTS echo followed by
@@ -1680,11 +1794,13 @@ class VoiceListener(threading.Thread):
     def _get_authoritative_stt_engine(self) -> Optional[Any]:
         """Build the authoritative recogniser lazily, or ``None`` if it cannot.
 
-        The factories raise *named* errors for a missing model, a missing
+        The factory raises *named* errors for a missing model, a missing
         backend or a bad path. Those are caught here and turned into a recorded
-        reason, because the honest degradation path is to keep transcribing
-        with the existing Whisper engine and mark the turn degraded — never to
-        crash at startup and never to pretend a Parakeet transcript exists.
+        reason, because the honest failure is to report the turn degraded and
+        name the setting to fix — never to crash at startup, never to pretend a
+        Parakeet transcript exists, and never to hand the turn to a second,
+        worse engine. Exactly one engine is built and cached for the process
+        lifetime, which is what lets the phone bridge share it.
         """
         engine = getattr(self, "_authoritative_stt", None)
         if engine is not None:
@@ -1819,14 +1935,54 @@ class VoiceListener(threading.Thread):
         self._reset_streaming_segment()
         return (text.strip() or partial)
 
+    #: ``stt_engine`` spellings that select the opt-in Whisper recogniser.
+    _WHISPER_ENGINE_NAMES = ("faster_whisper", "faster-whisper", "whisper")
+
+    def _configured_engine(self) -> str:
+        """The configured authoritative recogniser: ``'parakeet'`` or ``'whisper'``.
+
+        Parakeet is the default, so a config that does not name a recogniser is
+        Parakeet. A non-string value (an undescribed config object) is treated
+        as the default too, so nothing selects Whisper by accident.
+        """
+        raw = getattr(self.cfg, "stt_engine", "parakeet")
+        if not isinstance(raw, str):
+            return "parakeet"
+        if raw.strip().lower() in self._WHISPER_ENGINE_NAMES:
+            return "whisper"
+        return "parakeet"
+
+    def _configures_whisper(self) -> bool:
+        """True only when Whisper is deliberately configured (never a fallback)."""
+        return self._configured_engine() == "whisper"
+
     def _decode_utterance(self, audio) -> tuple[str, Optional[str], tuple, Optional[str], Optional[str]]:
         """The authoritative transcript for one utterance, honestly sourced.
 
         Returns ``(text, language, low_confidence_events, source,
-        degraded_reason)``. A ``degraded_reason`` means the configured
-        authoritative engine did not run and the existing Whisper path answered
-        instead: the text is real but the turn must be marked degraded.
+        degraded_reason)``.
+
+        Parakeet is the one authoritative recogniser. When it cannot answer this
+        returns an **empty** transcript and a ``degraded_reason`` that names the
+        setting to fix: the turn is dropped and the failure is reported through
+        :meth:`_note_stt_degradation`. It is never re-decoded by a second,
+        worse engine. Whisper is reachable only when ``stt_engine`` names it
+        explicitly (opt-in), and even then a Whisper that produces nothing is a
+        degraded turn rather than a silent success.
         """
+        if self._configures_whisper():
+            # Opt-in path only. The startup load already made this process's
+            # Whisper resident; no Parakeet engine is built here.
+            text, language, low_confidence_events = self._transcribe_audio(audio)
+            if (text or "").strip():
+                return text, language, low_confidence_events, WHISPER_SOURCE, None
+            reason = (
+                "the configured Whisper recogniser "
+                "(stt_engine='faster_whisper') produced no transcript"
+            )
+            self._note_stt_degradation(reason)
+            return "", language, low_confidence_events, SOURCE_STREAMING_FALLBACK, reason
+
         engine = self._get_authoritative_stt_engine()
         if engine is not None:
             try:
@@ -1835,24 +1991,24 @@ class VoiceListener(threading.Thread):
                 reason = self._stt_unavailable_reason(exc)
                 self._note_stt_degradation(reason)
                 debug_log(f"authoritative STT decode failed: {reason}", "voice")
-            else:
-                return (
-                    result.text,
-                    result.language,
-                    tuple(result.low_confidence_events),
-                    self._source_for_engine(engine),
-                    None,
-                )
-        else:
-            reason = (
-                getattr(self, "_authoritative_stt_reason", None)
-                or "stt_model_path is not set, so no authoritative Parakeet "
-                   "transcript was produced"
+                return "", None, (), SOURCE_STREAMING_FALLBACK, reason
+            return (
+                result.text,
+                result.language,
+                tuple(result.low_confidence_events),
+                self._source_for_engine(engine),
+                None,
             )
-            self._note_stt_degradation(reason)
 
-        text, language, low_confidence_events = self._transcribe_audio(audio)
-        return text, language, low_confidence_events, SOURCE_STREAMING_FALLBACK, reason
+        reason = (
+            getattr(self, "_authoritative_stt_reason", None)
+            or "stt_model_path is not set, so no authoritative Parakeet "
+               "transcript was produced"
+        )
+        self._note_stt_degradation(reason)
+        # No second engine answers in Whisper's place: an empty authoritative
+        # transcript with a named reason is the honest outcome.
+        return "", None, (), SOURCE_STREAMING_FALLBACK, reason
 
     @staticmethod
     def _source_for_engine(engine) -> str:
@@ -1935,10 +2091,10 @@ class VoiceListener(threading.Thread):
         self._transcription_worker_thread = threading.Thread(
             target=self._run_transcription_worker,
             daemon=True,
-            name="claire-whisper-transcription",
+            name="claire-transcription",
         )
         self._transcription_worker_thread.start()
-        debug_log("started serial Whisper transcription worker", "voice")
+        debug_log("started serial transcription worker", "voice")
 
     def _transcription_is_current(self, generation: int) -> bool:
         return (
@@ -2005,9 +2161,16 @@ class VoiceListener(threading.Thread):
             return
         slow = decode_seconds > audio_seconds and decode_seconds >= 2.0
         self._slow_transcription_streak = self._slow_transcription_streak + 1 if slow else 0
+        # Name the engine that actually decoded. This said "Whisper timing"
+        # with whisper's model even when Parakeet produced the transcript,
+        # which credited the wrong recogniser for every slow turn.
+        if self._configures_whisper():
+            engine_label = f"whisper '{self._whisper_model_name}'"
+        else:
+            engine_label = f"{self._configured_engine()} (no fallback engine)"
         debug_log(
-            f"Whisper timing: audio={audio_seconds:.2f}s, decode={decode_seconds:.2f}s, "
-            f"model={self._whisper_model_name}", "voice",
+            f"Transcription timing: audio={audio_seconds:.2f}s, "
+            f"decode={decode_seconds:.2f}s, engine={engine_label}", "voice",
         )
         if self._slow_transcription_streak < 3:
             return
@@ -2136,21 +2299,296 @@ class VoiceListener(threading.Thread):
         except Exception as exc:
             self._audio_callback_error = str(exc)
 
+    def _initialise_whisper_backend(self) -> bool:
+        """Load the opt-in Whisper recogniser; ``False`` aborts the loop.
+
+        Reachable only when ``stt_engine`` names Whisper explicitly. A
+        Parakeet-configured process never calls this, so it never imports
+        ``faster_whisper``/``mlx_whisper``, never downloads a model and
+        never holds one in memory (decision D4: one listening model).
+        """
+        # Determine and initialise Whisper backend
+        self._whisper_backend = self._determine_whisper_backend()
+        model_name = getattr(self.cfg, "whisper_model", "small")
+
+        # Validate large-v3-turbo support for faster-whisper backend
+        if model_name == "large-v3-turbo" and self._whisper_backend != "mlx":
+            if not _is_faster_whisper_turbo_supported():
+                debug_log(
+                    "faster-whisper does not support large-v3-turbo, "
+                    "falling back to medium", "voice",
+                )
+                print(
+                    "  ⚠️  large-v3-turbo is not supported by the installed Whisper engine, "
+                    "using medium instead. Change the model in Whisper settings "
+                    "or rerun the Setup Wizard.", flush=True,
+                )
+                model_name = "medium"
+
+        if self._whisper_backend == "mlx":
+            if not MLX_WHISPER_AVAILABLE:
+                debug_log("MLX Whisper not available", "voice")
+                print("  ❌ MLX Whisper not available. Install with: pip install mlx-whisper", flush=True)
+                return False
+
+            self._mlx_model_repo = _get_mlx_model_repo(model_name)
+            print(f"🎤 Preparing Whisper '{model_name}' (Apple Silicon GPU)...", flush=True)
+
+            max_retries = 4
+            for attempt in range(max_retries + 1):
+                try:
+                    from .model_download import prepare_mlx_model
+                    # Use the same local path for warmup and subsequent transcriptions
+                    # so mlx-whisper reuses its in-memory model cache.
+                    self._mlx_model_repo = prepare_mlx_model(_get_mlx_model_repo(model_name))
+                    # Pre-load the model by doing a warmup transcription.
+                    # Use low-amplitude noise (not silence) so the decoder actually runs —
+                    # silent audio trips the no-speech short-circuit and leaves the decode
+                    # path cold, so the first real utterance still pays the full cost.
+                    if np is not None:
+                        rng = np.random.default_rng(0)
+                        warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
+                        _ = mlx_whisper.transcribe(
+                            warmup_audio,
+                            path_or_hf_repo=self._mlx_model_repo,
+                            language=None,
+                        )
+                        debug_log(f"MLX Whisper model pre-loaded: repo={self._mlx_model_repo}", "voice")
+
+                    print(f"     🎤 MLX Whisper '{model_name}' ready (Apple Silicon GPU)", flush=True)
+                    break
+                except Exception as e:
+                    error_str = str(e).lower()
+                    is_rate_limited = (
+                        any(x in error_str for x in ["429", "too many requests", "rate limit"])
+                        or getattr(getattr(e, "response", None), "status_code", None) == 429
+                    )
+                    if is_rate_limited and attempt < max_retries:
+                        wait = 2 ** (attempt + 1)
+                        debug_log(f"rate limited loading MLX Whisper (attempt {attempt + 1}): {e}", "voice")
+                        print(f"  ⏳ Rate limited by HuggingFace, retrying in {wait}s ({attempt + 1}/{max_retries})...", flush=True)
+                        time.sleep(wait)
+                        continue
+                    debug_log(f"failed to initialise MLX Whisper: {e}", "voice")
+                    print(f"  ❌ Failed to initialise MLX Whisper: {e}", flush=True)
+                    if is_rate_limited:
+                        print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
+                    return False
+        else:
+            # faster-whisper backend
+            if not FASTER_WHISPER_AVAILABLE:
+                debug_log("faster-whisper not available", "voice")
+                print("  ❌ faster-whisper not available. Install with: pip install faster-whisper", flush=True)
+                return False
+
+            device = getattr(self.cfg, "whisper_device", "auto")
+            compute = getattr(self.cfg, "whisper_compute_type", "int8")
+
+            # On Windows, probe for CUDA runtime libraries before trying to
+            # use them. faster-whisper/CTranslate2 lazily loads cuBLAS and
+            # cuDNN during transcription, so without this check a model
+            # that loaded fine on cuda will crash on the first audio chunk.
+            resolved_device, missing_libs = _probe_windows_cuda_libraries(device)
+            if missing_libs:
+                _print_cuda_unavailable_hint(missing_libs)
+            device = resolved_device
+
+            # Build list of (device, compute_type) combinations to try
+            # This handles both compute type fallbacks and CUDA -> CPU fallbacks
+            configs_to_try = []
+
+            # Start with preferred config
+            compute_types = [compute]
+            if compute == "int8":
+                compute_types.extend(["float16", "float32"])
+            elif compute == "float16":
+                compute_types.append("float32")
+
+            # Add preferred device with all compute types
+            for ct in compute_types:
+                configs_to_try.append((device, ct))
+
+            # If device is "auto" or "cuda", add CPU fallback configs
+            # This handles Windows without CUDA libraries
+            if device in ("auto", "cuda"):
+                for ct in compute_types:
+                    configs_to_try.append(("cpu", ct))
+
+            last_error = None
+            cache_recovery_attempted = False
+            used_device = device
+            used_compute = compute
+            for try_device, try_compute in configs_to_try:
+                try:
+                    cpu_threads = (os.cpu_count() or 4) if try_device in ("cpu", "auto") else 0
+                    self.model = _load_faster_whisper_model(
+                        model_name, device=try_device, compute_type=try_compute,
+                        cpu_threads=cpu_threads,
+                    )
+                    self._apply_whisper_load_success(
+                        model_name, try_device, try_compute,
+                        device, compute, cpu_threads,
+                    )
+                    used_device = try_device
+                    used_compute = try_compute
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+
+                    # Check if this is a CUDA/GPU-related error that we should fall back from
+                    is_cuda_error = any(x in error_str for x in [
+                        "cuda", "cublas", "cudnn", "gpu", "nvidia",
+                        ".dll is not found", "library", "ctypes"
+                    ])
+                    is_compute_error = any(x in error_str for x in [
+                        "compute type", "int8", "float16"
+                    ])
+
+                    is_corrupted_cache = "unable to open file" in error_str
+                    if not is_corrupted_cache and (is_cuda_error or is_compute_error):
+                        debug_log(f"config ({try_device}, {try_compute}) failed, trying fallback: {e}", "voice")
+                        continue
+
+                    if is_corrupted_cache:
+                        if cache_recovery_attempted:
+                            debug_log("cache recovery already attempted; retaining cache for device fallback", "voice")
+                            continue
+                        cache_recovery_attempted = True
+                        debug_log(f"detected corrupted Whisper model cache: {e}", "voice")
+                        print("  ⚠️  Whisper model cache appears corrupted, attempting recovery...", flush=True)
+
+                        cache_cleared = _clear_corrupted_whisper_cache(str(e))
+                        if cache_cleared:
+                            try:
+                                print(f"     🎤 Re-downloading Whisper '{model_name}'...", flush=True)
+                                self.model = _load_faster_whisper_model(
+                                    model_name, device=try_device, compute_type=try_compute,
+                                    cpu_threads=cpu_threads,
+                                )
+                                self._apply_whisper_load_success(
+                                    model_name, try_device, try_compute,
+                                    device, compute, cpu_threads,
+                                    context="recovered",
+                                )
+                                used_device = try_device
+                                used_compute = try_compute
+                                last_error = None
+                                break
+                            except Exception as retry_e:
+                                last_error = retry_e
+                                debug_log(f"retry after cache clear also failed: {retry_e}", "voice")
+                                print(f"  ❌ Failed to load Whisper model after cache recovery: {retry_e}", flush=True)
+                                print("  💡 Try manually deleting the Whisper model cache directory and restarting", flush=True)
+                                if (isinstance(retry_e, ModelDownloadError)
+                                        and retry_e.category not in ('rate_limit', 'incomplete_download')):
+                                    return False
+                                debug_log("trying next device/compute fallback config", "voice")
+                                continue
+                        else:
+                            debug_log("could not clear corrupted cache automatically", "voice")
+                            print(f"  ❌ Failed to load Whisper model: {e}", flush=True)
+                            print("  💡 Try manually deleting the Whisper model cache directory and restarting", flush=True)
+                            continue
+                    # Check for rate limiting (HTTP 429) — check string and response status code
+                    # (HfHubHTTPError may carry the status on .response without "429" in str(e))
+                    is_rate_limited = (
+                        (isinstance(e, ModelDownloadError) and e.category == 'rate_limit')
+                        or any(x in error_str for x in ["429", "too many requests", "rate limit"])
+                        or getattr(getattr(e, "response", None), "status_code", None) == 429
+                    )
+
+                    incomplete_download = (
+                        isinstance(e, ModelDownloadError)
+                        and e.category == 'incomplete_download'
+                    )
+                    if is_rate_limited or incomplete_download:
+                        _max_retries = 4
+                        _backoff = 2
+                        retry_reason = ('Rate limited by HuggingFace' if is_rate_limited
+                                        else 'Whisper download is incomplete')
+                        debug_log(f"retryable Whisper preparation failure: {e}", "voice")
+                        retry_succeeded = False
+                        for retry_num in range(1, _max_retries + 1):
+                            wait = _backoff ** retry_num
+                            print(f"  ⏳ {retry_reason}, retrying in {wait}s ({retry_num}/{_max_retries})...", flush=True)
+                            time.sleep(wait)
+                            try:
+                                self.model = _load_faster_whisper_model(
+                                    model_name, device=try_device, compute_type=try_compute,
+                                    cpu_threads=cpu_threads,
+                                )
+                                self._apply_whisper_load_success(
+                                    model_name, try_device, try_compute,
+                                    device, compute, cpu_threads,
+                                    context="download retry",
+                                )
+                                used_device = try_device
+                                used_compute = try_compute
+                                last_error = None
+                                retry_succeeded = True
+                                break
+                            except Exception as retry_e:
+                                debug_log(f"download retry {retry_num} failed: {retry_e}", "voice")
+                                last_error = retry_e
+                                if (isinstance(retry_e, ModelDownloadError)
+                                        and retry_e.category not in ('rate_limit', 'incomplete_download')):
+                                    print(f"  ❌ Failed to prepare Whisper model: {retry_e}", flush=True)
+                                    return False
+                        if retry_succeeded:
+                            break
+                        debug_log(f"gave up after {_max_retries} download retries", "voice")
+                        print(f"  ❌ Failed to load Whisper model after {_max_retries} retries: {last_error}", flush=True)
+                        if is_rate_limited:
+                            print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
+                        else:
+                            print("  💡 Check connectivity and free disk space, then restart to resume the download.", flush=True)
+                        return False
+                    else:
+                        # For other errors (model not found, etc.), don't try fallbacks
+                        debug_log(f"failed to initialise faster-whisper: {e}", "voice")
+                        print(f"  ❌ Failed to load Whisper model: {e}", flush=True)
+                        return False
+
+            if last_error is not None:
+                debug_log(f"failed to initialise faster-whisper with any config: {last_error}", "voice")
+                print(f"  ❌ Failed to load Whisper model: {last_error}", flush=True)
+                return False
+
+            # Warm up faster-whisper so the first real utterance doesn't pay
+            # the cold-decode cost. Use low-amplitude noise rather than pure
+            # silence — silence trips faster-whisper's no-speech short-circuit
+            # and the decoder never actually runs. Mirror the real transcribe
+            # parameters so beam search, language detection, and the timestamp
+            # path are all exercised here instead of on the user's first word.
+            if np is not None and self.model is not None:
+                try:
+                    rng = np.random.default_rng(0)
+                    warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
+                    self._decode_faster_whisper(warmup_audio)
+                    debug_log("faster-whisper warmup transcription complete", "voice")
+                except Exception as e:
+                    debug_log(f"faster-whisper warmup failed: {e}", "voice")
+        return True
+
+
     def _determine_whisper_backend(self) -> str:
-        """Determine which Whisper backend to use based on config and availability."""
+        """Which Whisper backend to use — only ever on the opt-in Whisper path."""
         backend_pref = getattr(self.cfg, "whisper_backend", "auto")
 
         if backend_pref == "mlx":
-            if MLX_WHISPER_AVAILABLE:
+            if _ensure_mlx_whisper_imported():
                 return "mlx"
-            debug_log("MLX Whisper requested but not available, falling back to faster-whisper", "voice")
+            debug_log("MLX Whisper requested but not available, using faster-whisper", "voice")
             return "faster-whisper"
 
         if backend_pref == "faster-whisper":
             return "faster-whisper"
 
-        # Auto mode: prefer MLX on Apple Silicon
-        if MLX_WHISPER_AVAILABLE and _is_apple_silicon():
+        # Auto mode: prefer MLX on Apple Silicon. The import is attempted only
+        # here, so a non-Apple machine never imports mlx-whisper at all.
+        if _is_apple_silicon() and _ensure_mlx_whisper_imported():
             return "mlx"
 
         return "faster-whisper"
@@ -2217,7 +2655,7 @@ class VoiceListener(threading.Thread):
         so it pages models into Ollama's resident memory on the Ollama path
         and sends a minimal inference to load the model on an OpenAI-
         compatible server. Starts daemon threads concurrently so
-        warmup overlaps with Whisper initialisation. When both models point
+        warmup overlaps with recogniser setup. When both models point
         at the same model, a single warmup covers both.
 
         Results land in ``self._llm_warmup_results`` keyed by role. The
@@ -2468,277 +2906,26 @@ class VoiceListener(threading.Thread):
                 debug_log(f"microphone permission check error: {e}", "voice")
                 print(f"  ⚠️  Microphone check error: {e}", flush=True)
 
-        # Kick off LLM warmups in parallel with Whisper load so the first
+        # Kick off LLM warmups in parallel with recogniser setup so the first
         # user engagement doesn't pay cold-load cost on either model. All
-        # warmup output (Whisper + LLMs) is indented under this header to
+        # warmup output (recogniser + LLMs) is indented under this header to
         # visually group the phase.
         print("  🔥 Warming up models...", flush=True)
         self._llm_warmup_started_at = time.time()
         self._llm_warmup_threads = self._start_llm_warmup()
 
-        # Determine and initialise Whisper backend
-        self._whisper_backend = self._determine_whisper_backend()
-        model_name = getattr(self.cfg, "whisper_model", "small")
-
-        # Validate large-v3-turbo support for faster-whisper backend
-        if model_name == "large-v3-turbo" and self._whisper_backend != "mlx":
-            if not _is_faster_whisper_turbo_supported():
-                debug_log(
-                    "faster-whisper does not support large-v3-turbo, "
-                    "falling back to medium", "voice",
-                )
-                print(
-                    "  ⚠️  large-v3-turbo is not supported by the installed Whisper engine, "
-                    "using medium instead. Change the model in Whisper settings "
-                    "or rerun the Setup Wizard.", flush=True,
-                )
-                model_name = "medium"
-
-        if self._whisper_backend == "mlx":
-            if not MLX_WHISPER_AVAILABLE:
-                debug_log("MLX Whisper not available", "voice")
-                print("  ❌ MLX Whisper not available. Install with: pip install mlx-whisper", flush=True)
+        if self._configures_whisper():
+            # Whisper is opt-in only, so this is the one path that loads it.
+            if not self._initialise_whisper_backend():
                 return
-
-            self._mlx_model_repo = _get_mlx_model_repo(model_name)
-            print(f"🎤 Preparing Whisper '{model_name}' (Apple Silicon GPU)...", flush=True)
-
-            max_retries = 4
-            for attempt in range(max_retries + 1):
-                try:
-                    from .model_download import prepare_mlx_model
-                    # Use the same local path for warmup and subsequent transcriptions
-                    # so mlx-whisper reuses its in-memory model cache.
-                    self._mlx_model_repo = prepare_mlx_model(_get_mlx_model_repo(model_name))
-                    # Pre-load the model by doing a warmup transcription.
-                    # Use low-amplitude noise (not silence) so the decoder actually runs —
-                    # silent audio trips the no-speech short-circuit and leaves the decode
-                    # path cold, so the first real utterance still pays the full cost.
-                    if np is not None:
-                        rng = np.random.default_rng(0)
-                        warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
-                        _ = mlx_whisper.transcribe(
-                            warmup_audio,
-                            path_or_hf_repo=self._mlx_model_repo,
-                            language=None,
-                        )
-                        debug_log(f"MLX Whisper model pre-loaded: repo={self._mlx_model_repo}", "voice")
-
-                    print(f"     🎤 MLX Whisper '{model_name}' ready (Apple Silicon GPU)", flush=True)
-                    break
-                except Exception as e:
-                    error_str = str(e).lower()
-                    is_rate_limited = (
-                        any(x in error_str for x in ["429", "too many requests", "rate limit"])
-                        or getattr(getattr(e, "response", None), "status_code", None) == 429
-                    )
-                    if is_rate_limited and attempt < max_retries:
-                        wait = 2 ** (attempt + 1)
-                        debug_log(f"rate limited loading MLX Whisper (attempt {attempt + 1}): {e}", "voice")
-                        print(f"  ⏳ Rate limited by HuggingFace, retrying in {wait}s ({attempt + 1}/{max_retries})...", flush=True)
-                        time.sleep(wait)
-                        continue
-                    debug_log(f"failed to initialise MLX Whisper: {e}", "voice")
-                    print(f"  ❌ Failed to initialise MLX Whisper: {e}", flush=True)
-                    if is_rate_limited:
-                        print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
-                    return
         else:
-            # faster-whisper backend
-            if not FASTER_WHISPER_AVAILABLE:
-                debug_log("faster-whisper not available", "voice")
-                print("  ❌ faster-whisper not available. Install with: pip install faster-whisper", flush=True)
-                return
-
-            device = getattr(self.cfg, "whisper_device", "auto")
-            compute = getattr(self.cfg, "whisper_compute_type", "int8")
-
-            # On Windows, probe for CUDA runtime libraries before trying to
-            # use them. faster-whisper/CTranslate2 lazily loads cuBLAS and
-            # cuDNN during transcription, so without this check a model
-            # that loaded fine on cuda will crash on the first audio chunk.
-            resolved_device, missing_libs = _probe_windows_cuda_libraries(device)
-            if missing_libs:
-                _print_cuda_unavailable_hint(missing_libs)
-            device = resolved_device
-
-            # Build list of (device, compute_type) combinations to try
-            # This handles both compute type fallbacks and CUDA -> CPU fallbacks
-            configs_to_try = []
-
-            # Start with preferred config
-            compute_types = [compute]
-            if compute == "int8":
-                compute_types.extend(["float16", "float32"])
-            elif compute == "float16":
-                compute_types.append("float32")
-
-            # Add preferred device with all compute types
-            for ct in compute_types:
-                configs_to_try.append((device, ct))
-
-            # If device is "auto" or "cuda", add CPU fallback configs
-            # This handles Windows without CUDA libraries
-            if device in ("auto", "cuda"):
-                for ct in compute_types:
-                    configs_to_try.append(("cpu", ct))
-
-            last_error = None
-            cache_recovery_attempted = False
-            used_device = device
-            used_compute = compute
-            for try_device, try_compute in configs_to_try:
-                try:
-                    cpu_threads = (os.cpu_count() or 4) if try_device in ("cpu", "auto") else 0
-                    self.model = _load_faster_whisper_model(
-                        model_name, device=try_device, compute_type=try_compute,
-                        cpu_threads=cpu_threads,
-                    )
-                    self._apply_whisper_load_success(
-                        model_name, try_device, try_compute,
-                        device, compute, cpu_threads,
-                    )
-                    used_device = try_device
-                    used_compute = try_compute
-                    last_error = None
-                    break
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e).lower()
-
-                    # Check if this is a CUDA/GPU-related error that we should fall back from
-                    is_cuda_error = any(x in error_str for x in [
-                        "cuda", "cublas", "cudnn", "gpu", "nvidia",
-                        ".dll is not found", "library", "ctypes"
-                    ])
-                    is_compute_error = any(x in error_str for x in [
-                        "compute type", "int8", "float16"
-                    ])
-
-                    is_corrupted_cache = "unable to open file" in error_str
-                    if not is_corrupted_cache and (is_cuda_error or is_compute_error):
-                        debug_log(f"config ({try_device}, {try_compute}) failed, trying fallback: {e}", "voice")
-                        continue
-
-                    if is_corrupted_cache:
-                        if cache_recovery_attempted:
-                            debug_log("cache recovery already attempted; retaining cache for device fallback", "voice")
-                            continue
-                        cache_recovery_attempted = True
-                        debug_log(f"detected corrupted Whisper model cache: {e}", "voice")
-                        print("  ⚠️  Whisper model cache appears corrupted, attempting recovery...", flush=True)
-
-                        cache_cleared = _clear_corrupted_whisper_cache(str(e))
-                        if cache_cleared:
-                            try:
-                                print(f"     🎤 Re-downloading Whisper '{model_name}'...", flush=True)
-                                self.model = _load_faster_whisper_model(
-                                    model_name, device=try_device, compute_type=try_compute,
-                                    cpu_threads=cpu_threads,
-                                )
-                                self._apply_whisper_load_success(
-                                    model_name, try_device, try_compute,
-                                    device, compute, cpu_threads,
-                                    context="recovered",
-                                )
-                                used_device = try_device
-                                used_compute = try_compute
-                                last_error = None
-                                break
-                            except Exception as retry_e:
-                                last_error = retry_e
-                                debug_log(f"retry after cache clear also failed: {retry_e}", "voice")
-                                print(f"  ❌ Failed to load Whisper model after cache recovery: {retry_e}", flush=True)
-                                print("  💡 Try manually deleting the Whisper model cache directory and restarting", flush=True)
-                                if (isinstance(retry_e, ModelDownloadError)
-                                        and retry_e.category not in ('rate_limit', 'incomplete_download')):
-                                    return
-                                debug_log("trying next device/compute fallback config", "voice")
-                                continue
-                        else:
-                            debug_log("could not clear corrupted cache automatically", "voice")
-                            print(f"  ❌ Failed to load Whisper model: {e}", flush=True)
-                            print("  💡 Try manually deleting the Whisper model cache directory and restarting", flush=True)
-                            continue
-                    # Check for rate limiting (HTTP 429) — check string and response status code
-                    # (HfHubHTTPError may carry the status on .response without "429" in str(e))
-                    is_rate_limited = (
-                        (isinstance(e, ModelDownloadError) and e.category == 'rate_limit')
-                        or any(x in error_str for x in ["429", "too many requests", "rate limit"])
-                        or getattr(getattr(e, "response", None), "status_code", None) == 429
-                    )
-
-                    incomplete_download = (
-                        isinstance(e, ModelDownloadError)
-                        and e.category == 'incomplete_download'
-                    )
-                    if is_rate_limited or incomplete_download:
-                        _max_retries = 4
-                        _backoff = 2
-                        retry_reason = ('Rate limited by HuggingFace' if is_rate_limited
-                                        else 'Whisper download is incomplete')
-                        debug_log(f"retryable Whisper preparation failure: {e}", "voice")
-                        retry_succeeded = False
-                        for retry_num in range(1, _max_retries + 1):
-                            wait = _backoff ** retry_num
-                            print(f"  ⏳ {retry_reason}, retrying in {wait}s ({retry_num}/{_max_retries})...", flush=True)
-                            time.sleep(wait)
-                            try:
-                                self.model = _load_faster_whisper_model(
-                                    model_name, device=try_device, compute_type=try_compute,
-                                    cpu_threads=cpu_threads,
-                                )
-                                self._apply_whisper_load_success(
-                                    model_name, try_device, try_compute,
-                                    device, compute, cpu_threads,
-                                    context="download retry",
-                                )
-                                used_device = try_device
-                                used_compute = try_compute
-                                last_error = None
-                                retry_succeeded = True
-                                break
-                            except Exception as retry_e:
-                                debug_log(f"download retry {retry_num} failed: {retry_e}", "voice")
-                                last_error = retry_e
-                                if (isinstance(retry_e, ModelDownloadError)
-                                        and retry_e.category not in ('rate_limit', 'incomplete_download')):
-                                    print(f"  ❌ Failed to prepare Whisper model: {retry_e}", flush=True)
-                                    return
-                        if retry_succeeded:
-                            break
-                        debug_log(f"gave up after {_max_retries} download retries", "voice")
-                        print(f"  ❌ Failed to load Whisper model after {_max_retries} retries: {last_error}", flush=True)
-                        if is_rate_limited:
-                            print("  💡 HuggingFace is rate limiting downloads. Please wait a few minutes and restart.", flush=True)
-                        else:
-                            print("  💡 Check connectivity and free disk space, then restart to resume the download.", flush=True)
-                        return
-                    else:
-                        # For other errors (model not found, etc.), don't try fallbacks
-                        debug_log(f"failed to initialise faster-whisper: {e}", "voice")
-                        print(f"  ❌ Failed to load Whisper model: {e}", flush=True)
-                        return
-
-            if last_error is not None:
-                debug_log(f"failed to initialise faster-whisper with any config: {last_error}", "voice")
-                print(f"  ❌ Failed to load Whisper model: {last_error}", flush=True)
-                return
-
-            # Warm up faster-whisper so the first real utterance doesn't pay
-            # the cold-decode cost. Use low-amplitude noise rather than pure
-            # silence — silence trips faster-whisper's no-speech short-circuit
-            # and the decoder never actually runs. Mirror the real transcribe
-            # parameters so beam search, language detection, and the timestamp
-            # path are all exercised here instead of on the user's first word.
-            if np is not None and self.model is not None:
-                try:
-                    rng = np.random.default_rng(0)
-                    warmup_audio = rng.standard_normal(self._samplerate).astype(np.float32) * 0.01
-                    self._decode_faster_whisper(warmup_audio)
-                    debug_log("faster-whisper warmup transcription complete", "voice")
-                except Exception as e:
-                    debug_log(f"faster-whisper warmup failed: {e}", "voice")
+            # Parakeet is the one authoritative recogniser (D4). No second
+            # engine is imported, loaded or warmed up in its place.
+            print(
+                f"  🎤 Recogniser: {self._configured_engine()} "
+                "(the one listening model; no fallback engine is loaded)",
+                flush=True,
+            )
 
         # Wait for LLM probes before announcing "Listening!". A single
         # 60s budget is shared across
@@ -3117,7 +3304,9 @@ class VoiceListener(threading.Thread):
             self._transcription_jobs_q.put_nowait(job)
         except queue.Full:
             debug_log("transcription backlog full; utterance discarded", "voice")
-            print("  ⚠️  Whisper is behind; this utterance was not transcribed.", flush=True)
+            # The backlog belongs to whichever recogniser is configured, which
+            # is Parakeet by default; naming Whisper here was wrong every time.
+            print("  ⚠️  Speech recognition is behind; this utterance was not transcribed.", flush=True)
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
 
     def _decode_faster_whisper(self, audio):

@@ -95,6 +95,8 @@
   "intent_judge_thinking_enabled": false,
   "transcript_buffer_duration_sec": 120.0,
   "dialogue_memory_timeout": 300.0,
+  "dialogue_memory_max_tokens": 8000,
+  "dialogue_memory_max_messages": 40,
   "memory_enrichment_max_results": 3,
   "memory_enrichment_source": "all",
   "tool_carryover_max_turns": 2,

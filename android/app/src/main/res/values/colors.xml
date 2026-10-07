@@ -2,17 +2,43 @@
 <resources>
     <!-- A deliberately dark, low-glare palette: this app is used in a dark room and
          through a notification shade, and a white screen at 2 a.m. is an assault.
-         Defined here rather than pulled from Material Components, which would be
-         another AAR for four colours. -->
+
+         The names below are Material 3 *roles*, not decoration.  Every colour here
+         is consumed by themes.xml to fill a role in the scheme, and the components
+         (cards, chips, switches, the toolbar) read the roles — so changing the
+         accent is one line here and not a hunt through nine layouts. -->
+
+    <!-- The one accent.  Teal, because it is legible on near-black at a glance and
+         reads as "on" without being an alarm colour. -->
+    <color name="accent">#FF4CC9B0</color>
+    <color name="accent_dim">#FF2A6E63</color>
+
+    <!-- Surfaces, darkest to lightest. -->
     <color name="bg">#FF0E1116</color>
     <color name="surface">#FF161B22</color>
     <color name="surface_alt">#FF1F2630</color>
+    <color name="surface_high">#FF28313D</color>
+    <color name="outline">#FF3A444F</color>
+
+    <!-- Text. -->
     <color name="text">#FFE6EDF3</color>
     <color name="text_dim">#FF8B949E</color>
-    <color name="accent">#FF4CC9B0</color>
-    <color name="accent_dim">#FF2A6E63</color>
+    <color name="on_accent">#FF00382E</color>
+
+    <!-- State colours.  The same four the status chip, the status dot and the
+         conversation labels use, so "green" means one thing on every screen. -->
+    <color name="ok">#FF4CC9B0</color>
     <color name="warn">#FFE3B341</color>
+    <color name="error">#FFFF7B72</color>
     <color name="bad">#FFF85149</color>
+    <color name="idle">#FF8B949E</color>
+
+    <!-- Who is speaking, in the conversation. -->
     <color name="you">#FF79C0FF</color>
     <color name="claire">#FF4CC9B0</color>
+
+    <!-- Chat surfaces: an owner bubble, a Claire bubble, and the small print. -->
+    <color name="bubble_you">#FF1B2A3A</color>
+    <color name="bubble_claire">#FF152A26</color>
+    <color name="bubble_meta">#FF1F2630</color>
 </resources>

@@ -20,7 +20,8 @@ class StateManager:
     """Manages listening state transitions and timing."""
 
     def __init__(self, hot_window_seconds: float = 3.0, echo_tolerance: float = 0.3,
-                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0):
+                 voice_collect_seconds: float = 2.0, max_collect_seconds: float = 60.0,
+                 hot_window_turn_limit: int = 0):
         """
         Initialize state manager.
 
@@ -29,11 +30,17 @@ class StateManager:
             echo_tolerance: Delay before activating hot window (for echo suppression)
             voice_collect_seconds: Silence timeout for query collection
             max_collect_seconds: Maximum time to collect a single query
+            hot_window_turn_limit: Maximum number of consecutive hot windows that
+                may be armed without an intervening wake word. ``0`` keeps the
+                historical unlimited behaviour. The listener sets this to 1 so a
+                missed echo cannot re-arm the window off Claire's own reply
+                forever: one follow-up is allowed per explicit wake word.
         """
         self.hot_window_seconds = hot_window_seconds
         self.echo_tolerance = echo_tolerance
         self.voice_collect_seconds = voice_collect_seconds
         self.max_collect_seconds = max_collect_seconds
+        self.hot_window_turn_limit = int(hot_window_turn_limit)
 
         # Current state
         self._state = ListeningState.WAKE_WORD
@@ -53,6 +60,9 @@ class StateManager:
         self._hot_window_activation_timer: Optional[threading.Timer] = None
         self._hot_window_expiry_timer: Optional[threading.Timer] = None
         self._hot_window_generation = 0
+        # Consecutive hot windows armed since the last wake-word engagement.
+        # See ``hot_window_turn_limit`` — this is the loop-breaker.
+        self._hot_window_chain = 0
         self._voice_debug: bool = False  # Cache for use in timer callbacks
 
         # Stop flag for background threads
@@ -249,6 +259,28 @@ class StateManager:
                 self._hot_window_activation_timer = None
                 debug_log("cancelled pending hot window activation", "state")
 
+    def note_wake_word_engagement(self) -> None:
+        """A wake word was heard: restart the hot-window renewal chain.
+
+        An explicit "Claire ..." is a fresh human turn, so the next reply may
+        again open one hot window for a follow-up. This is the only thing that
+        resets the chain, which is what stops a missed echo from renewing the
+        window off Claire's own replies indefinitely.
+        """
+        with self._state_lock:
+            if self._hot_window_chain:
+                debug_log(
+                    f"wake word heard — hot window renewal chain reset "
+                    f"(was {self._hot_window_chain})",
+                    "state",
+                )
+            self._hot_window_chain = 0
+
+    def hot_window_chain_length(self) -> int:
+        """Number of consecutive hot windows armed since the last wake word."""
+        with self._state_lock:
+            return self._hot_window_chain
+
     def _cancel_hot_window_expiry_timer(self) -> None:
         """Cancel the hot window expiry timer."""
         with self._state_lock:
@@ -359,6 +391,21 @@ class StateManager:
             if self._should_stop:
                 debug_log("hot window scheduling ignored after stop", "state")
                 return
+            if (self.hot_window_turn_limit > 0
+                    and self._hot_window_chain >= self.hot_window_turn_limit):
+                # Loop-breaker: the previous hot window was already used without
+                # an intervening wake word. Refusing to arm again means a missed
+                # echo cannot renew the window off Claire's own reply forever —
+                # the human has to say "Claire" to be heard again.
+                debug_log(
+                    f"hot window NOT re-armed: renewal chain at "
+                    f"{self._hot_window_chain}/{self.hot_window_turn_limit} "
+                    f"(wake word required to continue)",
+                    "state",
+                )
+                print("  🔒 Follow-up window closed — say \"Claire\" to continue.", flush=True)
+                return
+            self._hot_window_chain += 1
             self._hot_window_generation += 1
             self.cancel_hot_window_activation()
             self._cancel_hot_window_expiry_timer()

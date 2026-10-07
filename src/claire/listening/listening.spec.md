@@ -2,6 +2,8 @@
 
 This document outlines the voice listening architecture. The system uses a **transcript-first** approach where speech is continuously transcribed, and an LLM intent judge extracts queries with full context.
 
+**One listening model.** Parakeet is the one authoritative recogniser (decision D4). Whisper still exists as an explicitly opt-in engine (`stt_engine='faster_whisper'`) but is never a fallback: it is not imported, downloaded or loaded in a Parakeet-configured process, and a Parakeet failure is reported as a named, visible degradation instead of being answered by a second engine.
+
 ## Architecture Overview
 
 ### Capture format and health
@@ -25,7 +27,7 @@ Frames always span the configured 10, 20 or
 callback blocks are retained until a complete frame is available and discarded
 on audio-state resets. WebRTC VAD receives a 16 kHz mono PCM copy, including when
 the hardware captures at 44.1 or 48 kHz. Utterances retain native-rate samples
-until resampling for Whisper, preserving their duration.
+until resampling for the recogniser, preserving their duration.
 
 VAD errors emit a single warning and use the configured energy threshold instead
 of silently discarding speech. Capture health is checked every five seconds with
@@ -38,19 +40,19 @@ point users to PipeWire/PulseAudio recording-source routing.
 
 Utterance assembly enforces `max_utterance_ms` during continuous speech as
 well as at silent endpoints. While TTS is speaking, `tts_max_utterance_ms`
-applies so interruption audio reaches Whisper promptly. Limits count complete
+applies so interruption audio reaches the recogniser promptly. Limits count complete
 native-rate frames, including pre-roll. Reaching a limit queues the captured
 chunk and allows the following frame to start the next utterance.
 
 Audio-frame processing runs on a dedicated serial worker, limited to VAD and
 utterance assembly. Intent judging and reply generation on the listener thread
 do not block frame consumption. The listener thread owns the PortAudio stream.
-Completed utterances are enqueued for a single FIFO Whisper worker.
+Completed utterances are enqueued for a single FIFO transcription worker.
 Transcription results return to the listener loop in order, where transcript
 storage and intent processing remain serialised. Both transcription queues are
 bounded. A full job backlog reports an explicit warning rather than blocking
 microphone-frame consumption or silently losing an utterance. A full result
-queue applies cancellable backpressure to Whisper without dropping results.
+queue applies cancellable backpressure to the recogniser without dropping results.
 The capture generation identifies the capture session a transcription job or
 result belongs to; a change to it invalidates work started under the previous
 generation, including a decode or intent decision that finishes afterwards.
@@ -65,7 +67,7 @@ cannot produce speech or a spoken error, including invalidation during thinking
 tune teardown. Cancelled language work stops its thinking tune without
 overwriting the face state. In-flight model calls retain their
 configured deadlines. Transcript echo flags use the utterance capture interval
-against TTS timing. The job carries that capture-time context through Whisper
+against TTS timing. The job carries that capture-time context through transcription
 to echo rejection, stop-command handling and intent processing, so later TTS
 playback cannot reclassify an older utterance.
 
@@ -83,7 +85,7 @@ playback cannot reclassify an older utterance.
         │
         ▼
 ┌───────────────┐
-│    Whisper    │
+│  Recogniser   │
 │ (transcribe)  │
 └───────┬───────┘
         │
@@ -166,7 +168,7 @@ The intent judge receives full context and makes intelligent decisions:
 
 **Gating:** The judge is called only when there is an engagement signal — (a) a wake word was detected in the current utterance, (b) the utterance falls inside (or pending) a hot window, or (c) TTS is currently speaking. Pure ambient speech skips the judge entirely. This keeps the synchronous audio loop from blocking up to `intent_judge_timeout_sec` on every background utterance, which would otherwise freeze the UI when Ollama is slow or contended.
 
-**Alias normalisation:** Before the transcript is sent to the judge, every configured wake-word alias in each segment is replaced with the primary assistant name (case-insensitive, word-boundary-aware). Aliases are Whisper mishearings of the wake word (e.g. "Jervis", "Jaivis" for "Claire"); without this step the small judge model sees the alias, doesn't know it refers to the assistant, and can decide the user is addressing a different person. Normalisation happens at prompt-build time only — the raw transcript buffer is untouched.
+**Alias normalisation:** Before the transcript is sent to the judge, every configured wake-word alias in each segment is replaced with the primary assistant name (case-insensitive, word-boundary-aware). Aliases are known mishearings of the wake word (e.g. "Jervis", "Jaivis" for "Claire"); without this step the small judge model sees the alias, doesn't know it refers to the assistant, and can decide the user is addressing a different person. Normalisation happens at prompt-build time only — the raw transcript buffer is untouched.
 
 **Wake-word removal in the extracted query:** When the assistant is addressed, its wake word is not part of the query content. The judge prompt explicitly instructs removing every occurrence of the wake word from the extracted `query` — at the start, end, or middle of the sentence, including when it sits next to a named entity (e.g. "movie called Possessor Claire" → film is "Possessor", not "Possessor Claire"). The only exception is when the user is literally talking *about* the assistant as a subject ("tell me about Claire"). This is enforced by prompt rule + example rather than post-hoc string stripping, because the LLM already understands the semantic distinction and can handle cases a regex would mishandle (e.g. proper names that contain the wake word, like "Claire Cocker").
 
@@ -180,7 +182,7 @@ Before the listener announces "Listening!", it pre-loads every model the first e
 
 ```
   🔥 Warming up models...
-     🎤 Whisper 'small' loaded on cpu
+     🎤 Recogniser 'parakeet' ready
      💬 Chat model 'llama3.1' ready
      🧠 Intent judge 'gemma4:e2b' ready
 🎙️  Listening! Try:
@@ -196,15 +198,15 @@ The weather example adapts to location availability: if `location_enabled` is tr
 On small models, a caveat line is appended above a more involved example to set expectations (`⚠️ Small model in use (…). Assume it can't infer — spell out the steps for anything more involved:`). The Chrome MCP tip continues to appear as its own block when the browser tool is detected.
 
 **What gets warmed:**
-- **Whisper** — loading the model; additionally a silent-audio transcribe so the first real utterance doesn't pay the cold-decode cost. Both the MLX and faster-whisper backends do this.
+- **Parakeet** (the authoritative recogniser, when `stt_engine='parakeet'`) — loads on first use and is cached for the process lifetime, shared with the phone bridge so only one NeMo instance ever exists. Nothing else is loaded in its place.
 - **Chat model** (`cfg.llm_chat_model`) — verifies the server is actually Ollama via `GET /api/version`, then issues a minimal `/api/generate` request with the power-mode `keep_alive` (`30m` normally, `1m` in low-power mode) so the weights stay resident.
 - **Intent judge model** (the fast tier: `resolve_model(cfg, Tier.FAST)`) — same pattern. If it points at the same Ollama model as the chat model, a single warmup covers both roles (Ollama loads the weights once).
 
-**Whisper backend/model capability:** Auto mode prefers MLX on Apple Silicon only when `mlx-whisper` imports successfully. An explicit `faster-whisper` preference disables MLX, and an explicit `mlx` preference falls back to faster-whisper when MLX is unavailable. `large-v3-turbo` is supported by MLX or by faster-whisper 1.1.0 and newer. If the configuration selects turbo on an unsupported faster-whisper backend, startup loads `medium` instead and prints a warning pointing to Whisper settings or the setup wizard.
+**Whisper is opt-in only:** Whisper is imported, downloaded and loaded *only* when `stt_engine` names it (`'faster_whisper'` or `'whisper'`). A Parakeet-configured process never imports `faster_whisper`/`mlx_whisper`, never downloads a Whisper model and never holds one in memory; the engine factory raises for any other token instead of falling back to it. When Whisper *is* selected: auto mode prefers MLX on Apple Silicon only when `mlx-whisper` imports successfully, an explicit `faster-whisper` preference disables MLX, and an explicit `mlx` preference falls back to faster-whisper when MLX is unavailable. `large-v3-turbo` is supported by MLX or by faster-whisper 1.1.0 and newer; on an unsupported faster-whisper backend startup loads `medium` instead and prints a warning.
 
-**Low-power mode:** When `cfg.low_power_mode` is true, the listener skips chat and intent-judge warmup threads and prints `🌱 Low power mode: LLM warmup skipped`. Whisper still warms because speech recognition needs to be ready before the listener can accept input. The first LLM-backed engagement after startup or idle loads models on demand.
+**Low-power mode:** When `cfg.low_power_mode` is true, the listener skips chat and intent-judge warmup threads and prints `🌱 Low power mode: LLM warmup skipped`. The recogniser still loads because speech recognition needs to be ready before the listener can accept input. The first LLM-backed engagement after startup or idle loads models on demand.
 
-**Concurrency:** LLM warmups run in daemon threads started before Whisper loads, so they overlap with Whisper initialisation. After Whisper finishes, the listener joins the warmup threads with a **single 60 s budget** shared across them all. If the budget is exhausted, the listener continues (with a `⏳ Some models still warming — continuing anyway` notice) and the first engagement pays the cold-load cost on demand.
+**Concurrency:** LLM warmups run in daemon threads started at listener startup, so they overlap with recogniser setup. The listener then joins the warmup threads with a **single 60 s budget** shared across them all. If the budget is exhausted, the listener continues (with a `⏳ Some models still warming — continuing anyway` notice) and the first engagement pays the cold-load cost on demand. With `stt_engine='faster_whisper'` the opt-in Whisper load runs in the same phase; with Parakeet nothing Whisper-related runs here at all.
 
 **Best-effort semantics:** Every warmup path swallows its own errors and returns a bool. A failed warmup prints `⚠️ … warmup failed — will load on first use` but never blocks or crashes the listener — voice input is prioritised over startup latency.
 
@@ -243,13 +245,13 @@ hot-window admission; manual expiry also cancels pending activation.
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
 
-**Mixed echo+speech handling:** When Whisper merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
+**Mixed echo+speech handling:** When the recogniser merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
 
 **Extracted-query source guard:** A hot-window query containing at least the shared minimum salvage word count is rejected if its complete normalised word sequence occurs in the captured TTS text but not in the current utterance. This prevents an earlier assistant phrase from becoming a fresh query after mixed echo and user speech. Matching uses whole Unicode words and the echo normaliser. Current utterance quotes and non-echo semantic follow-ups remain eligible; rejected prior echo stops the thinking tune without opening query collection.
 
-**Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails (for example because Whisper mis-transcribed the first echo word — *"explores"* → *"laws"* — breaking the word-level comparison), the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left looking for the rightmost 5-word window that fuzzy-matches the TTS tail (`partial_ratio >= 85`) and keeps everything after it. This preserves short follow-ups (*"Who made it?"*) that the existing fuzzy-prefix salvage would otherwise truncate by one word because it prefers the shortest suffix. If the surviving remainder has at least `EchoDetector.min_salvage_words` words (default 3), it replaces the transcript segment text and is treated as the user's follow-up. The same minimum-word threshold is shared by the during-TTS and post-TTS merged-chunk salvage paths so the policy is consistent across all three sites.
+**Early salvage for echo-prefixed follow-ups:** Before the early fuzzy check rejects a chunk as pure echo, the listener calls `cleanup_leading_echo` to strip any TTS-tail prefix. If exact-word cleanup fails (for example because the recogniser mis-transcribed the first echo word — *"explores"* → *"laws"* — breaking the word-level comparison), the listener falls back to `salvage_after_echo_tail`, which scans heard-text word boundaries right-to-left looking for the rightmost 5-word window that fuzzy-matches the TTS tail (`partial_ratio >= 85`) and keeps everything after it. This preserves short follow-ups (*"Who made it?"*) that the existing fuzzy-prefix salvage would otherwise truncate by one word because it prefers the shortest suffix. If the surviving remainder has at least `EchoDetector.min_salvage_words` words (default 3), it replaces the transcript segment text and is treated as the user's follow-up. The same minimum-word threshold is shared by the during-TTS and post-TTS merged-chunk salvage paths so the policy is consistent across all three sites.
 
-**Timestamp-based detection:** `was_speech_during_hot_window(utterance_start_time, utterance_end_time)` compares the utterance's time range against the hot window's time span (from schedule to expiry). This eliminates race conditions between slow Whisper transcription and the expiry timer — if the user started speaking during the window, it counts as hot window input regardless of when the transcript arrives. Also handles **overlapping utterances** where VAD triggered during TTS (mic picking up echo) but the utterance extended into the hot window period.
+**Timestamp-based detection:** `was_speech_during_hot_window(utterance_start_time, utterance_end_time)` compares the utterance's time range against the hot window's time span (from schedule to expiry). This eliminates race conditions between slow transcription and the expiry timer — if the user started speaking during the window, it counts as hot window input regardless of when the transcript arrives. Also handles **overlapping utterances** where VAD triggered during TTS (mic picking up echo) but the utterance extended into the hot window period.
 
 **`could_be_hot_window` (intent judge context):** Derived from timestamp comparison — returns True if the hot window is active, activation is pending, the utterance started within the window span even after expiry, or the utterance overlaps with the span (started before, ended during).
 
@@ -313,7 +315,7 @@ This enables Claire to **chime into ongoing conversations** between people. When
 
 **Declarative statements addressed to the wake word.** Segments where the user shares information, feelings, or an action with the assistant — e.g. "Claire, I just ate a burger from McDonald's", "I'm feeling a bit tired today, Claire", "my flight got cancelled, Claire" — are directed and must be extracted verbatim (wake word removed) as the query. The wake word can appear at the start, middle, or end of the segment; position does not affect directedness. The judge must not reject these as "not a command or question": any segment where the wake word is used to address the assistant (as opposed to a narrative mention like "I told my friend about Claire") is directed, regardless of sentence mood.
 
-**Imperative resolution.** The same mechanism covers imperatives that refer to a prior unanswered question. If a prior segment contains a question and the wake-word segment is an instruction like "answer that", "respond to that", "reply to that", "address that", "answer my question", or "go ahead and answer", the query is the prior question itself — not the literal imperative. Whisper tense variants of these imperatives ("answered that", "answers that", "answering that") are treated the same. If the current segment contains both an imperative and a new explicit question, the new question takes priority.
+**Imperative resolution.** The same mechanism covers imperatives that refer to a prior unanswered question. If a prior segment contains a question and the wake-word segment is an instruction like "answer that", "respond to that", "reply to that", "address that", "answer my question", or "go ahead and answer", the query is the prior question itself — not the literal imperative. Misheard tense variants of these imperatives ("answered that", "answers that", "answering that") are treated the same. If the current segment contains both an imperative and a new explicit question, the new question takes priority.
 
 **Multi-person conversation example:**
 ```
@@ -373,7 +375,7 @@ Judge output: {"directed": true, "query": "Ni hao", "reasoning": "New speech dir
 
 ## Early Feedback (Beep & Face State)
 
-To minimise perceived latency, audio and visual feedback starts **immediately after Whisper transcription**, before the intent judge runs:
+To minimise perceived latency, audio and visual feedback starts **immediately after transcription**, before the intent judge runs:
 
 - **Wake word mode:** If the transcribed text contains the wake word (fuzzy-matched), start the thinking beep and set face state to LISTENING.
 - **Hot window:** If voice started during an active (or pending) hot window, start the thinking beep and set face state to LISTENING.
@@ -386,7 +388,7 @@ If the intent judge later rejects the query (and no hot window override applies)
 ## Low-Confidence Rejection Events
 
 `VoiceListener` accepts an optional keyword-only `on_low_confidence` callback.
-Both faster-whisper and MLX emit one immutable `LowConfidenceEvent` per segment
+On the opt-in Whisper path both faster-whisper and MLX emit one immutable `LowConfidenceEvent` per segment
 discarded because its confidence is below `whisper_min_confidence`, including
 very low-confidence segments that only appear in debug logs. The event contains:
 
@@ -438,8 +440,8 @@ pending feedback.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Claire. Separate from dialogue memory. |
-| `whisper_min_confidence` | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
-| `whisper_no_speech_threshold` | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+| `whisper_min_confidence` (opt-in Whisper path) | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
+| `whisper_no_speech_threshold` (opt-in Whisper path) | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
 
 Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
 
@@ -476,7 +478,7 @@ Speech Detected → Accumulate Frames
     ↓
 Silence Timeout → Bounded FIFO Transcription Jobs
     ↓
-Serial Whisper Worker → Transcription Results
+Serial Transcription Worker → Transcription Results
     ↓
 Main Loop: Transcript and Intent Processing
     ↓
@@ -503,12 +505,12 @@ When components are unavailable, the system degrades gracefully:
 | Component | Unavailable Behaviour |
 |-----------|---------------------|
 | Intent Judge | Simple text-based wake word + query extraction; hot window override still applies |
-| Unsupported input format | Retry channel count and native sample rate on the selected device, then convert to 16 kHz mono for Whisper |
+| Unsupported input format | Retry channel count and native sample rate on the selected device, then convert to 16 kHz mono for the recogniser |
 | Transcript Buffer | Process each utterance independently |
 
 ## Download Recovery
 
-Whisper model loading handles transient download failures automatically:
+On the opt-in Whisper path, model loading handles transient download failures automatically:
 
 ### Download and loading visibility
 

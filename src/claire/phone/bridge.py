@@ -131,6 +131,7 @@ from ..platform.keys import (
 
 __all__ = [
     "ALLOWED_IMAGE_CONTENT_TYPES",
+    "ALLOWED_SAY_COMMANDS",
     "AuthenticationError",
     "BEARER_SCHEME",
     "BodyTooLargeError",
@@ -155,8 +156,10 @@ __all__ = [
     "PhoneRequestHandler",
     "PhotoStoreError",
     "PublicBindRefusedError",
+    "QueueUnconfiguredError",
     "ReplyQueue",
     "RouteNotFoundError",
+    "SayRejectedError",
     "SinkFailedError",
     "SinkUnconfiguredError",
     "TOKEN_KEY_NAME",
@@ -285,11 +288,28 @@ DEFAULT_TRANSCRIBE_REMEDY = (
     "loop uses and will not invent a second one."
 )
 
+#: The whole vocabulary ``POST /say`` may name.  Deliberately tiny and closed:
+#: every entry is something the shipped phone client already implements, so the
+#: bridge can ask the phone to *do* a thing without the phone having to guess
+#: what a new verb means.  A command outside this tuple is a named 400, never a
+#: silently-ignored field.
+ALLOWED_SAY_COMMANDS: Tuple[str, ...] = ("photo", "location")
+
+#: What to do when ``/say`` names no command the phone knows.  Always names the
+#: whole vocabulary, so the caller never has to read the source to recover.
+DEFAULT_SAY_REMEDY = (
+    "POST a JSON object naming one of the allowed commands ("
+    + ", ".join(ALLOWED_SAY_COMMANDS)
+    + '), for example {"command": "photo", "question": "what is this?"}, or '
+    '{"text": "good morning"} to queue a sentence for the phone to say.'
+)
+
 #: Endpoint table: path -> allowed methods.  Order is the spec's order, with the
 #: two compatibility spellings from the shipped 0.2 client immediately after the
 #: canonical endpoint they resolve to.
 ENDPOINTS: Dict[str, Tuple[str, ...]] = {
     "/text": ("POST",),
+    "/say": ("POST",),
     "/transcribe": ("POST",),
     "/see": ("POST",),
     "/loc": ("POST",),
@@ -602,6 +622,38 @@ class SinkFailedError(PhoneBridgeError):
             ),
             cause=cause,
         )
+
+
+class QueueUnconfiguredError(PhoneBridgeError):
+    """No reply queue is wired up, so there is nowhere to put the reply."""
+
+    code = "queue_unconfigured"
+    status = HTTP_SERVICE_UNAVAILABLE
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no reply queue is wired up, so the item was received but not "
+            "queued for the phone to drain",
+            remedy=(
+                "Construct the bridge with the queue the phone drains, for "
+                "example PhoneBridge(queue=ReplyQueue()). Until then /say "
+                "cannot do anything honest with an item."
+            ),
+        )
+
+
+class SayRejectedError(PhoneBridgeError):
+    """``POST /say`` named a command the phone does not know.
+
+    The remedy always spells out the whole accepted command vocabulary — a
+    caller should never have to read the routing table to recover from a typo.
+    """
+
+    code = "say_rejected"
+    status = HTTP_BAD_REQUEST
+
+    def __init__(self, message: str, *, remedy: str = "") -> None:
+        super().__init__(message, remedy=remedy or DEFAULT_SAY_REMEDY)
 
 
 class AudioDecodeError(PhoneBridgeError):
@@ -1525,6 +1577,8 @@ class PhoneBridge:
             return self._reply()
         if route == "/text":
             return self._text(content_type, body)
+        if route == "/say":
+            return self._say(content_type, body)
         if route == "/transcribe":
             return self._transcribe(content_type, body)
         if route == "/loc":
@@ -1607,6 +1661,80 @@ class PhoneBridge:
                 "received_at": utterance["received_at"],
             },
         )
+
+    def _say(self, content_type: str, body: bytes) -> BridgeResponse:
+        """Queue one item for the phone, from Claire's own processes.
+
+        ``/text`` carries something the *phone* said to Claire; this is the
+        channel back.  It exists because the bridge is normally its own process
+        (``python -m claire.phone serve``), so the voice loop cannot call
+        :meth:`ReplyQueue.put_text` on the live queue: it has to speak to the
+        bridge over HTTP like any other client.  The item lands in the same
+        drain-once queue ``GET /reply`` already serves, so nothing the phone
+        polls has to change.
+
+        The body is either ``{"text": "..."}`` — stored exactly as
+        :meth:`ReplyQueue.put_text` would store it — or a command naming one of
+        :data:`ALLOWED_SAY_COMMANDS`.  ``kind`` is inferred when omitted (a
+        ``command`` key means a command, else text), and when given it wins, so
+        ``{"text": "...", "kind": "command", "command": "photo"}`` is a command
+        that still carries the text.  Every other key in the body is preserved
+        verbatim.
+        """
+        data = self._json_object(content_type, body)
+        kind = data.get("kind") if "kind" in data else None
+        if kind is None:
+            kind = "command" if "command" in data else "text"
+        if kind == "command":
+            item = self._say_command_item(data)
+        elif kind == "text":
+            item = self._say_text_item(data)
+        else:
+            raise SayRejectedError(
+                "the 'kind' field must be 'text' or 'command', not "
+                f"{kind!r}"
+            )
+        if self._queue is None:
+            raise QueueUnconfiguredError()
+        stored = self._queue.put(item)
+        return BridgeResponse(
+            status=HTTP_OK,
+            payload={"ok": True, "queued": stored, "count": len(self._queue)},
+        )
+
+    @staticmethod
+    def _say_command_item(data: Mapping[str, Any]) -> Dict[str, Any]:
+        """The command item for a ``/say`` body, or a named 400."""
+        raw = data.get("command")
+        command = raw.strip() if isinstance(raw, str) else ""
+        if command not in ALLOWED_SAY_COMMANDS:
+            raise SayRejectedError(
+                "the 'command' field must name one of the commands the phone "
+                "knows (" + ", ".join(ALLOWED_SAY_COMMANDS) + f"); got {raw!r}"
+            )
+        item = dict(data)
+        item["kind"] = "command"
+        item["command"] = command
+        return item
+
+    @staticmethod
+    def _say_text_item(data: Mapping[str, Any]) -> Dict[str, Any]:
+        """The text item for a ``/say`` body, or a named 400."""
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise InvalidPayloadError(
+                "the 'text' field is missing or empty",
+                remedy=(
+                    'POST {"text": "what Claire should say"} to queue a '
+                    "sentence, or a command: "
+                    + ", ".join(ALLOWED_SAY_COMMANDS)
+                    + '.'
+                ),
+            )
+        item = dict(data)
+        item["kind"] = "text"
+        item["text"] = text
+        return item
 
     def _transcribe(self, content_type: str, body: bytes) -> BridgeResponse:
         """Audio in, authoritative text out, and the utterance on to Claire.
@@ -1711,7 +1839,19 @@ class PhoneBridge:
                 raise LocationSinkFailedError(exc) from exc
         return BridgeResponse(
             status=HTTP_OK,
-            payload={"ok": True, "recorded": record.as_dict()},
+            # Acknowledge the fix, do not read it back.  The phone already knows
+            # where it is; echoing the latitude and longitude the phone just sent
+            # is how the owner ended up being told their own coordinates as if it
+            # were news.  What the caller cannot know, and what actually matters
+            # for a fix, is that it was accepted and when -- so that is all that
+            # comes back.  The position itself goes to the location sink (Claire's
+            # context), never into the reply the owner sees.
+            payload={
+                "ok": True,
+                "recorded": True,
+                "accuracy_m": record.accuracy_m,
+                "received_at": record.received_at,
+            },
         )
 
     def _see(

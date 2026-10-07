@@ -669,6 +669,220 @@ def is_tool_message(msg: dict) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Context budget: bound what is SENT to the model on every request.
+# ---------------------------------------------------------------------------
+# The dialogue-memory window is TIME-based (RECENT_WINDOW_SEC), so a busy
+# conversation packs an unbounded number of turns into it. Measured on the
+# local gateway: a 324-message conversation shipped 133,893 input tokens, one
+# request every few seconds, and ~99% of the wall time was prompt prefill
+# (ttft_ms == duration_ms). These ceilings cap the history that reaches the
+# model. Storage is NOT touched: older turns stay in DialogueMemory, the diary
+# and the chat panel; only the wire payload is bounded. Truncation is
+# oldest-first and structure-aware (a tool result never loses the assistant
+# tool_calls parent that strict OpenAI-compatible servers require).
+DEFAULT_CONTEXT_MAX_TOKENS = 8000
+DEFAULT_CONTEXT_MAX_MESSAGES = 40
+_CHARS_PER_TOKEN = 4          # cheap heuristic: no tokeniser on the hot path
+_MESSAGE_OVERHEAD_CHARS = 16  # ~4 tokens for the per-message envelope
+
+
+def estimate_message_tokens(message: dict) -> int:
+    """Cheap (chars / 4) token estimate for one message, tool_calls included."""
+    if not isinstance(message, dict):
+        return 0
+    chars = _MESSAGE_OVERHEAD_CHARS
+    content = message.get("content")
+    if isinstance(content, str):
+        chars += len(content)
+    elif content is not None:
+        try:
+            chars += len(json.dumps(content, ensure_ascii=False, default=str))
+        except Exception:
+            chars += len(str(content))
+    for key in ("tool_calls", "tool_name", "name"):
+        value = message.get(key)
+        if value:
+            try:
+                chars += len(json.dumps(value, ensure_ascii=False, default=str))
+            except Exception:
+                chars += len(str(value))
+    return (chars + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN
+
+
+def _message_units(messages: List[dict]) -> List[List[dict]]:
+    """Split a flat history into atomic units that must never be split.
+
+    A unit is one *exchange*: a real user utterance plus everything that
+    answers it — Claire's reply, any in-reply assistant ``tool_calls`` and the
+    ``tool`` results answering them. Two properties fall out of this:
+
+      * a ``tool`` result never loses its assistant ``tool_calls`` parent
+        (strict OpenAI-compatible servers reject that with HTTP 400);
+      * a user/assistant pair is never split, so truncation cannot manufacture
+        a dangling assistant turn.
+
+    A text-tool result is a synthetic ``user`` message tagged ``tool_name``;
+    it is a *reply*, not a new user turn, so it stays in the current unit.
+    """
+    units: List[List[dict]] = []
+    current: List[dict] = []
+    for message in messages:
+        role = message.get("role") if isinstance(message, dict) else None
+        starts_exchange = role == "system" or (
+            role == "user" and not message.get("tool_name")
+        )
+        if starts_exchange and current:
+            units.append(current)
+            current = []
+        current.append(message)
+    if current:
+        units.append(current)
+    return units
+
+
+def _is_safe_history_start(unit: List[dict]) -> bool:
+    """True if keeping ``unit`` at the head of the history is API-valid."""
+    if not unit:
+        return True
+    first = unit[0]
+    if not isinstance(first, dict):
+        return True
+    role = first.get("role")
+    if role == "system":
+        return True
+    if role == "user":
+        # A text-tool result is a synthetic user message tagged ``tool_name``;
+        # its originating call is gone, so it is not a safe head either.
+        return not first.get("tool_name")
+    if role == "assistant" and isinstance(first.get("tool_calls"), list) \
+            and first.get("tool_calls"):
+        # A self-contained tool unit is API-valid as a head: every outbound
+        # call is answered below it, so no tool result is orphaned. Tool
+        # carryover is deliberately conversation-scoped (it outlives the
+        # RECENT_WINDOW_SEC), so this head must be allowed to survive.
+        call_ids = {
+            call.get("id") for call in first["tool_calls"]
+            if isinstance(call, dict) and call.get("id")
+        }
+        answered = {
+            m.get("tool_call_id") for m in unit[1:] if isinstance(m, dict)
+        }
+        return call_ids.issubset(answered)
+    return False
+
+
+def _repair_dangling_tool_calls(flat: List[dict]) -> List[dict]:
+    """Safety net for degenerate input: an assistant ``tool_calls`` with ids
+    that nothing answers below it would make strict servers 400. Keep only the
+    calls answered by the tool block directly underneath; drop the envelope if
+    nothing is left of it (or keep its visible text if it had any).
+
+    Deliberately conservative: an already-orphaned ``tool`` row supplied by the
+    caller is preserved verbatim. Truncation itself can never create one,
+    because an exchange is atomic (see ``_message_units``). For well-formed
+    history this rebuilds the exact input order, so it is a no-op on the normal
+    path.
+    """
+    repaired: List[dict] = []
+    index = 0
+    total = len(flat)
+    while index < total:
+        message = flat[index]
+        if not isinstance(message, dict):
+            repaired.append(message)
+            index += 1
+            continue
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if isinstance(calls, list) and calls:
+            index += 1
+            block: List[dict] = []
+            while (
+                index < total
+                and isinstance(flat[index], dict)
+                and flat[index].get("role") == "tool"
+            ):
+                block.append(flat[index])
+                index += 1
+            answered = {m.get("tool_call_id") for m in block}
+            kept_calls = [
+                call for call in calls
+                if isinstance(call, dict) and call.get("id") in answered
+            ]
+            if kept_calls:
+                fixed = dict(message)
+                fixed["tool_calls"] = kept_calls
+                repaired.append(fixed)
+            elif isinstance(message.get("content"), str) and message["content"].strip():
+                # Keep the visible text, drop the unusable tool request.
+                repaired.append(
+                    {k: v for k, v in message.items() if k != "tool_calls"}
+                )
+            # else: an empty tool-call envelope with no answers — drop it.
+            repaired.extend(block)
+            continue
+        repaired.append(message)
+        index += 1
+    return repaired
+
+
+def bound_conversation_history(
+    messages: List[dict],
+    max_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
+    max_messages: int = DEFAULT_CONTEXT_MAX_MESSAGES,
+) -> List[dict]:
+    """Return the newest suffix of ``messages`` that fits the context budget.
+
+    Oldest-first truncation with three guarantees:
+      * the newest exchange always survives in full, even if it alone exceeds
+        the budget — the latest user utterance and Claire's reply matter most;
+      * an exchange is atomic, so a ``tool`` result never loses its assistant
+        ``tool_calls`` parent and a user/assistant pair is never split;
+      * the retained history never *starts* on a dangling assistant turn: an
+        unsafe oldest unit is trimmed forward, but never the newest one.
+
+    Nothing is evicted from storage: this bounds the wire payload only. A
+    budget of 0 (or less) disables that dimension.
+    """
+    if not messages:
+        return []
+    try:
+        max_tokens = int(max_tokens)
+    except (TypeError, ValueError):
+        max_tokens = DEFAULT_CONTEXT_MAX_TOKENS
+    try:
+        max_messages = int(max_messages)
+    except (TypeError, ValueError):
+        max_messages = DEFAULT_CONTEXT_MAX_MESSAGES
+    if max_tokens <= 0 and max_messages <= 0:
+        return list(messages)
+
+    units = _message_units(messages)
+    kept: List[List[dict]] = []
+    used_tokens = 0
+    used_messages = 0
+    for unit in reversed(units):
+        unit_tokens = sum(estimate_message_tokens(m) for m in unit)
+        # ``kept`` empty == newest exchange: always retained, caps notwithstanding.
+        if kept and max_tokens > 0 and used_tokens + unit_tokens > max_tokens:
+            break
+        if kept and max_messages > 0 and used_messages + len(unit) > max_messages:
+            break
+        kept.append(unit)
+        used_tokens += unit_tokens
+        used_messages += len(unit)
+    kept.reverse()
+
+    # Structure-aware head trim. Stop at one unit so the newest exchange is
+    # never dropped; a lone leading assistant is valid for the API (it is only
+    # a *split* pair that is not), and requirement is that the newest survives.
+    while len(kept) > 1 and not _is_safe_history_start(kept[0]):
+        kept.pop(0)
+
+    flat = [message for unit in kept for message in unit]
+    return _repair_dangling_tool_calls(flat)
+
+
 def _filter_contexts_by_time(
     contexts: List[str],
     from_time: Optional[str],
@@ -734,14 +948,24 @@ class DialogueMemory:
     separate (ambient speech for intent judging).
     """
 
-    def __init__(self, inactivity_timeout: float = 300.0, max_interactions: int = 20):
+    def __init__(self, inactivity_timeout: float = 300.0, max_interactions: int = 20,
+                 max_context_tokens: int = DEFAULT_CONTEXT_MAX_TOKENS,
+                 max_context_messages: int = DEFAULT_CONTEXT_MAX_MESSAGES):
         """Initialize dialogue memory.
 
         The inactivity_timeout drives two unified durations:
         - RECENT_WINDOW_SEC: how long messages are kept in memory for context
         - MAX_UNSAVED_AGE_SEC: how old unsaved messages can get before forcing
           a diary update (same as the window, since enrichment covers older context)
+
+        ``max_context_tokens`` / ``max_context_messages`` bound the history
+        handed to the model by ``get_recent_turns_with_tools`` (the LLM path).
+        They do NOT bound storage or the UI/retrieval getters; see
+        ``bound_conversation_history``. Configured from
+        ``dialogue_memory_max_tokens`` / ``dialogue_memory_max_messages``.
         """
+        self._max_context_tokens = int(max_context_tokens)
+        self._max_context_messages = int(max_context_messages)
         self._messages: List[Tuple[float, str, str]] = []  # (timestamp, role, content)
         # Tool carryover: in-loop assistant-with-tool_calls + tool-role messages
         # from prior replies, so follow-up turns within the hot window can reuse
@@ -1045,6 +1269,21 @@ class DialogueMemory:
         with self._lock:
             self._hot_cache.pop(self.WARM_PROFILE_CACHE_KEY, None)
 
+    def configure_context_budget(self, max_tokens: Optional[int] = None,
+                                 max_messages: Optional[int] = None) -> None:
+        """Push the configured context budget (called by the reply engine).
+
+        The daemon constructs one long-lived DialogueMemory before config is
+        available; the engine re-applies cfg values here each turn so a config
+        change takes effect without a daemon restart. ``None`` keeps the
+        current value.
+        """
+        with self._lock:
+            if max_tokens is not None:
+                self._max_context_tokens = int(max_tokens)
+            if max_messages is not None:
+                self._max_context_messages = int(max_messages)
+
     def get_recent_turns_with_tools(
         self,
         max_tool_turns: int = 2,
@@ -1095,7 +1334,13 @@ class DialogueMemory:
                     flat.append(payload)
                 else:
                     flat.extend(payload)
-            return flat
+            # Bound the history handed to the model. Storage is untouched:
+            # this only caps the wire payload (see bound_conversation_history).
+            return bound_conversation_history(
+                flat,
+                max_tokens=self._max_context_tokens,
+                max_messages=self._max_context_messages,
+            )
 
     def has_recent_messages(self) -> bool:
         """Check if there are any messages in the last 5 minutes."""

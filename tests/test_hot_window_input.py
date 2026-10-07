@@ -16,6 +16,7 @@ import pytest
 
 from claire.listening.state_manager import StateManager, ListeningState
 from claire.listening.intent_judge import IntentJudgment
+from claire.listening.listener import POST_TTS_TAIL_GUARD_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -228,22 +229,27 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
     def test_speech_started_during_window_accepted_after_expiry(self, _print):
         """Speech that STARTED during the hot window is accepted even after expiry.
 
-        This is the core scenario: user starts speaking at 2.5s into a 3s window,
-        Whisper takes 2s to transcribe, so transcript arrives at 4.5s — after
+        This is the core scenario: user starts speaking later in a 3s window,
+        Whisper takes too long to transcribe, so the transcript arrives after
         "Returning to wake word mode". The timestamp check still detects the
         speech started during the window.
+
+        The follow-up must begin after the post-TTS acoustic tail guard — a
+        human cannot answer before Claire has actually finished and the room
+        has settled (see listener.POST_TTS_TAIL_GUARD_SECONDS).
         """
-        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=0.08)
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Short answer.")
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
-        # Speech starts during active window
+        # Speech starts during the active window, past the acoustic tail guard.
+        time.sleep(POST_TTS_TAIL_GUARD_SECONDS)
         speech_start = time.time()
 
-        # Wait for hot window to expire (simulates Whisper delay)
-        time.sleep(0.12)
+        # Whisper is slow: the window expires before the transcript arrives.
+        listener.state_manager.expire_hot_window()
         assert not listener.state_manager.is_hot_window_active()
 
         # Transcript arrives after expiry — but speech_start was during window
@@ -288,6 +294,9 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
         _simulate_tts_finish(listener)
         _wait_for_hot_window_active(listener)
 
+        # Genuine human follow-up: after the acoustic tail guard, still inside
+        # the 3 s window.
+        time.sleep(POST_TTS_TAIL_GUARD_SECONDS)
         speech_start = time.time()
 
         _install_intent_judge(listener, _make_judgment(directed=True, query="tell me more"))
@@ -300,8 +309,13 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
 
     @patch("builtins.print")
     def test_voice_during_pending_activation_accepted(self, _print):
-        """Voice start during echo_tolerance delay (pending activation) still counts."""
-        listener, _ = _create_listener(echo_tolerance=0.5, hot_window_seconds=3.0)
+        """Voice start during echo_tolerance delay (pending activation) still counts.
+
+        The delay is configured longer than the post-TTS acoustic tail guard, so
+        this is genuinely a human follow-up rather than Claire's own settling
+        echo.
+        """
+        listener, _ = _create_listener(echo_tolerance=0.8, hot_window_seconds=3.0)
 
         listener.echo_detector.track_tts_start("Answer text.")
         _simulate_tts_finish(listener)
@@ -309,7 +323,8 @@ class TestTranscriptArrivesAfterHotWindowExpiry:
         # Hot window not yet active (still in echo_tolerance delay)
         assert not listener.state_manager.is_hot_window_active()
 
-        # Speech starts now during pending period
+        # Speech starts now during pending period, past the tail guard
+        time.sleep(POST_TTS_TAIL_GUARD_SECONDS + 0.05)
         speech_start = time.time()
 
         _install_intent_judge(listener, _make_judgment(directed=True, query="yes please"))
@@ -1556,12 +1571,13 @@ class TestIntentJudgeGating:
 
     @patch("builtins.print")
     def test_judge_called_for_longer_utterance_during_tts(self, _print):
-        """Longer utterances (>3 words) during TTS still reach the judge.
+        """A wake-worded interruption over TTS still reaches the judge.
 
-        Active TTS is itself an engagement signal — the user may be
-        interrupting with a real follow-up or correction, and the judge
-        needs to see it to catch intents the fast text-based stop-command
-        check misses.
+        Active TTS is itself an engagement signal, but audio captured while
+        Claire is speaking is only actionable when it starts with an explicit
+        wake word — otherwise a garbled echo of her own voice would be judged
+        as a follow-up (the runaway-loop bug). With "Claire" present, the judge
+        still sees the utterance and can catch real corrections.
         """
         listener, mock_tts = _create_listener(tts_speaking=True)
 
@@ -1569,13 +1585,36 @@ class TestIntentJudgeGating:
             listener, _make_judgment(
                 directed=True, query="what about tomorrow's weather"))
 
-        # >3 words, no stop-command keywords, not echo
+        # >3 words, no stop-command keywords, addressed by name
+        _process_transcript(listener,
+            "claire actually what about tomorrow's weather",
+            utterance_energy=0.01,
+        )
+
+        assert mock_judge.judge.call_count == 1
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_longer_utterance_during_tts_without_wake_word_is_rejected(self, _print):
+        """Unaddressed audio captured during TTS is rejected as echo by the
+        acoustic gate, before the judge can be fooled by a plausible transcript.
+
+        Whisper renders Claire's own voice as fluent sentences, so text alone
+        cannot decide this; ``captured_during_tts`` can.
+        """
+        listener, mock_tts = _create_listener(tts_speaking=True)
+
+        mock_judge = _install_intent_judge(
+            listener, _make_judgment(
+                directed=True, query="what about tomorrow's weather"))
+
         _process_transcript(listener,
             "actually what about tomorrow's weather",
             utterance_energy=0.01,
         )
 
-        assert mock_judge.judge.call_count == 1
+        assert mock_judge.judge.call_count == 0
+        assert _accepted_query(listener) == ""
         listener.state_manager.stop()
 
 

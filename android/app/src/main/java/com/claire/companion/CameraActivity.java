@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
@@ -23,6 +24,9 @@ import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -63,6 +67,9 @@ public class CameraActivity extends AppCompatActivity {
     /** Longest edge of the JPEG that is uploaded. */
     private static final int MAX_EDGE_PX = 1600;
 
+    /** For logcat: the whole reason a photo failed, not just the screen's summary. */
+    private static final String TAG = "ClaireCamera";
+
     /** How long the auto path waits for focus and exposure to settle. */
     private static final long AUTO_SETTLE_MS = 1200L;
 
@@ -87,6 +94,9 @@ public class CameraActivity extends AppCompatActivity {
 
         prefs = new ClairePrefs(this);
         auto = getIntent().getBooleanExtra(EXTRA_AUTO, false);
+        com.google.android.material.appbar.MaterialToolbar toolbar =
+                findViewById(R.id.camera_toolbar);
+        toolbar.setNavigationOnClickListener(view -> finish());
         previewView = findViewById(R.id.preview);
         status = findViewById(R.id.camera_status);
         shutter = findViewById(R.id.shutter);
@@ -99,6 +109,8 @@ public class CameraActivity extends AppCompatActivity {
             showLive();
         });
         send.setOnClickListener(view -> upload());
+
+        keepControlsOutOfTheGestureArea();
 
         if (checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -154,12 +166,23 @@ public class CameraActivity extends AppCompatActivity {
     }
 
     private void capture() {
-        if (busy || imageCapture == null) {
+        if (busy) {
+            // Say so rather than ignoring the tap: a button that does nothing at all
+            // is indistinguishable from one that is broken.
+            status.setText(R.string.camera_busy);
+            return;
+        }
+        if (imageCapture == null) {
+            // The camera had not finished binding when the finger arrived. This used to
+            // be a silent `return`, which is exactly what "i cant tap it" looks like
+            // from the outside.
+            status.setText(R.string.camera_not_ready);
+            startCamera();
             return;
         }
         busy = true;
         shutter.setEnabled(false);
-        status.setText(R.string.camera_title);
+        status.setText(R.string.camera_capturing);
         final File target;
         try {
             target = File.createTempFile("claire-photo", ".jpg", getCacheDir());
@@ -191,9 +214,62 @@ public class CameraActivity extends AppCompatActivity {
                     public void onError(@NonNull ImageCaptureException error) {
                         busy = false;
                         shutter.setEnabled(true);
-                        status.setText(getString(R.string.camera_failed, error.getMessage()));
+                        // The owner's report was "photos error out" and the screen used to
+                        // say only error.getMessage(), which on MIUI is often just
+                        // "Failed to take picture". The numeric CameraX code and the
+                        // cause are what make a failure actionable, so they are named
+                        // here, put in the conversation, and written to logcat.
+                        String detail = describeCaptureFailure(error);
+                        Log.e(TAG, "takePicture failed: " + detail, error);
+                        status.setText(detail);
+                        Conversation.get(CameraActivity.this).add(
+                                Conversation.Who.SYSTEM, "the photo could not be taken: " + detail);
                     }
                 });
+    }
+
+    /** The real reason, not the wrapper's one-line summary. */
+    static String describeCaptureFailure(ImageCaptureException error) {
+        StringBuilder out = new StringBuilder();
+        out.append("CameraX error ").append(error.getImageCaptureError());
+        String message = error.getMessage();
+        if (message != null && !message.trim().isEmpty()) {
+            out.append(" (").append(message.trim()).append(')');
+        }
+        Throwable cause = error.getCause();
+        if (cause != null) {
+            out.append(" caused by ").append(cause.getClass().getSimpleName());
+            if (cause.getMessage() != null && !cause.getMessage().trim().isEmpty()) {
+                out.append(": ").append(cause.getMessage().trim());
+            }
+        }
+        return out.toString();
+    }
+
+    /**
+     * Lift the controls clear of the system's own edge gesture.
+     *
+     * <p>The owner's words were "i cant tap it, move the button up". The shutter used
+     * to sit 14dp from the bottom of the screen, which is inside the gesture strip on
+     * a phone using gesture navigation — the swipe that goes Back eats the tap before
+     * the button ever sees it. The strip's height is a platform constant that changes
+     * with the navigation mode, so it is measured here rather than guessed at, and the
+     * padding is the gesture inset plus the original margin.
+     */
+    private void keepControlsOutOfTheGestureArea() {
+        View controls = findViewById(R.id.camera_controls);
+        if (controls == null) {
+            return;
+        }
+        final int base = Math.round(14f * getResources().getDisplayMetrics().density);
+        ViewCompat.setOnApplyWindowInsetsListener(controls, (view, insets) -> {
+            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemGestures()
+                    | WindowInsetsCompat.Type.navigationBars());
+            view.setPadding(view.getPaddingLeft(), view.getPaddingTop(),
+                    view.getPaddingRight(), Math.max(base, bars.bottom + base));
+            return insets;
+        });
+        ViewCompat.requestApplyInsets(controls);
     }
 
     private void showLive() {

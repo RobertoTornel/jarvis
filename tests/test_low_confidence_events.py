@@ -21,7 +21,11 @@ def make_listener(monkeypatch):
     monkeypatch.setattr(listener_module, "np", np)
 
     def make(**kwargs):
+        # These tests exercise the Whisper no-speech/low-confidence policy, so
+        # they deliberately select the opt-in Whisper decode path. Parakeet is
+        # the production default and never reaches ``_transcribe_audio``.
         cfg = SimpleNamespace(
+            stt_engine="faster_whisper",
             vad_enabled=False,
             voice_debug=False,
             whisper_min_confidence=0.5,

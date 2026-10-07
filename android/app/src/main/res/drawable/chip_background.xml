@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The pill behind the state chip.  A shape rather than a Chip widget on purpose:
+     the chip's colour is set from code on every state change, and a TextView with a
+     background drawable is the one thing that cannot fight the theme for it. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <corners android:radius="999dp" />
+    <solid android:color="@color/idle" />
+</shape>

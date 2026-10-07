@@ -808,6 +808,35 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     redacted = redact(text)
 
     # Step 2: Check for recent dialogue context
+    # Context budget — bound the history handed to the model. Dialogue memory
+    # keeps messages by TIME only (RECENT_WINDOW_SEC), so without a ceiling a
+    # busy conversation ships an unbounded prompt every turn (measured on the
+    # gateway: 133,893 input tokens at 324 messages, ~99% of wall time spent in
+    # prefill before the first token). Enforced here, at the send site, so both
+    # the current and the legacy retrieval path are covered.
+    from ..memory.conversation import (
+        bound_conversation_history,
+        DEFAULT_CONTEXT_MAX_MESSAGES,
+        DEFAULT_CONTEXT_MAX_TOKENS,
+    )
+
+    def _ctx_budget(name: str, default: int) -> int:
+        try:
+            return int(getattr(cfg, name, default))
+        except (TypeError, ValueError):
+            return default
+
+    _ctx_max_tokens = _ctx_budget("dialogue_memory_max_tokens",
+                                  DEFAULT_CONTEXT_MAX_TOKENS)
+    _ctx_max_messages = _ctx_budget("dialogue_memory_max_messages",
+                                    DEFAULT_CONTEXT_MAX_MESSAGES)
+    if dialogue_memory is not None and hasattr(dialogue_memory, "configure_context_budget"):
+        try:
+            dialogue_memory.configure_context_budget(
+                max_tokens=_ctx_max_tokens, max_messages=_ctx_max_messages)
+        except Exception as exc:  # noqa: BLE001
+            debug_log(f"context budget configure failed: {exc}", "reply")
+
     recent_messages = []
     is_new_conversation = True
 
@@ -820,6 +849,16 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         else:
             recent_messages = dialogue_memory.get_recent_messages()
         is_new_conversation = False
+
+    # Final structure-aware guard: newest turns always survive, and a `tool`
+    # result is never orphaned from its assistant `tool_calls` parent (strict
+    # OpenAI-compatible servers 400 on that).
+    if recent_messages:
+        recent_messages = bound_conversation_history(
+            recent_messages,
+            max_tokens=_ctx_max_tokens,
+            max_messages=_ctx_max_messages,
+        )
 
     # New conversation reset: when the previous session lapsed past the
     # inactivity window, drop the conversation-scoped cache and any

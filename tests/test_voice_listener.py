@@ -22,8 +22,15 @@ def _mock_input_devices(audio, devices):
 
 
 def _create_mock_config(**kwargs):
-    """Create a mock config object with default values for voice listener tests."""
+    """Create a mock config object with default values for voice listener tests.
+
+    ``stt_engine`` defaults to ``"faster_whisper"`` here because this module's
+    tests exercise the opt-in Whisper load path; Parakeet is the production
+    default and a Parakeet-configured listener never loads Whisper at all.
+    """
     mock_cfg = MagicMock()
+    mock_cfg.stt_engine = kwargs.get("stt_engine", "faster_whisper")
+    mock_cfg.stt_model_path = kwargs.get("stt_model_path", "")
     mock_cfg.whisper_model = kwargs.get("whisper_model", "small")
     mock_cfg.whisper_device = kwargs.get("whisper_device", "auto")
     mock_cfg.whisper_compute_type = kwargs.get("whisper_compute_type", "int8")

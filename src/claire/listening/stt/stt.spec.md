@@ -73,6 +73,22 @@ Utterance-in, `SttResult`-out. The text it produces is the one used for
 intent, tool calls, the reply, and memory. (Implemented separately; this spec
 fixes the split, not the model.)
 
+### Opt-in only: Whisper (`stt/whisper_engine.py`)
+
+Whisper is **not** a fallback and not a second authoritative path. It exists for
+anyone who deliberately sets `stt_engine='faster_whisper'` (or `'whisper'`), and
+`create_stt_engine` returns it only for those spellings — any other token raises
+`SttError` rather than quietly selecting an engine.
+
+A Parakeet-configured process must not pay for it: nothing in
+`claire.listening.listener` or `claire.daemon` imports `faster_whisper` or
+`mlx_whisper` at module load, the startup Whisper load runs only when
+`stt_engine` names Whisper (`VoiceListener._configures_whisper`), and the
+listener's decode path never calls the Whisper decoder when Parakeet is
+configured. When Parakeet fails, the turn is empty and the failure is reported
+through `_note_stt_degradation` — an unavailable recogniser is visible, never
+papered over by a worse one.
+
 ## Provisional / authoritative split
 
 - `partial_text()` and `finalize()` return **provisional** text. It feeds wake

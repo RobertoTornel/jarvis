@@ -218,6 +218,15 @@ class Settings:
     # Memory & Dialogue
     # Drives both the short-term memory window and forced diary update interval
     dialogue_memory_timeout: float
+    # Ceiling on the conversation history SENT to the model each turn. The
+    # time-based memory window alone is unbounded in messages, so a busy
+    # conversation used to ship the whole history (measured: 133,893 input
+    # tokens at 324 messages, ~99% of wall time in prefill). Storage and the
+    # UI/retrieval getters are unaffected; only the wire payload is bounded.
+    # Truncation is oldest-first and structure-aware; the newest turns always
+    # survive. 0 disables that dimension.
+    dialogue_memory_max_tokens: int
+    dialogue_memory_max_messages: int
     memory_enrichment_max_results: int
     memory_enrichment_source: str  # "all", "diary", or "graph"
     # Tool-call + tool-result messages from prior replies in the hot window
@@ -663,6 +672,10 @@ def get_default_config() -> Dict[str, Any]:
         # dialogue_memory_timeout drives the short-term memory window AND the forced
         # diary update interval. After a diary update, enrichment retrieves older context.
         "dialogue_memory_timeout": 300.0,
+        # History budget per request: ~20 user/assistant exchanges OR ~8k
+        # estimated tokens, whichever binds first (chars/4 heuristic).
+        "dialogue_memory_max_tokens": 8000,
+        "dialogue_memory_max_messages": 40,
         "memory_enrichment_max_results": 3,
         "memory_enrichment_source": "all",  # "all", "diary", or "graph"
         # Tool carryover: cap re-injected prior tool turns + chars per entry.
@@ -962,6 +975,9 @@ def load_settings() -> Settings:
 
     # Dialogue memory window and forced diary update share this duration
     dialogue_memory_timeout = float(merged.get("dialogue_memory_timeout", 300.0))
+    # 0 (or negative) disables that budget dimension.
+    dialogue_memory_max_tokens = int(merged.get("dialogue_memory_max_tokens", 8000))
+    dialogue_memory_max_messages = int(merged.get("dialogue_memory_max_messages", 40))
     memory_enrichment_max_results = int(merged.get("memory_enrichment_max_results", 3))
     memory_enrichment_source = str(merged.get("memory_enrichment_source", "all")).lower()
     if memory_enrichment_source not in ("all", "diary", "graph"):
@@ -1156,6 +1172,8 @@ def load_settings() -> Settings:
 
         # Memory & Dialogue
         dialogue_memory_timeout=dialogue_memory_timeout,
+        dialogue_memory_max_tokens=dialogue_memory_max_tokens,
+        dialogue_memory_max_messages=dialogue_memory_max_messages,
         memory_enrichment_max_results=memory_enrichment_max_results,
         memory_enrichment_source=memory_enrichment_source,
         tool_carryover_max_turns=tool_carryover_max_turns,

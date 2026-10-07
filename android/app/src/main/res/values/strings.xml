@@ -5,6 +5,8 @@
     <string name="channel_listening_detail">The ongoing status line shown while the microphone is open. Silent and low priority on purpose.</string>
     <string name="channel_alerts">Alerts</string>
     <string name="channel_alerts_detail">Things you need to notice: a refused token, location services switched off, the microphone taken by a call.</string>
+    <string name="channel_capture">Photos taken for Claire</string>
+    <string name="channel_capture_detail">A separate, noisier channel for photos the app takes on Claire\'s own request. It is separate so the owner can silence the status line without silencing the camera, and it exists so a photo is never taken invisibly.</string>
 
     <string name="action_photo">Photo</string>
     <string name="action_location">Location</string>
@@ -23,6 +25,8 @@
     <string name="action_battery">Battery settings</string>
     <string name="action_clear">Clear conversation</string>
     <string name="action_check">Check link</string>
+    <string name="action_resume_listening">Resume listening</string>
+    <string name="action_share_location">Share now</string>
 
     <string name="hint_say_something">Say something to Claire…</string>
     <string name="hint_host">Laptop address</string>
@@ -42,6 +46,45 @@
     <string name="sensitivity_quiet">Quiet room</string>
     <string name="sensitivity_normal">Normal</string>
     <string name="sensitivity_noisy">Noisy room</string>
+
+    <!-- Continuous location. -->
+    <string name="label_continuous_location">Share location continuously</string>
+    <string name="hint_continuous_location">Reports a position to Claire every %1$d seconds while the service runs. Needs location permission and, on Android 10+, “Allow all the time” for the screen-off case.</string>
+    <string name="label_location_interval">Report every</string>
+    <string name="interval_seconds">%1$d s</string>
+
+    <!-- Autonomous capture. -->
+    <string name="label_auto_capture">Take photos when Claire asks</string>
+    <string name="hint_auto_capture">Claire can ask through the bridge for one photo. The request is shown in the notification and written into the conversation; nothing is taken while this is off.</string>
+    <string name="label_periodic_capture">Also take a photo every…</string>
+    <string name="periodic_off">Never</string>
+    <string name="periodic_15">15 minutes</string>
+    <string name="periodic_30">30 minutes</string>
+    <string name="periodic_60">1 hour</string>
+    <string name="periodic_180">3 hours</string>
+
+    <!-- Survival. -->
+    <string name="section_survival">Keeping it alive</string>
+    <string name="label_battery_exempt">Battery: unrestricted</string>
+    <string name="hint_battery_exempt">Without this, MIUI freezes the app after a while with the screen off and listening stops. Android\'s own do-not-kill list.</string>
+    <string name="label_overlay">Display over other apps</string>
+    <string name="hint_overlay">Android 12+ forbids restarting a microphone service from the background. This exemption is the documented way to keep that legal, so the service can come back by itself after a kill.</string>
+    <string name="label_watchdog">Re-arm after a kill</string>
+    <string name="hint_watchdog">Checks every 15 minutes whether the listening service is still running and starts it again if it is not. Needs one of the two exemptions above to actually succeed in the background.</string>
+    <string name="watchdog_on">Armed</string>
+    <string name="watchdog_off">Off</string>
+    <string name="survival_granted">granted</string>
+    <string name="survival_missing">not granted</string>
+
+    <!-- Permission rows. -->
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_microphone">Microphone</string>
+    <string name="perm_camera">Camera</string>
+    <string name="perm_location">Location (while using)</string>
+    <string name="perm_location_background">Location (all the time)</string>
+    <string name="perm_notifications">Notifications</string>
+    <string name="perm_background_blocked">Android will only offer “Allow all the time” after “while using” has been granted. Grant that first, then come back.</string>
+
     <string name="help_token">The token is the value of PHONE_BRIDGE_TOKEN in ~/.config/claire/keys.json on the laptop. Print it there with:\npython -m claire.phone keys show PHONE_BRIDGE_TOKEN --reveal</string>
     <string name="help_battery">Android\'s do-not-kill list and MIUI\'s Autostart are what keep a listening service alive with the screen off.</string>
 
@@ -53,7 +96,73 @@
 
     <string name="location_services_off">Location services are switched off. Tap to open the setting that turns them on.</string>
     <string name="location_denied">Location permission has not been granted.</string>
+    <string name="location_background_denied">Continuous location needs “Allow all the time”; positions are only sent while the app is on screen until then.</string>
     <string name="permission_banner">Claire needs the microphone to listen, the camera for photos and location for where you are.</string>
     <string name="status_unknown">Not checked yet</string>
     <string name="status_offline">Unreachable</string>
+
+    <!-- The status card. -->
+    <string name="section_status">This phone</string>
+    <string name="section_conversation">Conversation</string>
+    <string name="status_microphone">Microphone</string>
+    <string name="status_location">Location</string>
+    <string name="status_camera">Camera</string>
+    <string name="status_link">Laptop</string>
+    <string name="state_listening">listening</string>
+    <string name="state_paused">paused</string>
+    <string name="state_stopped">stopped</string>
+    <string name="state_denied">permission not granted</string>
+    <string name="state_off">off</string>
+    <string name="state_on">every %1$d s</string>
+    <string name="state_while_using">only while on screen</string>
+    <string name="state_armed">ready (Claire may ask)</string>
+    <string name="state_capturing">taking a photo…</string>
+    <string name="state_no_permission">permission not granted</string>
+    <string name="state_connected">connected</string>
+    <string name="state_unreachable">unreachable</string>
+    <string name="state_unknown">not checked</string>
+    <string name="state_token_refused">token refused</string>
+
+    <string name="toast_copied">Message copied</string>
+    <string name="toast_copy_failed">Nothing to copy</string>
+    <string name="copy_hint">Long-press a message to copy it</string>
+
+    <string name="notif_title_listening">Claire is listening</string>
+    <string name="notif_title_paused">Claire is paused</string>
+    <string name="notif_capture_title">Claire took a photo</string>
+    <string name="notif_capture_text">Taken because Claire asked. Tap to see it.</string>
+    <string name="notif_nudge_title">Claire is not listening</string>
+    <string name="notif_nudge_text">The phone killed the listening service. Tap to start it again.</string>
+
+    <string name="conversation_empty">Nothing yet. Say something, or take a photo.</string>
+    <string name="who_you">You</string>
+    <string name="who_claire">Claire</string>
+    <string name="who_phone">Phone</string>
+    <string name="who_system">Problem</string>
+    <string name="label_photo_request">Claire asked for a photo</string>
+
+    <!-- Settings section headers. -->
+    <string name="section_laptop">The laptop</string>
+    <string name="hint_laptop">Where the bridge is listening. The token is PHONE_BRIDGE_TOKEN in ~/.config/claire/keys.json on the laptop.</string>
+    <string name="section_always_on">Always on</string>
+    <string name="section_behaviour">Behaviour</string>
+    <string name="label_port">Port</string>
+    <string name="camera_privacy">Nothing leaves this phone until you tap “Send to Claire”. Claire can ask for a photo when this screen is not open — every one of those posts a notification, and you can switch autonomous photos off in Settings.</string>
+    <string name="toast_cleared">Conversation cleared</string>
+    <string name="toast_saved">Saved</string>
+    <string name="error_host_required">A host is required — this is the laptop running the bridge.</string>
+    <string name="location_grant_while_using_first">Android requires \u201Cwhile using the app\u201D first. Grant that, then come back for \u201Call the time\u201D.</string>
+    <!-- The voice: Fish Audio called from this phone, or the phone's own engine. -->
+    <string name="section_voice">Claire’s voice</string>
+    <string name="hint_voice_backend">“Fish Audio (this phone)” calls the Fish API from here and plays the reply as it arrives. “Phone voice” uses Android’s own text-to-speech and needs no key. With no Fish key set, the phone voice is used and the conversation says so.</string>
+    <string name="label_fish_model">Fish model id</string>
+    <string name="label_fish_token">Fish Audio API key</string>
+    <string name="label_fish_voice">Voice id (optional)</string>
+    <string name="action_test_voice">Test the voice</string>
+    <string name="voice_testing">Testing…</string>
+    <string name="tts_backend_fish">Fish Audio (this phone)</string>
+    <string name="tts_backend_device">Phone voice</string>
+    <string name="camera_busy">one photo is already being taken</string>
+    <string name="camera_not_ready">the camera is still opening; tap again in a moment</string>
+    <string name="camera_capturing">taking the photo…</string>
 </resources>
