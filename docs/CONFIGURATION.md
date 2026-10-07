@@ -179,11 +179,9 @@ nothing, and no Whisper backend is imported, downloaded or loaded.
 The keys that go dead on the Parakeet path are `whisper_model`,
 `whisper_backend`, `whisper_device`, `whisper_compute_type`, plus the
 low-confidence policy keys `whisper_min_confidence`,
-`whisper_no_speech_threshold`, `whisper_min_audio_duration`, `whisper_vad` and
-`whisper_min_word_length`. They are kept in the schema so the opt-in path stays
-a configuration change, not a code change. (`whisper_min_word_length` is in fact
-read by no code at all, on either path — it is a vestigial key, not something
-this change made dead.)
+`whisper_no_speech_threshold`, `whisper_min_audio_duration` and `whisper_vad`.
+They are kept in the schema so the opt-in path stays a configuration change,
+not a code change.
 
 #### Language Modes
 - **Multilingual** (default, 99 languages): `"whisper_model": "medium"`

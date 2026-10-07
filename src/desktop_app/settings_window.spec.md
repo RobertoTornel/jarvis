@@ -115,7 +115,7 @@ The Voice Input tab includes a device dropdown populated at window open time via
 ## Save Behaviour
 
 - Only keys that differ from `get_default_config()` are written.
-- Existing keys not managed by the UI are preserved (e.g. `mcps`, `active_profiles`, `wake_aliases`, `allowlist_bundles`, `stop_commands`).
+- Existing keys not managed by the UI are preserved (e.g. `mcps`, `wake_aliases`, `stop_commands`).
 - After save, a dialog confirms success and reminds the user to restart.
 - If the daemon is running when save completes, the tray app offers to restart it.
 
@@ -167,11 +167,9 @@ On save, the `mcps` dict is written to config.json if non-empty, or removed enti
 These fields are managed elsewhere or are too complex for a simple form:
 
 - `db_path` / `sqlite_vss_path` — internal storage paths
-- `active_profiles` — list managed by setup wizard
-- `allowlist_bundles` — list of bundle IDs
 - `wake_aliases` — list of strings (complex editing)
-- `stop_commands` / `stop_command_fuzzy_ratio` — list of strings
+- `stop_commands` — list of strings
 - `use_stdin` — developer/CLI flag
 - `voice_debug` — environment variable only
-- `whisper_min_audio_duration` / `whisper_min_word_length` — rarely changed advanced params
+- `whisper_min_audio_duration` — rarely changed advanced param
 - `vad_frame_ms` / `vad_pre_roll_ms` — low-level VAD timing
