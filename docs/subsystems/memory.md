@@ -125,7 +125,7 @@ extraction is wrapped so a failure cannot lose the diary write
 
 **8. The vault is written only by a human path.** Nothing in the flush or the
 reply engine calls `create_note` / `update_note`. The panel's memory editor is
-the writer (`panel/server.py:2199`, `:2206`, `:2223`), and
+the writer (`panel/server.py:2190` `save_note`, `:2231` `delete_note`), and
 `router.ensure_router` (`router.py:303`) creates `CLAIRE.md` from
 `router_template` (`:115`) when it is absent. There is no note-writing tool in
 the tool registry under `src/claire/tools/`.
@@ -301,7 +301,7 @@ Only behaviours the code actually implements are listed.
   `load_default_router=True`, and `load_router` defaults to `create=True`, so
   the missing file is created from the template (`router.py:115`, `:344`);
   creation is reported, never silent. A vault directory is returned even when
-  it does not exist yet (`notes.py:155`); `create_note` creates it on demand.
+  it does not exist yet (`notes.py:154`); `create_note` creates it on demand.
 - **The vault is unreadable or not decodable.** A real read failure raises a
   named error (`RouterReadError` / `RouterDecodeError`, `router.py:67`–`:71`)
   and `build_memory_section` turns it into a visible

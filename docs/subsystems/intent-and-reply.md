@@ -140,7 +140,7 @@ a spoken error:
   `OllamaBackend` impl, factory at `get_llm_backend(settings)`)", and
   `llm/llm.spec.md:67` gives the default as `llm_provider` = `"ollama"` while
   `llm.spec.md:8` says the defaults "remain `127.0.0.1:11434`". The shipped
-  default is `"llm_provider": "openai_compatible"` (`src/claire/config.py:561`)
+  default is `"llm_provider": "openai_compatible"` (`src/claire/config.py:570`)
   pointing at OmniRouter (`config.py:47`), with the key read from
   `OMNIROUTE_API_KEY` (`config.py:48`, `:567`). Ollama remains a supported
   provider, and `_resolve_provider` still falls back to it for an unknown value

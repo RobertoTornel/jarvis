@@ -52,9 +52,9 @@ config sets `transport` to anything but `"stdio"` is rejected with
 ## Data and control flow
 
 1. **Config.** `load_settings()` reads `config.json` and normalises the `mcps`
-   value to a dict (`config.py:1099`, `mcps = _ensure_dict(...)`). The default is
-   empty (`config.py:781`, `"mcps": {}`). `Settings.mcps` is declared at
-   `config.py:329`.
+   value to a dict (`config.py:1113`, `mcps = _ensure_dict(...)`). The default is
+   empty (`config.py:795`, `"mcps": {}`). `Settings.mcps` is declared at
+   `config.py:338`.
 2. **Startup discovery.** `daemon.main` reads `cfg.mcps` and, when non-empty,
    calls `initialize_mcp_tools(mcps, verbose=False)` (`daemon.py:1433`,
    `initialize_mcp_tools` imported at `daemon.py:45`). This caches the server
@@ -99,14 +99,14 @@ config sets `transport` to anything but `"stdio"` is rejected with
    `f"{server_name}__{tool_name}"` with the server's `description` and
    `inputSchema` (`registry.py:151`–`:160`). The reply engine loads the cached
    catalog for the turn (`engine.py:890`–`:897`) and hands it to the tool router
-   (`engine.py:964`, `select_tools(..., mcp_tools=mcp_tools, ...)`) and to the
-   planner schema (`engine.py:1029`). The router's hot-window cache key includes
+   (`engine.py:1021`–`:1024`, `select_tools(..., mcp_tools=mcp_tools, ...)`) and to the
+   planner schema (`engine.py:1087`). The router's hot-window cache key includes
    the sorted MCP tool names, so a mid-window catalogue change invalidates the
-   cached routing decision (`engine.py:954`).
+   cached routing decision (`engine.py:1007`).
 7. **Call.** When the model emits a name containing `__`, `run_tool_with_retries`
-   splits it on the first `__` (`registry.py:331`–`:332`), checks the server is
-   configured (`registry.py:333`), constructs an `MCPClient`
-   (`registry.py:339`) and calls `client.invoke_tool(...)` (`registry.py:340`).
+   splits it on the first `__` (`registry.py:329`–`:330`), checks the server is
+   configured (`registry.py:332`), constructs an `MCPClient`
+   (`registry.py:337`) and calls `client.invoke_tool(...)` (`registry.py:338`).
    `invoke_tool` routes to `runtime.invoke(...)` (`mcp_client.py:278`–`:283`).
    The runtime submits the call to the worker's queue with a single
    `call_soon_threadsafe(queue.put_nowait, ...)` hop and blocks on a
@@ -135,7 +135,7 @@ config sets `transport` to anything but `"stdio"` is rejected with
 ## Configuration keys
 
 The `mcps` key is a dict of server name → server dict. It has no defaults
-(`config.py:781`) and is normalised with `_ensure_dict` (`config.py:1099`), so a
+(`config.py:795`) and is normalised with `_ensure_dict` (`config.py:1113`), so a
 non-dict value becomes `{}`. Per-server keys, from `mcp_client.py` and
 `mcp_runtime.py`:
 
@@ -159,10 +159,10 @@ Fixed internal timeouts, not configurable:
 
 Two config keys outside `mcps` affect MCP behaviour:
 
-- `tool_selection_strategy` (default `"llm"`, `config.py:749`, validated at
-  `config.py:1063`–`:1065`) decides whether all tools, including MCP tools, are
+- `tool_selection_strategy` (default `"llm"`, `config.py:763`, validated at
+  `config.py:1077`–`:1079`) decides whether all tools, including MCP tools, are
   offered to the model or only a routed subset.
-- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:856`) gates the `debug_log`
+- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:870`) gates the `debug_log`
   lines tagged `"mcp"` (see `debug.py:25`–`:35`).
 
 ## Extension points
@@ -194,7 +194,7 @@ Two config keys outside `mcps` affect MCP behaviour:
 
 | Symptom | What the code actually does |
 |---|---|
-| The `mcp` package is absent | It is a hard dependency (`requirements.txt:62`, `mcp==1.13.1`), and `mcp_client.py:9`–`:10` import it unconditionally, so `registry.py` fails to import. The `if MCPClient is None` guard at `registry.py:336` is therefore unreachable. |
+| The `mcp` package is absent | It is a hard dependency (`requirements.txt:62`, `mcp==1.13.1`), and `mcp_client.py:9`–`:10` import it unconditionally, so `registry.py` fails to import. The `if MCPClient is None` guard at `registry.py:334` is therefore unreachable. |
 | `command` not found | `_resolve_command` raises `FileNotFoundError` with a message naming the command before any process starts (`mcp_client.py:61`–`:64` for an absolute path, `:102`–`:105` when it is not on `PATH`). At discovery this is caught per server and reported by name (`registry.py:162`–`:170`); the daemon prints the error next to the server (`daemon.py:1448`–`:1449`). |
 | Server starts but the handshake fails or hangs | `_run` surfaces the exception through `_ready` (`mcp_runtime.py:428`–`:435`), so `start()` raises it (`mcp_runtime.py:365`). A hang instead raises `concurrent.futures.TimeoutError` after 30 s. Either way the worker never enters the cache and the failure is reported as that server's discovery error. |
 | Configured server has no tools | Discovery succeeds with zero tools; the daemon prints a "no tools discovered" line for it (`daemon.py:1450`–`:1451`). |
