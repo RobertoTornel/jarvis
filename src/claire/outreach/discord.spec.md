@@ -11,8 +11,9 @@ Module: `src/claire/outreach/discord.py`.
 
 ## Configuration
 
-Read from the 0600 env file `/home/mana/.config/claire/channels.env` (override
-the path with `CLAIRE_CHANNELS_ENV`, or pass one explicitly):
+Read from the 0600 env file `~/.config/claire/channels.env`, resolved from the
+user's home rather than a baked-in path (override the path with
+`CLAIRE_CHANNELS_ENV`, or pass one explicitly):
 
 | key | meaning |
 | --- | --- |

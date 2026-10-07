@@ -6,7 +6,8 @@ to Signal first, and Discord is only tried when the channels above it could not
 deliver. This module is one rung of that ladder and nothing more. It owns:
 
 * reading the three Discord keys out of the 0600 env file
-  (``/home/mana/.config/claire/channels.env``) without ever echoing a value;
+  (``~/.config/claire/channels.env``, or ``$CLAIRE_CHANNELS_ENV``) without ever
+  echoing a value;
 * deciding whether the transport is configured at all (:meth:`available`), which
   it answers from configuration alone and never from the network;
 * posting exactly one message, through an **injected** HTTP layer so this module
@@ -230,13 +231,18 @@ __all__ = [
 # Constants
 # --------------------------------------------------------------------------
 
-#: The env file the operator keeps their channel credentials in. 0600, outside
-#: every repository, never copied into one.
-CHANNELS_ENV_PATH = Path("/home/mana/.config/claire/channels.env")
-
 #: An env var that may point somewhere else, for tests and for a machine that
 #: keeps its credentials elsewhere. Not a secret; the file it names is 0600.
 ENV_PATH_OVERRIDE_VAR = "CLAIRE_CHANNELS_ENV"
+
+#: The env file the operator keeps their channel credentials in. 0600, outside
+#: every repository, never copied into one.  Resolved from the user's home (or
+#: from ``$CLAIRE_CHANNELS_ENV``) rather than baked in, so a fresh checkout on
+#: any machine points at that machine's own credentials.  Same contract as
+#: :data:`claire.outreach.signal.DEFAULT_ENV_FILE`.
+CHANNELS_ENV_PATH = Path(
+    os.environ.get(ENV_PATH_OVERRIDE_VAR, "~/.config/claire/channels.env")
+).expanduser()
 
 #: The stable channel id used in every result and every log line.
 CHANNEL_NAME = "discord"

@@ -98,7 +98,7 @@ line and fixes indented, so it stays greppable and parseable:
 
 ```
 Claire self-check - 2026-10-06T15:22:13+00:00
-[READY] Memory vault: /home/mana/.local/share/claire/vault (writable), router file present (914 bytes)
+[READY] Memory vault: ~/.local/share/claire/vault (writable), router file present (914 bytes)
 [MISSING] Tesseract OCR: The 'tesseract' binary is not installed ... Fix: sudo apt-get install -y tesseract-ocr
     fix: sudo apt-get install -y tesseract-ocr
 Summary: 4 ready, 3 missing, 0 problem - NOT READY

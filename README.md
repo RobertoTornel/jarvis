@@ -634,6 +634,43 @@ are never world-readable:
 
 ### From source
 
+One command, run from the checkout root (or anywhere — it finds the checkout
+from its own location):
+
+```bash
+./start.sh
+```
+
+`start.sh` is idempotent and derives every path at runtime, so it works from any
+clone location. In order it:
+
+1. Creates `.venv` with a Python 3.11+ interpreter when it is missing, and
+   installs `requirements.txt` unless the installed set already matches it. It
+   will not modify a virtualenv that a live Claire is running from; pass
+   `--force-install` (or stop her first) to override.
+2. Runs Claire's own self-check and prints it, so every missing dependency,
+   device, config key or secret is named with the exact command that fixes it.
+3. Brings up the **daemon** (`python -m claire`) and the **web panel**
+   (`python -m claire.panel.server`). The daemon starts the **phone bridge**
+   itself, so the bridge is never started a second time. When a systemd user
+   unit is installed the daemon runs through it; otherwise it runs as a detached
+   process this script tracks and can stop cleanly.
+
+```bash
+./start.sh check       # preflight and health report only; writes nothing
+./start.sh status      # what is running right now
+./start.sh stop        # clean shutdown, no stray processes
+./start.sh restart     # stop, then start
+./start.sh --dry-run   # print every action, execute none
+```
+
+Everything environment-specific is an override, never a constant: `CLAIRE_VENV`,
+`CLAIRE_PYTHON`, `CLAIRE_STATE_DIR`, `CLAIRE_SERVICE_NAME`, `CLAIRE_DAEMON_MODE`,
+`CLAIRE_PANEL_HOST`, `CLAIRE_PANEL_PORT`. `./start.sh --help` lists them all.
+
+The manual route still works, and `scripts/run_linux.sh` remains the bare
+foreground launcher for just the daemon:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -643,7 +680,7 @@ pip install -r requirements.txt
 PYTHONPATH=src python -m claire --version
 PYTHONPATH=src python -m claire --help
 
-# start her
+# daemon only, in the foreground
 ./scripts/run_linux.sh
 ```
 
@@ -672,12 +709,15 @@ claire --smoke-test     # start the daemon, verify core subsystems, then exit
 deliberate: Claire needs the microphone, the speakers and (for the screen
 senses) the graphical session, all of which belong to a human login session. A
 system unit starts before any session exists and has no audio server or display,
-so the failure surfaces as "no microphone" and looks like a Claire bug. Install:
+so the failure surfaces as "no microphone" and looks like a Claire bug.
+
+The file is a **template**: it carries `@CLAIRE_REPO_ROOT@` where the checkout
+lives, because a unit file cannot discover its own repository. Install it with a
+command that substitutes the real path (do not copy it verbatim — the
+placeholder is not a path):
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp deploy/claire.service ~/.config/systemd/user/claire.service
-systemctl --user daemon-reload
+./start.sh --install-service        # renders and installs, backs up any existing unit
 systemctl --user enable --now claire
 journalctl --user -u claire -f
 ```

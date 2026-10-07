@@ -1,11 +1,19 @@
 # Claire - systemd USER unit (Linux only).
 #
-#   install:  mkdir -p ~/.config/systemd/user
-#             cp deploy/claire.service ~/.config/systemd/user/claire.service
-#             systemctl --user daemon-reload
-#             systemctl --user enable --now claire
+# THIS FILE IS A TEMPLATE.  It contains @CLAIRE_REPO_ROOT@ where the checkout
+# lives, because a unit file cannot discover its own repository: hardcoding a
+# path here is exactly the thing that breaks a fresh clone.  Install it with
+#
+#   ./start.sh --install-service
+#
+# which substitutes @CLAIRE_REPO_ROOT@ with the real absolute path of the
+# checkout and reloads systemd.  Do NOT copy this file verbatim into
+# ~/.config/systemd/user: the placeholder is not a path and the unit will fail
+# with "No such file or directory" on ExecStart.
+#
 #   logs:     journalctl --user -u claire -f
-#   health:   ~/jarvis_cloud/.venv/bin/python -m claire.platform.service --self-check
+#   health:   <checkout>/.venv/bin/python -m claire.platform.service --self-check
+#             (or: ./start.sh check)
 #
 # WHY A *USER* UNIT AND NOT A SYSTEM UNIT (the classic failure)
 # ------------------------------------------------------------
@@ -36,7 +44,7 @@
 
 [Unit]
 Description=Claire - always-on Linux voice assistant
-Documentation=file://%h/jarvis_cloud/src/claire/platform/service.spec.md
+Documentation=file://@CLAIRE_REPO_ROOT@/src/claire/platform/service.spec.md
 # The session bus, audio server and display must already be up: Claire needs all
 # three, and starting before them is the failure described above.
 After=graphical-session.target pipewire.service wireplumber.service network-online.target
@@ -50,13 +58,14 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-# The checkout path: adjust if you cloned Claire somewhere else. `%h` is the
-# user's home directory (systemd specifier, not a shell variable).
-WorkingDirectory=%h/jarvis_cloud
+# The checkout path. `@CLAIRE_REPO_ROOT@` is substituted by start.sh at install
+# time; every other path here uses `%h`, systemd's "the user's home directory"
+# specifier (not a shell variable), which is portable by construction.
+WorkingDirectory=@CLAIRE_REPO_ROOT@
 # The package is not pip-installed in a bare checkout, so the src layout needs
 # to be on the import path. If you ran `pip install -e .`, this line can go and
-# ExecStart can use the console script instead: ExecStart=%h/jarvis_cloud/.venv/bin/claire
-Environment=PYTHONPATH=%h/jarvis_cloud/src
+# ExecStart can use the console script instead: ExecStart=@CLAIRE_REPO_ROOT@/.venv/bin/claire
+Environment=PYTHONPATH=@CLAIRE_REPO_ROOT@/src
 # Journald is not a terminal; do not let Python block-buffer the log.
 Environment=PYTHONUNBUFFERED=1
 # Keys live in a 0600 file that only this user can read - never inline here.
@@ -65,7 +74,7 @@ Environment=PYTHONUNBUFFERED=1
 # self-check (`python -m claire.platform.service --self-check`) and by the
 # provider call that needs it, so it is loud, not silent.
 EnvironmentFile=-%h/.config/claire/claire.env
-ExecStart=%h/jarvis_cloud/.venv/bin/python -m claire
+ExecStart=@CLAIRE_REPO_ROOT@/.venv/bin/python -m claire
 # SIGINT, not SIGTERM: Claire treats it as "finish the turn, close the audio
 # stream, exit", which is what keeps the microphone out of a wedged state.
 KillSignal=SIGINT

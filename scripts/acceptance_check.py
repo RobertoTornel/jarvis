@@ -152,9 +152,21 @@ ACCEPTANCE_PAGE_URL = (
 )
 ACCEPTANCE_MARKER = "claire-acceptance"
 
-#: Where the Fish engine's keys live when the config does not say. Mirrored from
-#: :mod:`claire.config` so the fix can name a real path rather than "".
-DEFAULT_FISH_KEY_FILE = "/home/mana/Documents/deepseek/TTS/TTS_TEST_FISH/fish-keys.txt"
+def _default_fish_key_file() -> str:
+    """Where the Fish engine's keys live when the config does not say.
+
+    Asked of :mod:`claire.config` rather than copied here: the author's own
+    absolute path is wrong on every other machine, and a "fix" that names a
+    path that does not exist is not a fix.  Never raises - a diagnostic tool
+    that crashes on its own fallback is worse than one that prints "".
+    """
+    try:
+        from claire.config import get_default_config
+
+        return str(get_default_config().get("fish_key_file") or "")
+    except Exception:  # noqa: BLE001 - deliberate: the fallback must not crash
+        return ""
+
 
 #: How every fix in this report spells a runnable command. The package lives
 #: under ``src/`` and this checkout has no console script installed, so a
@@ -689,7 +701,7 @@ def probe_tts_synthesis(ctx: AcceptanceContext) -> ProbeResult:
     if engine == "fish":
         fish = _require("claire.output.fish_client", _import_fix("claire.output.fish_client"))
         key_file = Path(
-            str(getattr(settings, "fish_key_file", "") or DEFAULT_FISH_KEY_FILE)
+            str(getattr(settings, "fish_key_file", "") or _default_fish_key_file())
         ).expanduser()
         try:
             pool = fish.FishKeyPool(key_file)
