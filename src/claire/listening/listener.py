@@ -65,6 +65,15 @@ POST_TTS_TAIL_GUARD_SECONDS = 0.6
 # cannot re-arm the window off itself — the human must say "Claire" again.
 MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1
 
+# How many processed frames the ambient-level history holds, for estimating the
+# room's noise floor. At the default 20 ms frame this is 30 seconds, long enough
+# to survive a lull in background noise without re-baselining on speech.
+_AMBIENT_WINDOW_FRAMES = 1500
+
+# The percentile of the ambient history treated as the noise floor. A low
+# percentile ignores speech, which is a minority of frames even in a busy room.
+_AMBIENT_FLOOR_PERCENTILE = 20.0
+
 
 @dataclass(frozen=True)
 class LowConfidenceEvent:
@@ -586,6 +595,15 @@ class VoiceListener(threading.Thread):
         self.is_speech_active = False
         self._silence_frames = 0
         self._utterance_frames: list = []
+        # Speech accounting for the current utterance. ``_utterance_voice_frames``
+        # counts only frames VAD called speech, so a brief noise click padded by
+        # pre-roll cannot pass as an utterance (see `_speech_gate_reason`).
+        self._utterance_voice_frames = 0
+        self._utterance_speech_rms_sum = 0.0
+        # Ambient level history, one entry per processed frame, used to estimate
+        # the room's noise floor so the gate adapts to a noisy room instead of
+        # relying on a fixed energy threshold.
+        self._ambient_energy: deque = deque(maxlen=_AMBIENT_WINDOW_FRAMES)
         self._frame_samples = 0
         self._samplerate = int(getattr(self.cfg, "sample_rate", 16000))
         self._vad: Optional = None
@@ -1559,6 +1577,7 @@ class VoiceListener(threading.Thread):
             # _transcription_is_current() reject it.
             self._capture_generation += 1
             self._utterance_frames = []
+            self._reset_utterance_speech_accounting()
             self._pre_roll.clear()
             self._pending_audio = None
             self.is_speech_active = False
@@ -1588,6 +1607,15 @@ class VoiceListener(threading.Thread):
         # Track energy for echo detection
         rms = float(np.sqrt(np.mean(np.square(frame))))
         self._recent_audio_energy.append(rms)
+        # Retained so utterance accounting can use the level without recomputing.
+        self._last_frame_rms = rms
+        # Every frame, speech or not, feeds the ambient estimate. Speech is a
+        # minority of frames, so a low percentile of this history approximates
+        # the room's noise floor rather than the loudest thing in the room.
+        ambient = getattr(self, "_ambient_energy", None)
+        if ambient is None:
+            ambient = self._ambient_energy = deque(maxlen=_AMBIENT_WINDOW_FRAMES)
+        ambient.append(rms)
 
         if self._vad is None:
             return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
@@ -1603,6 +1631,67 @@ class VoiceListener(threading.Thread):
                 debug_log(f"VAD rejected audio frame: {exc}", "voice")
                 print("  ⚠️  Speech detection failed; using audio-level detection. Enable voice_debug for details.", flush=True)
             return rms >= float(getattr(self.cfg, "voice_min_energy", 0.0045))
+
+    def _reset_utterance_speech_accounting(self) -> None:
+        """Clear the per-utterance speech counters."""
+        self._utterance_voice_frames = 0
+        self._utterance_speech_rms_sum = 0.0
+
+    def _ambient_noise_floor(self) -> float:
+        """Estimate the room's noise floor from recent ambient levels.
+
+        Returns 0.0 until the history has enough frames to be meaningful, which
+        leaves the gate inert during the first seconds after start-up.
+        """
+        history = getattr(self, "_ambient_energy", None)
+        if np is None or not history or len(history) < 50:
+            return 0.0
+        try:
+            return float(np.percentile(np.fromiter(history, dtype=float), _AMBIENT_FLOOR_PERCENTILE))
+        except Exception:
+            return 0.0
+
+    def _speech_gate_reason(self) -> Optional[str]:
+        """Why the buffered utterance is not worth transcribing, else ``None``.
+
+        Two language-agnostic tests, applied before the recogniser runs so that
+        ambient noise costs neither a transcription nor a "Heard:" line:
+
+        * Enough VAD-positive audio. Buffered duration alone is not evidence of
+          speech: pre-roll pads a 20 ms noise click out to a quarter of a second,
+          which is what let silence decode into stray words like "Yeah.".
+        * Speech that stands above the room's own noise floor, so the same gate
+          keeps working with a television or conversation in the background
+          instead of relying on one fixed energy threshold.
+        """
+        min_speech_ms = float(getattr(self.cfg, "min_speech_ms", 250.0) or 0.0)
+        voice_frames = int(getattr(self, "_utterance_voice_frames", 0))
+
+        if min_speech_ms > 0:
+            if voice_frames <= 0:
+                return "no VAD-positive audio"
+            rate = max(1, int(getattr(self, "_stream_samplerate", self._samplerate) or 1))
+            speech_ms = voice_frames * 1000.0 * self._frame_samples / rate
+            if speech_ms < min_speech_ms:
+                return f"speech too short ({speech_ms:.0f} ms < {min_speech_ms:.0f} ms)"
+
+        if bool(getattr(self.cfg, "noise_gate_enabled", True)) and voice_frames > 0:
+            floor = self._ambient_noise_floor()
+            margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
+            if floor > 0.0 and margin > 0.0:
+                speech_rms = self._utterance_speech_rms_sum / voice_frames
+                if speech_rms < floor * margin:
+                    return (f"speech below room noise floor "
+                            f"({speech_rms:.5f} < {floor * margin:.5f})")
+        return None
+
+    def _discard_noisy_utterance(self, reason: str) -> None:
+        """Drop a completed buffer that never held enough speech to transcribe."""
+        debug_log(f"discarded utterance: {reason}", "voice")
+        self.is_speech_active = False
+        self._silence_frames = 0
+        self._utterance_frames = []
+        self._reset_utterance_speech_accounting()
 
     def _emit_low_confidence(self, event: LowConfidenceEvent) -> None:
         """Notify a consumer without allowing its failure to interrupt listening."""
@@ -3162,6 +3251,7 @@ class VoiceListener(threading.Thread):
                     self.is_speech_active = False
                     self._silence_frames = 0
                     self._utterance_frames = []
+                    self._reset_utterance_speech_accounting()
                     self._pre_roll.clear()
                     continue
 
@@ -3193,10 +3283,15 @@ class VoiceListener(threading.Thread):
                             # Track utterance timing for echo detection
                             self.echo_detector.track_utterance_timing(utterance_start_time, 0.0)
 
-                            # Seed with pre-roll
+                            # Seed with pre-roll. Pre-roll is buffered audio, not
+                            # evidence of speech, so it never counts towards the
+                            # speech accounting below.
+                            self._reset_utterance_speech_accounting()
                             if self._pre_roll:
                                 self._utterance_frames.extend(list(self._pre_roll))
                             self._utterance_frames.append(frame.copy())
+                            self._utterance_voice_frames += 1
+                            self._utterance_speech_rms_sum += float(getattr(self, "_last_frame_rms", 0.0))
                             self._silence_frames = 0
                         else:
                             # Maintain pre-roll buffer
@@ -3209,6 +3304,8 @@ class VoiceListener(threading.Thread):
                     else:
                         if is_voice:
                             self._utterance_frames.append(frame.copy())
+                            self._utterance_voice_frames += 1
+                            self._utterance_speech_rms_sum += float(getattr(self, "_last_frame_rms", 0.0))
                             self._silence_frames = 0
                         else:
                             self._silence_frames += 1
@@ -3218,7 +3315,19 @@ class VoiceListener(threading.Thread):
                         if self._silence_frames >= endpoint_silence_frames or len(self._utterance_frames) >= current_max_frames:
                             if len(self._utterance_frames) >= current_max_frames:
                                 debug_log(f"utterance reached capture limit ({current_max_frames * frame_ms} ms)", "voice")
-                            self._finalize_utterance()
+                                # A capture-limit utterance is bounded continuous
+                                # audio, never a padded noise blip, so the speech
+                                # gate does not apply to it.
+                                self._finalize_utterance()
+                            else:
+                                # Endpoint reached: only an utterance that held
+                                # enough speech above the room noise floor is
+                                # worth a transcription.
+                                reason = self._speech_gate_reason()
+                                if reason is not None:
+                                    self._discard_noisy_utterance(reason)
+                                else:
+                                    self._finalize_utterance()
                             self._pre_roll.clear()
                     # The streaming recogniser is fed frame by frame for
                     # provisional wake detection (D3/D4). It happens inside the
@@ -3234,11 +3343,13 @@ class VoiceListener(threading.Thread):
             self.is_speech_active = False
             self._silence_frames = 0
             self._utterance_frames = []
+            self._reset_utterance_speech_accounting()
             return
         if np is None or not self._utterance_frames:
             self.is_speech_active = False
             self._silence_frames = 0
             self._utterance_frames = []
+            self._reset_utterance_speech_accounting()
             return
 
         # Track when utterance ends - but don't overwrite global timing yet
@@ -3264,6 +3375,7 @@ class VoiceListener(threading.Thread):
         self.is_speech_active = False
         self._silence_frames = 0
         self._utterance_frames = []
+        self._reset_utterance_speech_accounting()
 
         if audio is None or audio.size == 0:
             return

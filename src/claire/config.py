@@ -191,6 +191,15 @@ class Settings:
     endpoint_silence_ms: int
     max_utterance_ms: int
     tts_max_utterance_ms: int
+    # Minimum VAD-positive speech in an utterance before it is worth
+    # transcribing. Buffered duration is not evidence of speech: pre-roll pads a
+    # brief noise click out to a quarter second, which is how silence used to
+    # decode into stray words.
+    min_speech_ms: float
+    # Reject speech that does not stand above the room's own noise floor, so the
+    # gate keeps working with a television or conversation in the background.
+    noise_gate_enabled: bool
+    noise_gate_margin: float
 
     # UI/UX Features
     tune_enabled: bool
@@ -642,6 +651,13 @@ def get_default_config() -> Dict[str, Any]:
         "endpoint_silence_ms": 800,
         "max_utterance_ms": 12000,
         "tts_max_utterance_ms": 3000,  # Shorter timeout during TTS for quick stop detection
+        # A single syllable is far longer than this, so a real word always
+        # clears the bar while a VAD blip on noise cannot.
+        "min_speech_ms": 250.0,
+        # 2.0 is roughly 6 dB above the ambient floor: enough to reject a noisy
+        # room's background without demanding the speaker raise their voice.
+        "noise_gate_enabled": True,
+        "noise_gate_margin": 2.0,
 
         # UI/UX Features
         "tune_enabled": True,
@@ -948,6 +964,9 @@ def load_settings() -> Settings:
     endpoint_silence_ms = int(merged.get("endpoint_silence_ms", 800))
     max_utterance_ms = int(merged.get("max_utterance_ms", 12000))
     tts_max_utterance_ms = int(merged.get("tts_max_utterance_ms", 3000))
+    min_speech_ms = float(merged.get("min_speech_ms", 250.0))
+    noise_gate_enabled = bool(merged.get("noise_gate_enabled", True))
+    noise_gate_margin = float(merged.get("noise_gate_margin", 2.0))
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
@@ -1155,6 +1174,9 @@ def load_settings() -> Settings:
         endpoint_silence_ms=endpoint_silence_ms,
         max_utterance_ms=max_utterance_ms,
         tts_max_utterance_ms=tts_max_utterance_ms,
+        min_speech_ms=min_speech_ms,
+        noise_gate_enabled=noise_gate_enabled,
+        noise_gate_margin=noise_gate_margin,
 
         # UI/UX Features
         tune_enabled=tune_enabled,

@@ -44,6 +44,27 @@ applies so interruption audio reaches the recogniser promptly. Limits count comp
 native-rate frames, including pre-roll. Reaching a limit queues the captured
 chunk and allows the following frame to start the next utterance.
 
+An utterance reaching a silent endpoint is transcribed only if it held enough
+speech to be worth recognising. Two language-agnostic tests apply, both before
+the recogniser runs, so ambient noise costs neither a transcription nor a
+`Heard:` line:
+
+- `min_speech_ms` counts only frames VAD called speech. Buffered duration is not
+  evidence of speech: pre-roll pads a brief noise click out to roughly a quarter
+  of a second, which is how silence used to decode into stray words. A single
+  syllable is far longer than the default 250 ms, so real words always clear the
+  bar while a VAD blip on noise cannot. An utterance that instead reached
+  `max_utterance_ms` is bounded continuous audio, never a padded blip, and is
+  transcribed without this test.
+- With `noise_gate_enabled`, speech must also stand `noise_gate_margin` above the
+  room's own noise floor. The floor is a low percentile of a 30-second ambient
+  level history, so a television or background conversation raises the bar
+  instead of needing a hand-tuned energy threshold. The gate is inert until that
+  history fills, which leaves it quiet during the first seconds after start-up.
+
+Rejected utterances are discarded with a `discarded utterance:` debug record and
+never enter the transcription queue.
+
 Audio-frame processing runs on a dedicated serial worker, limited to VAD and
 utterance assembly. Intent judging and reply generation on the listener thread
 do not block frame consumption. The listener thread owns the PortAudio stream.

@@ -763,6 +763,9 @@ def test_speech_reaches_whisper_at_configured_boundary(
         tts_max_utterance_ms=(limit_frames if tts_speaking else 2) * frame_ms,
         whisper_backend='faster-whisper', whisper_device='cpu',
         whisper_min_audio_duration=0, endpoint_silence_ms=3 * frame_ms,
+        # This test is about where capture boundaries fall, so the speech gate
+        # (covered by its own tests below) is switched off to isolate it.
+        min_speech_ms=0, noise_gate_enabled=False,
     )
     monkeypatch.setattr(capture, 'create_intent_judge', lambda _cfg: None)
     monkeypatch.setattr(capture, 'FASTER_WHISPER_AVAILABLE', True)
@@ -810,3 +813,179 @@ def test_speech_reaches_whisper_at_configured_boundary(
     assert len(jobs) == expected_count, 'Speech must be submitted at its capture boundary'
     assert all(len(job.audio) == frame_samples * expected_frames for job in jobs)
     np.testing.assert_array_equal(np.concatenate([job.audio for job in jobs]), speech)
+
+
+# --- Speech gate: ambient noise must not become an utterance -------------------
+#
+# Buffered duration alone is not evidence of speech. Pre-roll pads a one-frame
+# noise click out to roughly a quarter of a second, which cleared the old
+# minimum-duration check and let silence decode into stray words such as
+# "Yeah." and "Mhm.". These tests pin the replacement: a gate that looks at how
+# much audio VAD actually called speech, relative to the room's own noise floor.
+
+
+def speech_gate_listener(min_speech_ms=250.0, noise_gate_enabled=True,
+                         noise_gate_margin=2.0, ambient=None):
+    obj = listener(16000)
+    obj.cfg = SimpleNamespace(min_speech_ms=min_speech_ms,
+                              noise_gate_enabled=noise_gate_enabled,
+                              noise_gate_margin=noise_gate_margin)
+    obj._utterance_voice_frames = 0
+    obj._utterance_speech_rms_sum = 0.0
+    obj._ambient_energy = deque(ambient or [], maxlen=1500)
+    return obj
+
+
+def _voice(obj, frames, rms):
+    """Record ``frames`` VAD-positive 20 ms frames at level ``rms``."""
+    obj._utterance_voice_frames = frames
+    obj._utterance_speech_rms_sum = frames * rms
+    return obj
+
+
+def test_padded_noise_click_fails_the_speech_gate():
+    # One 20 ms blip is 20 ms of speech no matter how much pre-roll precedes it.
+    obj = _voice(speech_gate_listener(), frames=1, rms=0.05)
+
+    reason = obj._speech_gate_reason()
+
+    assert reason is not None and 'too short' in reason
+
+
+def test_real_syllable_clears_the_speech_gate():
+    obj = _voice(speech_gate_listener(), frames=25, rms=0.05)  # 500 ms at 20 ms
+
+    assert obj._speech_gate_reason() is None
+
+
+def test_utterance_without_vad_positive_audio_is_rejected():
+    obj = _voice(speech_gate_listener(), frames=0, rms=0.0)
+
+    assert obj._speech_gate_reason() == 'no VAD-positive audio'
+
+
+def test_disabling_the_speech_gate_allows_a_single_frame():
+    obj = _voice(speech_gate_listener(min_speech_ms=0), frames=1, rms=0.05)
+
+    assert obj._speech_gate_reason() is None
+
+
+def test_speech_below_the_room_noise_floor_is_rejected():
+    # A loud room: the floor sits at 1.0e-3, so 1.5e-3 is not speech above it.
+    obj = _voice(speech_gate_listener(ambient=[0.001] * 200), frames=25, rms=0.0015)
+
+    reason = obj._speech_gate_reason()
+
+    assert reason is not None and 'noise floor' in reason
+
+
+def test_speech_above_the_room_noise_floor_passes():
+    obj = _voice(speech_gate_listener(ambient=[0.001] * 200), frames=25, rms=0.01)
+
+    assert obj._speech_gate_reason() is None
+
+
+def test_noise_floor_gate_is_inert_until_the_ambient_history_fills():
+    # Start-up: too little history to know the room, so do not reject on level.
+    obj = _voice(speech_gate_listener(ambient=[0.5] * 5), frames=25, rms=0.001)
+
+    assert obj._speech_gate_reason() is None
+
+
+def test_noise_floor_gate_can_be_disabled():
+    obj = _voice(speech_gate_listener(noise_gate_enabled=False,
+                                      ambient=[0.001] * 200), frames=25, rms=0.0015)
+
+    assert obj._speech_gate_reason() is None
+
+
+def test_discarding_a_noisy_utterance_clears_its_accounting():
+    obj = _voice(speech_gate_listener(), frames=1, rms=0.05)
+    obj.is_speech_active = True
+    obj._silence_frames = 7
+    obj._utterance_frames = [np.ones(320, dtype=np.float32)]
+
+    obj._discard_noisy_utterance('too short')
+
+    assert obj.is_speech_active is False
+    assert obj._silence_frames == 0
+    assert obj._utterance_frames == []
+    assert obj._utterance_voice_frames == 0
+    assert obj._utterance_speech_rms_sum == 0.0
+
+
+def _click_with_pre_roll(monkeypatch, min_speech_ms):
+    """Run one quiet frame run, one loud click, then endpoint silence.
+
+    The buffered utterance is pre-roll plus the click, which is long enough to
+    clear the older duration check. Returns the transcription jobs queued.
+    """
+    from dataclasses import replace
+    from unittest.mock import MagicMock
+    from claire.config import load_settings
+
+    frame_ms = 20
+    cfg = replace(
+        load_settings(), voice_debug=False, vad_enabled=False,
+        vad_frame_ms=frame_ms, vad_pre_roll_ms=240,
+        endpoint_silence_ms=3 * frame_ms, max_utterance_ms=12000,
+        whisper_backend='faster-whisper', whisper_device='cpu',
+        whisper_min_audio_duration=0.15,
+        min_speech_ms=min_speech_ms, noise_gate_enabled=False,
+    )
+    monkeypatch.setattr(capture, 'create_intent_judge', lambda _cfg: None)
+    monkeypatch.setattr(capture, 'FASTER_WHISPER_AVAILABLE', True)
+    monkeypatch.setattr(capture, '_load_faster_whisper_model', lambda *a, **kw: MagicMock())
+    monkeypatch.setattr(VoiceListener, '_decode_faster_whisper', lambda *a: ([], None))
+    monkeypatch.setattr(VoiceListener, '_start_llm_warmup', lambda _self: [])
+    monkeypatch.setattr(VoiceListener, '_start_transcription_worker', lambda _self: None)
+    monkeypatch.setattr('desktop_app.face_widget.get_claire_state', lambda: MagicMock())
+    obj = VoiceListener(MagicMock(), cfg, SimpleNamespace(is_speaking=lambda: False), None)
+
+    frame_samples = cfg.sample_rate * frame_ms // 1000
+    quiet = np.full(frame_samples * 20, 0.001, dtype=np.float32)
+    click = np.full(frame_samples, 0.2, dtype=np.float32)
+    audio = np.concatenate([quiet, click, np.full(frame_samples * 4, 0.001, dtype=np.float32)])
+
+    class Feed(queue.Queue):
+        def get(self, *args, **kwargs):
+            if self.empty():
+                obj._should_stop = True
+                raise queue.Empty
+            return super().get(*args, **kwargs)
+
+    obj._audio_q = Feed()
+
+    class Stream:
+        active = True
+        def start(self):
+            obj._on_audio(audio[:, None], len(audio), None, None)
+        def stop(self):
+            pass
+        def close(self):
+            pass
+
+    def devices(device=None, **kwargs):
+        info = {'index': 0, 'name': 'Synthetic input', 'max_input_channels': 1}
+        return info if device is not None or kwargs else [info]
+
+    monkeypatch.setattr(capture, 'sd', SimpleNamespace(
+        query_devices=devices, InputStream=lambda **kw: Stream(),
+    ))
+    obj.run()
+    return list(obj._transcription_jobs_q.queue)
+
+
+def test_noise_click_padded_by_pre_roll_is_not_transcribed(monkeypatch):
+    jobs = _click_with_pre_roll(monkeypatch, min_speech_ms=250.0)
+
+    assert jobs == [], 'A one-frame noise click must never become a transcription'
+
+
+def test_same_click_would_be_transcribed_without_the_speech_gate(monkeypatch):
+    # Guards the test above from passing vacuously: the audio does reach the
+    # queue when the gate is off, so it is the gate that rejects it.
+    jobs = _click_with_pre_roll(monkeypatch, min_speech_ms=0)
+
+    assert len(jobs) == 1
+
