@@ -14,41 +14,44 @@ latency in front of a call that did not need it.
 
 This module runs the planner on a background thread the moment the query and
 dialogue window are known, planning against the **full** catalogue because the
-router's narrowing does not exist yet. Callers wait for it only when the
-router's output says the plan will actually be used — the engine's fast path
-still discards the plan (and never waits) for a short, tool-free turn.
+router's narrowing does not exist yet. The caller then takes that plan *only if
+it is already in hand* when the router returns, and otherwise plans serially
+exactly as before — so the overlap is free when it works and invisible when it
+does not. Nothing ever waits on this handle.
 
 Measured on this host (paired adjacent arms, every (query, arm) a distinct
 prompt so the gateway cache cannot serve one arm from the other):
 
-- Planning against the full catalogue costs the planner nothing measurable.
-  26 varied queries, the 23 that actually reach the planner: paired median
-  delta +0.03 s, mean -0.06 s, and the direction is two-sided — 4 queries
-  graded worse on the full catalogue, 3 worse on the narrowed one. The earlier
-  "2-3x slower" estimate came from the raw ``generate_tools_json_schema``
-  character count, but the planner is handed names plus one truncated
-  description line, so 15 tools is ~1.7k characters, not 10.7k.
-- End-to-end pre-chat (time to the first chat call, 6 paired repeats per arm):
-  -1.01 s on a plain tool turn, -1.85 s on a meals turn, -1.55 s on a memory
-  turn, and no regression on turns whose plan is discarded (-0.38 s / +0.14 s
-  on two short tool-free turns) — the router is not slowed by the extra
-  in-flight call.
+- Planning against the full catalogue costs the planner very little. 30 paired
+  calls, 3-tool vs 15-tool catalogue: median delta +0.00 s, mean +0.09 s. The
+  catalogue the planner is handed is names plus one truncated description line
+  (391 vs 1723 characters), not the 2-3x growth the raw
+  ``generate_tools_json_schema`` payload would suggest. The residual cost is a
+  slightly higher share of calls reaching the configured planner ceiling
+  (6/30 -> 8/30 at 3.0 s), which fails open like any planner timeout.
+- End-to-end pre-chat (time to the first chat call): the planner's round-trip
+  is removed entirely on the turns where it wins the race with the router.
 
-Waiting is bounded by the budget the serial ordering would have given the
-planner, so the overlap cannot make a turn slower; see the engine's
-consumption site for the three invariants and `tests/test_planner_prefetch.py`
-for the tests that pin them.
+**Consumption is a race, never a wait.** An earlier revision waited for the
+speculative plan with a budget equal to the serial wall-clock. That is not safe
+on a shared backend: the gateway may batch the two calls (where the win comes
+from) or queue one behind the other, and a queued planner call can outrun the
+ceiling its serial counterpart met comfortably. The waiting design then spent
+the whole budget and followed no plan at all — strictly slower than serial and
+planless where serial had a plan. So the plan is taken only if it is already in
+hand when the router returns, and a turn without one runs the serial planner
+verbatim. See the consumption site in ``reply.engine`` and
+``tests/test_planner_prefetch.py``.
 
 Failure is always non-fatal: an error or a non-list result yields ``None`` and
-the engine falls back to the serial, router-narrowed planner. A legitimate
-*empty* plan (``[]``) is returned as-is — it is the planner's positive
-"nothing to do" answer, not a failure.
+the caller runs its own planner. A legitimate *empty* plan (``[]``) is not
+distinguished from a failure, and does not need to be — neither is a plan the
+turn can follow, and the serial planner is the right answer to both.
 """
 
 from __future__ import annotations
 
 import threading
-import time
 from typing import Callable, List, Optional
 
 from ..debug import debug_log
@@ -74,7 +77,6 @@ class PlannerPrefetch:
         self._call = call
         self._timeout_sec = float(timeout_sec)
         self._on_error = on_error
-        self._started_at = time.monotonic()
         self._done = threading.Event()
         self._plan: Optional[List[str]] = None
         self._thread = threading.Thread(
@@ -126,50 +128,22 @@ class PlannerPrefetch:
     def settled(self) -> bool:
         """True once the worker has finished, whether it planned or failed.
 
-        This is what lets a caller tell a *timeout* (worker still in flight:
-        the backend has already been given the full planner ceiling and did
-        not answer, so a serial retry can only fail the same way) from a
-        *settled failure* (the call raised or returned nothing immediately,
-        so a serial retry is cheap and may still produce a plan).
+        A caller that only ever reads :meth:`plan_if_ready` does not need
+        this, but it is the honest way to report *why* a prefetch was not
+        used — still running (the router got there first) versus finished
+        without a plan.
         """
         return self._done.is_set()
 
-    def wait(self, within: float) -> Optional[List[str]]:
-        """Wait up to ``within`` seconds **from now** for the plan.
+    def plan_if_ready(self) -> Optional[List[str]]:
+        """The plan if the worker has **already** finished with one, else ``None``.
 
-        :meth:`result` bounds its wait from :meth:`start`, which is what a
-        caller needs to cap the whole speculative window. This method
-        instead lets a caller spend the *router's* duration on top of the
-        planner's own ceiling — i.e. hand the planner exactly the wall-clock
-        the serial ordering would have given it (router, then a full
-        planner timeout) without giving up the overlap.
-
-        Returns ``None`` when the worker has not settled, and also when it
-        settled without a usable plan; check :attr:`settled` to tell those
-        apart. Never raises.
+        This is the safe consumption point: it never waits, so the caller can
+        only ever *gain* the planner's latency, never spend a turn's budget on
+        it. A caller that finds no plan here runs its own planner, which is
+        exactly what it would have done without the prefetch.
         """
-        if within > 0:
-            self._done.wait(within)
-        if not self._done.is_set():
-            # Still in flight: abandon it. The thread is a daemon, holds no
-            # locks, and nothing it publishes is read.
-            return None
-        return self._plan
-
-    def result(self) -> Optional[List[str]]:
-        """Return the plan, or ``None`` if it is not available in budget.
-
-        Never raises, and never blocks longer than ``timeout_sec`` measured
-        from :meth:`start`.
-        """
-        remaining = self._timeout_sec - (time.monotonic() - self._started_at)
-        if remaining > 0:
-            self._done.wait(remaining)
-        if not self._done.is_set():
-            # The worker is still in flight. Abandon it — it is a daemon
-            # thread, it holds no locks, and nothing it publishes is read.
-            return None
-        return self._plan
+        return self._plan if self._done.is_set() else None
 
 
 def start_planner_prefetch(

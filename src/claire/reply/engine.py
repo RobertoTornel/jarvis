@@ -976,27 +976,23 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # ceiling (6/30 -> 8/30 at 3.0 s), which fails open like any planner
     # timeout.
     #
-    # Three independent guarantees keep this from being a quality or latency
-    # regression:
+    # The consumption site below never waits: it takes the speculative plan
+    # only if the worker has ALREADY produced one when the router finishes, and
+    # otherwise runs the serial planner verbatim. Two guarantees fall out of
+    # that single rule:
     #
-    #   1. Never slower. The consumption deadline below is
-    #      `planner_timeout_sec + router_elapsed` measured from the prefetch
-    #      start — precisely the wall-clock the serial ordering gives the
-    #      planner (router, then a full planner ceiling). A plan the router
-    #      already overlapped is therefore free, and the serial fallback
-    #      inherits whatever is left of that same deadline.
-    #   2. Never planless where serial would have planned. The speculative
-    #      *call* is given `planner_timeout_sec + llm_tools_timeout_sec`, so it
-    #      is never cut off early by the router sharing its window: its
-    #      effective window is the absolute deadline from invariant 1, the same
-    #      one the serial ordering creates. A prefetch that then *settles*
-    #      without a plan is retried on the serial path; only one still in
-    #      flight at the deadline fails open, and that has already had the
-    #      whole window a serial call would have had.
-    #   3. Never an unexecutable allow-list. `allowed_tools` below already
-    #      unions in every tool the plan names from `_full_catalog_names`, so
-    #      a plan that reaches for a tool the router did not pick — or that
-    #      the router narrowed away — stays executable rather than 404-ing.
+    #   1. Never slower. Nothing is ever waited for, so the speculative call
+    #      cannot add a millisecond to a turn. On the path where the plan is
+    #      not in hand the turn runs precisely the pre-existing serial code.
+    #   2. Never planless where serial would have planned. The serial planner
+    #      is skipped only when the turn already holds a real plan, so there is
+    #      no state in which the engine follows a plan the old code would not
+    #      have had.
+    #
+    # (A third, inherited guarantee: `allowed_tools` below already unions in
+    # every tool the plan names from `_full_catalog_names`, so a speculative
+    # plan that reaches for a tool the router did not pick — or that the router
+    # narrowed away — stays executable rather than 404-ing.)
     #
     # The turn may still be skipped by the fast path below (short, tool-free):
     # that decision needs the router, so the prefetch fires anyway but is
@@ -1010,23 +1006,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         # matching `plan_query`'s own default so both paths use one ceiling.
         _planner_timeout_sec = 3.0
     _planner_timeout_sec = float(_planner_timeout_sec)
-    # The router's own ceiling. The speculative planner's *call* must be
-    # allowed to outlive `planner_timeout_sec` measured from thread start,
-    # because that window is shared with the router: the serial ordering gave
-    # the planner a fresh ceiling AFTER the router, so the equivalent absolute
-    # deadline is `planner_timeout_sec + router_elapsed`. Capping the worker at
-    # the bare planner ceiling would starve it on exactly the turns the router
-    # is slowest — it would self-terminate, return `[]`, and be indistinguishable
-    # from the planner's positive "nothing to do" answer, silently losing a plan
-    # the serial path would have produced. The turn's latency is bounded
-    # separately, by the wait deadline below, so a generous call ceiling here
-    # costs nothing but the lifetime of a daemon thread on a hung backend.
-    _router_timeout_sec = getattr(cfg, "llm_tools_timeout_sec", None)
-    if not isinstance(_router_timeout_sec, (int, float)) or isinstance(
-        _router_timeout_sec, bool
-    ):
-        _router_timeout_sec = 8.0
-    _planner_call_timeout_sec = _planner_timeout_sec + float(_router_timeout_sec)
     _planner_prefetch = None
     _planner_prefetch_t0: Optional[float] = None
     try:
@@ -1049,7 +1028,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                 _query=redacted,
                 _dialogue=_dialogue_ctx,
                 _tools=_full_planner_catalog,
-                _timeout=_planner_call_timeout_sec,
+                _timeout=_planner_timeout_sec,
             ):
                 return _call(
                     cfg=_cfg,
@@ -1067,8 +1046,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             debug_log(
                 f"planner prefetch started against the full catalogue "
                 f"({len(_full_planner_catalog)} tools, "
-                f"call ceiling {_planner_call_timeout_sec:.1f}s, "
-                f"wait ceiling {_planner_timeout_sec:.1f}s + router)",
+                f"ceiling {_planner_timeout_sec:.1f}s)",
                 "planning",
             )
     except Exception as _plan_pf_exc:  # noqa: BLE001 - speculation is optional
@@ -1209,16 +1187,6 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # wait for below is `planner_timeout_sec + this`, measured from the
     # prefetch start — i.e. never more than the serial ordering would have cost.
     _router_elapsed = time.monotonic() - _router_t0
-    _planner_deadline_at: Optional[float] = (
-        _planner_prefetch_t0 + _planner_timeout_sec + _router_elapsed
-        if _planner_prefetch_t0 is not None
-        else None
-    )
-    _planner_budget_left = (
-        max(0.0, _planner_deadline_at - time.monotonic())
-        if _planner_deadline_at is not None
-        else None
-    )
 
     # Tool carry-over guard: when the previous assistant turn invoked a
     # tool that FAILED (success=False on the ToolExecutionResult), union
@@ -1295,55 +1263,52 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     else:
         action_plan = []
         _plan_source = "serial"
-        # `_run_serial` is the fail-safe: the serial planner is only skipped
-        # when the turn already has a plan to follow, or when the speculative
-        # call is still in flight past a deadline that its own ceiling should
-        # have respected (a hung backend, where a retry would hang too).
-        _run_serial = True
-        if _planner_prefetch is not None and _planner_budget_left is not None:
-            _plan_spent = time.monotonic() - _planner_prefetch_t0
-            _prefetched_plan = _planner_prefetch.wait(within=_planner_budget_left)
-            if _prefetched_plan is not None:
+        # The race, and its one rule: take the speculative plan only if it is
+        # ALREADY in hand, and otherwise run the planner exactly as if the
+        # prefetch had never started. Nothing is ever waited for, so the
+        # speculative call can only ever give the turn something it would not
+        # have had — it can never spend budget, and it can never be the reason
+        # a plan is missing.
+        #
+        # This matters because the backend is shared. When the router and the
+        # planner are both in flight the gateway may serve them concurrently
+        # (which is where the win comes from) or queue one behind the other
+        # (measured: a contended planner call can outrun the ceiling its serial
+        # counterpart met comfortably). A design that *waited* for the
+        # speculative plan had to guess which had happened, and on a queued
+        # backend it guessed wrong in both directions at once: it spent the
+        # whole budget waiting and then followed no plan at all. Requiring the
+        # plan to be ready removes the guess: queued backends degrade to the
+        # serial path, batched ones keep the whole overlap.
+        if _planner_prefetch is not None:
+            _prefetched_plan = _planner_prefetch.plan_if_ready()
+            if _prefetched_plan:
                 action_plan = _prefetched_plan
                 _plan_source = "prefetch"
-                _run_serial = False
+                if _planner_prefetch_t0 is not None:
+                    debug_log(
+                        f"planner served from the speculative prefetch "
+                        f"({len(action_plan)} step(s), "
+                        f"{time.monotonic() - _planner_prefetch_t0:.2f}s "
+                        f"into the turn; router took {_router_elapsed:.2f}s)",
+                        "planning",
+                    )
+            else:
                 debug_log(
-                    f"planner served from the speculative prefetch "
-                    f"({len(action_plan)} step(s), {_plan_spent:.2f}s "
-                    f"into the turn)",
+                    "planner prefetch had no plan in hand when the router "
+                    "finished — running the planner serially",
                     "planning",
                 )
-            elif not _planner_prefetch.settled:
-                # Still in flight at the deadline. The speculative call was
-                # given the full planner ceiling — the same one the serial
-                # call would get — on top of the router's overlap, and did not
-                # answer. A serial retry would burn that ceiling a second time
-                # on a backend that is already hanging, so fail open to the
-                # pre-planner safe defaults instead. This is the same outcome
-                # a serial planner timeout produces, and it is what keeps the
-                # speculative wait from ever costing more than the serial path.
-                _plan_source = "prefetch-timeout"
-                _run_serial = False
-                debug_log(
-                    "planner prefetch still in flight at its deadline — "
-                    "failing open (a serial retry would time out identically)",
-                    "planning",
-                )
-        if _run_serial:
-            _fallback_kwargs = {}
-            if _planner_budget_left is not None:
-                # The serial retry inherits what is left of the same deadline,
-                # so wait + retry together still cannot exceed the serial bound.
-                _fallback_kwargs["timeout_sec"] = max(
-                    0.1, _planner_deadline_at - time.monotonic()
-                )
+        if _plan_source != "prefetch":
+            # Verbatim the pre-existing serial call, including its own
+            # `planner_timeout_sec` default: a turn that does not get the
+            # speculative plan behaves exactly as it did before this change.
             try:
                 action_plan = plan_query(
                     cfg=cfg,
                     query=redacted,
                     dialogue_context=_dialogue_ctx,
                     tools=_planner_tool_catalog,
-                    **_fallback_kwargs,
                 )
             except Exception as _plan_exc:  # pragma: no cover — defensive
                 debug_log(f"planner step failed (non-fatal): {_plan_exc}", "planning")

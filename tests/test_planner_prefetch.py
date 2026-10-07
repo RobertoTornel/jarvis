@@ -36,44 +36,44 @@ pytestmark = pytest.mark.unit
 
 # ── the handle ───────────────────────────────────────────────────────────
 
+def _settle(h, within=5.0):
+    """Wait for the worker without using the handle's own API to do it."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        if h.settled:
+            return
+        time.sleep(0.002)
+    raise AssertionError("the prefetch worker never settled")
 
-def test_prefetch_returns_the_plan_once_the_worker_is_ready():
-    h = start_planner_prefetch(call=lambda: ["getTime location='Tokyo'"], timeout_sec=5.0)
-    assert h.wait(within=5.0) == ["getTime location='Tokyo'"]
-    assert h.settled is True
 
-
-def test_wait_bounds_from_now_not_from_start():
-    """The engine spends the router's duration on top of the planner ceiling.
-
-    `result()` bounds its wait from `start`, so once that budget is gone it
-    returns None even though the worker is about to finish — which is exactly
-    why the engine uses `wait(within=...)` instead. Both behaviours are load
-    bearing: one caps the whole speculative window, the other lets the router's
-    own duration be spent on the planner's behalf.
-    """
+def test_plan_if_ready_is_none_until_the_worker_finishes_then_the_plan():
     release = threading.Event()
     h = start_planner_prefetch(
         call=lambda: (release.wait(5.0), ["getTime location='Tokyo'"])[1],
-        timeout_sec=0.05,
+        timeout_sec=5.0,
     )
-    # From-start budget already spent; the worker is still in flight.
-    assert h.result() is None
+    # Held open, so the "not yet" state is deterministic rather than a race.
     assert h.settled is False
+    assert h.plan_if_ready() is None
     release.set()
-    # A wait measured from *now* still collects it.
-    assert h.wait(within=5.0) == ["getTime location='Tokyo'"]
+    _settle(h)
     assert h.settled is True
+    assert h.plan_if_ready() == ["getTime location='Tokyo'"]
 
 
-def test_wait_returns_none_when_the_worker_never_settles():
+def test_plan_if_ready_never_blocks():
+    """The whole safety property in one test: an unfinished worker must cost
+    the caller nothing. This is what lets the engine treat 'no plan in hand' as
+    'run the planner myself' rather than as a deadline to wait out."""
     release = threading.Event()
     h = start_planner_prefetch(
         call=lambda: (release.wait(5.0), ["x"])[1], timeout_sec=0.05
     )
     try:
-        assert h.wait(within=0.05) is None
-        assert h.settled is False
+        t0 = time.monotonic()
+        for _ in range(1000):
+            assert h.plan_if_ready() is None
+        assert time.monotonic() - t0 < 0.5, "plan_if_ready blocked"
     finally:
         release.set()
 
@@ -85,38 +85,39 @@ def test_a_failing_call_is_a_settled_no_plan_and_is_reported():
         timeout_sec=5.0,
         on_error=seen.append,
     ).start()
-    assert h.wait(within=5.0) is None
-    assert h.settled is True
-    assert [type(e).__name__ for e in seen] == ["RuntimeError"]
+    _settle(h)
+    assert h.plan_if_ready() is None
+    assert len(seen) == 1 and isinstance(seen[0], RuntimeError)
 
 
 def test_a_non_list_result_is_treated_as_no_plan():
     """A stray scalar from a confused backend must not become a plan."""
     h = start_planner_prefetch(call=lambda: "getTime location='Tokyo'", timeout_sec=5.0)
-    assert h.wait(within=5.0) is None
-    assert h.settled is True
+    _settle(h)
+    assert h.plan_if_ready() is None
 
 
-def test_an_empty_plan_is_a_plan_not_a_failure():
-    """`[]` means the planner answered "nothing to do"; only None is failure.
+def test_an_empty_plan_is_reported_as_empty_not_as_a_plan():
+    """`[]` is the planner's "nothing to do", and it stays `[]`.
 
-    The engine branches on this: `[]` is consumed as-is, while a missing plan
-    is retried on the serial path.
+    The handle does not launder it into a plan or into a failure: the caller
+    decides. The engine's rule is that only a *non-empty* plan is worth
+    following, so `[]` sends the turn down the serial path — which is strictly
+    better than following an empty plan, and identical to the pre-prefetch
+    behaviour when the serial planner also returns `[]`.
     """
     h = start_planner_prefetch(call=lambda: [], timeout_sec=5.0)
-    assert h.wait(within=5.0) == []
-    assert h.settled is True
+    _settle(h)
+    assert h.plan_if_ready() == []
+    assert h.plan_if_ready() is not None
 
 
 def test_start_never_raises_when_the_thread_cannot_start():
-    class Boom:
-        def wait(self, *a, **k):
-            raise AssertionError("must not be reached")
-
-    with patch.object(threading.Thread, "start", side_effect=RuntimeError("no threads")):
-        h = start_planner_prefetch(call=lambda: ["x"], timeout_sec=0.1)
+    with patch("src.claire.reply.planner_prefetch.threading.Thread") as th:
+        th.return_value.start.side_effect = RuntimeError("no threads left")
+        h = start_planner_prefetch(call=lambda: ["x"], timeout_sec=5.0)
     assert h.settled is True
-    assert h.wait(within=0.1) is None
+    assert h.plan_if_ready() is None
 
 
 def test_the_call_runs_off_the_calling_thread():
@@ -125,7 +126,7 @@ def test_the_call_runs_off_the_calling_thread():
         call=lambda: names.append(threading.current_thread().name) or ["x"],
         timeout_sec=5.0,
     ).start()
-    h.wait(within=5.0)
+    _settle(h)
     assert names == ["planner-prefetch"]
     assert threading.current_thread().name != "planner-prefetch"
 
@@ -136,14 +137,27 @@ _SYSTEM_MESSAGE = {"role": "system", "content": ""}
 
 
 def _drive_engine(mock_config, db, dialogue_memory, query, plan_query_fake,
-                  select_tools_ret=None, extractor=None, chat=None):
-    """Run one turn, returning (captured system messages, tool schemas)."""
+                  select_tools_ret=None, extractor=None, chat=None,
+                  router_delay=0.0):
+    """Run one turn, returning (captured system messages, tool schemas).
+
+    ``router_delay`` makes the turn's router slow on purpose. The engine now
+    takes a speculative plan only if it is *already* in hand when the router
+    finishes, so any test that wants the prefetch to be consumed has to give
+    the worker a real head start — otherwise the test would be racing the
+    thread rather than pinning the contract.
+    """
     from src.claire.reply import engine as engine_mod
 
     mock_config.llm_chat_model = "gpt-oss:20b"  # LARGE: plan goes in the prompt
     mock_config.evaluator_enabled = False
 
     captured = {"systems": [], "tools": []}
+
+    def fake_select_tools(*a, **k):
+        if router_delay:
+            time.sleep(router_delay)
+        return ["schedule", "stop"] if select_tools_ret is None else list(select_tools_ret)
 
     def fake_chat(*args, **kwargs):
         msgs = kwargs.get("messages") or (args[2] if len(args) > 2 else [])
@@ -159,11 +173,7 @@ def _drive_engine(mock_config, db, dialogue_memory, query, plan_query_fake,
     patches = [
         patch.object(engine_mod, "chat_with_messages", side_effect=chat or fake_chat),
         patch.object(engine_mod, "plan_query", side_effect=plan_query_fake),
-        patch.object(
-            engine_mod,
-            "select_tools",
-            return_value=["schedule", "stop"] if select_tools_ret is None else select_tools_ret,
-        ),
+        patch.object(engine_mod, "select_tools", side_effect=fake_select_tools),
         patch.object(
             engine_mod,
             "extract_search_params_for_memory",
@@ -209,6 +219,7 @@ def test_engine_consumes_the_speculative_full_catalogue_plan(mock_config, db, di
         mock_config, db, dialogue_memory,
         "what time is it in Tokyo right now please tell me exactly",
         fake_plan_query,
+        router_delay=0.05,
     )
 
     # Exactly one planner call, and it saw the full catalogue.
@@ -253,8 +264,11 @@ def test_a_settled_prefetch_without_a_plan_falls_back_to_the_serial_planner(
     class SettledNoPlan:
         settled = True
 
-        def wait(self, within):
+        def plan_if_ready(self):
             return None
+
+        def wait(self, within):  # pragma: no cover - must never be called
+            raise AssertionError("the engine must not wait on the prefetch")
 
     from src.claire.reply import engine as engine_mod
     with patch.object(engine_mod, "start_planner_prefetch", return_value=SettledNoPlan()):
@@ -271,86 +285,109 @@ def test_a_settled_prefetch_without_a_plan_falls_back_to_the_serial_planner(
     assert any("schedule action='list'" in s for s in captured["systems"])
 
 
-def test_an_in_flight_prefetch_at_its_deadline_fails_open_without_a_second_call(
+def test_an_in_flight_prefetch_still_gets_the_serial_planner(
     mock_config, db, dialogue_memory
 ):
-    """A hanging backend must not buy a second full planner ceiling."""
+    """The engine must not decide a plan is unnecessary just because the
+    speculative one is late.
+
+    This is the counterexample that killed the waiting design: on a backend
+    that queues the planner behind the router, the speculative call can still
+    be running when the router finishes. Waiting for it spent the turn's whole
+    budget and then followed no plan at all — strictly slower than serial, and
+    planless where serial had a plan. Requiring the plan to be in hand makes
+    that case fall through to the serial planner, which is exactly what the
+    turn would have done without the prefetch.
+    """
     calls = []
 
     def fake_plan_query(*args, **kwargs):
-        calls.append(kwargs)
-        return ["should not be reached"]
+        calls.append([n for n, _ in kwargs["tools"]])
+        return ["schedule action='list'", "Reply to the user with the combined findings."]
 
     class StillRunning:
+        """A worker that never settles — the worst case for a waiting design."""
+
         settled = False
 
-        def wait(self, within):
+        def plan_if_ready(self):
             return None
+
+        def wait(self, within):  # pragma: no cover - must never be called
+            raise AssertionError("the engine must not wait on the prefetch")
 
     from src.claire.reply import engine as engine_mod
     with patch.object(engine_mod, "start_planner_prefetch", return_value=StillRunning()):
-        _drive_engine(
+        captured = _drive_engine(
             mock_config, db, dialogue_memory,
             "what did we decide about the kitchen renovation project",
             fake_plan_query,
         )
 
-    assert calls == [], (
-        "a prefetch still in flight at the deadline has already had the full "
-        "planner ceiling; the serial retry would only burn it again"
+    assert calls == [["schedule", "stop"]], (
+        "an in-flight prefetch must fall back to the serial planner with the "
+        f"router-narrowed catalogue; plan_query saw {calls}"
+    )
+    assert any("schedule action='list'" in m for m in captured["systems"])
+
+
+def test_a_late_speculative_plan_costs_the_turn_nothing(
+    mock_config, db, dialogue_memory
+):
+    """The whole point of never waiting: a worker that is slow, or that never
+    answers at all, must leave the turn's latency and its plan untouched."""
+    class NeverAnswers:
+        settled = False
+
+        def plan_if_ready(self):
+            return None
+
+        def wait(self, within):  # pragma: no cover - must never be called
+            raise AssertionError("the engine must not wait on the prefetch")
+
+    from src.claire.reply import engine as engine_mod
+    with patch.object(engine_mod, "start_planner_prefetch", return_value=NeverAnswers()):
+        t0 = time.monotonic()
+        captured = _drive_engine(
+            mock_config, db, dialogue_memory,
+            "what is on my calendar for the rest of this week",
+            lambda *a, **k: ["schedule action='list'", "Reply to the user."],
+        )
+        elapsed = time.monotonic() - t0
+
+    assert any("schedule action='list'" in m for m in captured["systems"])
+    # No deadline arithmetic to spend: the turn is the router plus one planner,
+    # so it cannot have waited out a second planner ceiling.
+    assert elapsed < float(getattr(mock_config, "planner_timeout_sec", 3.0)) + 2.0, (
+        f"a turn with an unanswered prefetch took {elapsed:.2f}s — it waited"
     )
 
 
-def test_the_prefetch_wait_is_bounded_by_the_serial_planner_budget(
+def test_the_speculative_call_is_bounded_by_the_planner_ceiling(
     mock_config, db, dialogue_memory
 ):
-    """`router_elapsed + planner_timeout` is the whole wait budget — never more.
+    """The abandoned worker's own ceiling stays the planner ceiling.
 
-    The serial ordering gives the planner one ceiling *after* the router. The
-    speculative path gives it the router's duration plus one ceiling measured
-    from the prefetch start, so the wall-clock the planner can add to a turn is
-    the same. This pins the arithmetic the "never slower" claim rests on.
+    Now that the engine never waits, a longer speculative ceiling would buy
+    nothing — a plan is only ever taken if it is ready before the router
+    returns — while a hung backend would hold a daemon thread for that much
+    longer. The ceiling is therefore deliberately NOT `planner + router`.
     """
-    mock_config.planner_timeout_sec = 0.25
-    waits = []
+    mock_config.planner_timeout_sec = 0.4
+    mock_config.llm_tools_timeout_sec = 6.0
+    seen = []
 
-    class Recording:
-        settled = False
+    def fake_plan_query(*args, **kwargs):
+        seen.append(kwargs)
+        return ["Reply to the user."]
 
-        def wait(self, within):
-            waits.append(within)
-            return None
-
-    router_cost = 0.3
-
-    def slow_select_tools(*a, **k):
-        time.sleep(router_cost)
-        return ["schedule", "stop"]
-
-    from src.claire.reply import engine as engine_mod
-    with patch.object(engine_mod, "start_planner_prefetch", return_value=Recording()):
-        with patch.object(engine_mod, "select_tools", side_effect=slow_select_tools):
-            with patch.object(engine_mod, "plan_query", side_effect=lambda **k: []):
-                with patch.object(
-                    engine_mod, "chat_with_messages",
-                    side_effect=lambda **k: {"message": {"role": "assistant", "content": "ok"}},
-                ):
-                    with patch.object(
-                        engine_mod, "extract_search_params_for_memory",
-                        side_effect=lambda *a, **k: {"keywords": []},
-                    ):
-                        mock_config.evaluator_enabled = False
-                        mock_config.llm_chat_model = "gpt-oss:20b"
-                        engine_mod.run_reply_engine(
-                            db=db, cfg=mock_config, tts=None,
-                            text="what is on my calendar for the rest of this week",
-                            dialogue_memory=dialogue_memory,
-                        )
-
-    assert waits, "the engine must have consulted the prefetch"
-    # Budget = planner ceiling + router duration, so it can exceed the ceiling
-    # by at most the router's own cost (minus the time already elapsed).
-    assert waits[0] <= mock_config.planner_timeout_sec + router_cost + 0.05
+    _drive_engine(
+        mock_config, db, dialogue_memory,
+        "what is on my calendar for the rest of this week",
+        fake_plan_query,
+    )
+    assert seen, "the prefetch must have called the planner"
+    assert seen[0]["timeout_sec"] == mock_config.planner_timeout_sec
 
 
 def test_the_planner_is_not_started_when_it_is_disabled(mock_config, db, dialogue_memory):
@@ -386,42 +423,6 @@ def test_the_planner_is_not_started_for_a_query_too_short_to_plan(
             lambda *a, **k: ["Reply to the user."],
         )
     assert started == []
-
-
-def test_the_speculative_call_is_not_starved_by_the_router_sharing_its_window(
-    mock_config, db, dialogue_memory
-):
-    """The prefetch's LLM call must be allowed to outlive the planner ceiling.
-
-    The speculative call's window starts *before* the router, so capping it at
-    the bare `planner_timeout_sec` would cut it off early on exactly the turns
-    the router is slowest. It would then return `[]`, which is
-    indistinguishable from the planner's positive "nothing to do" answer, and
-    the engine would consume it as such — silently losing a plan the serial
-    ordering would have produced. The call ceiling therefore includes the
-    router's own ceiling; the turn's latency is bounded separately, by the
-    consumption deadline.
-    """
-    mock_config.planner_timeout_sec = 0.4
-    mock_config.llm_tools_timeout_sec = 6.0
-    seen = []
-
-    def fake_plan_query(*args, **kwargs):
-        seen.append(kwargs)
-        return ["Reply to the user."]
-
-    _drive_engine(
-        mock_config, db, dialogue_memory,
-        "what is on my calendar for the rest of this week",
-        fake_plan_query,
-    )
-    assert seen, "the prefetch must have called the planner"
-    assert seen[0]["timeout_sec"] > mock_config.planner_timeout_sec, (
-        "the speculative call must not share its window with the router"
-    )
-    assert seen[0]["timeout_sec"] >= (
-        mock_config.planner_timeout_sec + mock_config.llm_tools_timeout_sec
-    )
 
 
 def test_a_short_tool_free_turn_is_not_held_open_by_the_prefetch(

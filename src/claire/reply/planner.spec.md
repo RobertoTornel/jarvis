@@ -18,35 +18,52 @@ The ordering is now speculative: the planner depends only on the redacted
 query and the dialogue window, both known before the router, so the engine
 starts it on a background thread against the **full** catalogue — there is no
 narrowed one yet — and overlaps the router's round-trip. On this host the two
-ran serially at ~2.2 s (router) + ~2.1 s (planner); the overlap removes most of
-the planner's half on every turn that plans. Planning against the full
-catalogue measured no worse than against the narrowed one (26 queries, paired
-adjacent arms, median delta +0.03 s), because the catalogue the planner is
-handed is names plus a truncated first description line, not the full JSON
-schema. See `src/claire/reply/planner_prefetch.py`.
+ran serially at ~2.2 s (router) + ~2.1 s (planner), and the overlap removes the
+planner's half on every turn where the planner wins the race. Planning against
+the full catalogue measured no worse than against a narrowed one (30 paired
+calls, 3-tool vs 15-tool catalogue, median delta +0.00 s / mean +0.09 s),
+because the catalogue the planner is handed is names plus a truncated first
+description line, not the full JSON schema. See
+`src/claire/reply/planner_prefetch.py`.
 
-The engine consumes the speculative plan only when the router's own output
-says the plan will be used at all; the short, tool-free fast path still
-discards it and never waits. Three bounds make the reordering safe, and each
-is pinned by `tests/test_planner_prefetch.py`:
+The race has exactly one rule: **take the speculative plan only if it is
+already in hand when the router returns**. Nothing is ever waited for. If there
+is no plan in hand the engine runs the serial planner verbatim, against the
+router-narrowed catalogue and with its own `planner_timeout_sec` default, so a
+turn that does not get the prefetch's plan behaves exactly as it did before the
+prefetch existed. The short, tool-free fast path still discards the plan
+without consulting the prefetch at all.
 
-- **Never slower.** The engine waits for the plan with a budget of
-  `planner_timeout_sec + router_elapsed`, measured from the prefetch start —
-  exactly the wall-clock the serial ordering gives the planner (the router,
-  then one full planner ceiling).
-- **Never planless where serial would have planned.** The speculative *call* is
-  given `planner_timeout_sec + llm_tools_timeout_sec`, so sharing its window
-  with the router can never cut it off early — that would return `[]`, which is
-  indistinguishable from the planner's positive "nothing to do" answer, and the
-  engine would consume it as such instead of falling back. Given that ceiling,
-  a prefetch that settles without a plan (error, empty response, stray
-  non-list) is retried on the serial path with the router-narrowed catalogue.
-  One still *in flight* at its deadline has already had that full window, so
-  the engine fails open exactly like a planner timeout instead of buying a
-  second one.
-- **Never an unexecutable allow-list.** Any tool the plan names is unioned
-  into `allowed_tools` from the full catalogue, so a speculative plan that
-  reaches for a tool the router did not pick stays callable.
+Waiting was tried and rejected. The router and the planner share one backend:
+the gateway may batch them (which is where the win comes from) or queue one
+behind the other, and a queued planner call can outrun the ceiling its serial
+counterpart met comfortably. A waiting design had to guess which had happened,
+and on a queued backend it was wrong in both directions at once — it spent the
+whole budget waiting and then followed no plan at all, i.e. strictly slower
+than serial *and* planless where serial had a plan. Requiring the plan to be in
+hand needs no guess: queued backends degrade to the serial path, batched ones
+keep the whole overlap.
+
+Two invariants follow from that one rule, and each is pinned by
+`tests/test_planner_prefetch.py`:
+
+- **Never slower.** No code path waits on the prefetch, so the speculative call
+  cannot add latency to a turn; where its plan is not in hand the turn is the
+  pre-existing serial code.
+- **Never planless where serial would have planned.** The serial planner is
+  skipped only when the turn already holds a real plan, so there is no state in
+  which the engine follows a plan the serial path could not have produced — and
+  none in which it is missing one the serial path would have produced.
+
+A third, inherited guarantee: **never an unexecutable allow-list.** Any tool the
+plan names is unioned into `allowed_tools` from the full catalogue, so a
+speculative plan that reaches for a tool the router did not pick stays callable.
+
+The abandoned worker's own ceiling stays `planner_timeout_sec` (not
+`+ llm_tools_timeout_sec`): since nothing ever waits, a longer ceiling could not
+win a plan that a shorter one loses — a plan only counts if it is ready before
+the router returns — and it would only hold a daemon thread open longer on a
+hung backend.
 
 The engine uses the plan for three things:
 1. **Gate memory enrichment** — the planner emits an explicit
