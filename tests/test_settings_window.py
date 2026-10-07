@@ -365,38 +365,12 @@ class TestConfigSaveLogic:
 
 def _choice_field_params():
     """One pytest param per choice field, so a violation in one field cannot
-    hide a violation in another.
-
-    ``tts_engine`` is a known, reported product bug and carries a STRICT xfail
-    (see the test body).
-    """
+    hide a violation in another."""
     params = []
     for fm in FIELD_METADATA:
         if fm.field_type != "choice" or not fm.choices:
             continue
-        if fm.key == "tts_engine":
-            params.append(
-                pytest.param(
-                    fm,
-                    id=fm.key,
-                    marks=pytest.mark.xfail(
-                        strict=True,
-                        reason=(
-                            "PRODUCT BUG src/desktop_app/settings_window.py:"
-                            "168-169 — the tts_engine choice offers only "
-                            "('piper', 'chatterbox') while claire.config "
-                            "defaults tts_engine to 'fish' and "
-                            "claire.output.tts.SUPPORTED_TTS_ENGINES includes "
-                            "it, so the Settings dropdown cannot represent the "
-                            "shipped default. Strict xfail: this becomes a "
-                            "failure again as soon as the UI offers Fish, so "
-                            "the marker gets removed."
-                        ),
-                    ),
-                )
-            )
-        else:
-            params.append(pytest.param(fm, id=fm.key))
+        params.append(pytest.param(fm, id=fm.key))
     return params
 
 
@@ -434,10 +408,9 @@ class TestDefaultValueTypes:
     def test_choice_defaults_are_in_choices(self, fm):
         """Every choice field's default must be one of its offered choices.
 
-        Parametrised per field so one known violation cannot mask a new one.
-        The ``tts_engine`` case is a genuine, reported product bug (default
-        'fish' vs offered piper/chatterbox) recorded as a strict xfail until
-        the Settings UI offers Fish; every other choice field must pass.
+        Parametrised per field so one violation cannot mask another. This
+        includes ``tts_engine``, whose shipped default is ``"fish"``: the
+        Settings dropdown must be able to represent it.
         """
         defaults = get_default_config()
         val = str(defaults.get(fm.key))

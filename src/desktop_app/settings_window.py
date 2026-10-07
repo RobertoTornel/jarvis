@@ -166,7 +166,9 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("tts_enabled", "Enable TTS", "Enable text-to-speech output",
       "tts", "bool")
     f("tts_engine", "TTS Engine", "Speech synthesis engine",
-      "tts", "choice", choices=[("piper", "Piper (Neural)"), ("chatterbox", "Chatterbox (Voice Cloning)")])
+      "tts", "choice", choices=[("fish", "Fish (Cloud / Voice Cloning)"),
+                                ("piper", "Piper (Neural)"),
+                                ("chatterbox", "Chatterbox (Voice Cloning)")])
     f("tts_rate", "Speech Rate", "Words per minute (200 = normal)",
       "tts", "int", min_val=80, max_val=400, step=10, suffix="WPM", nullable=True)
 
