@@ -499,6 +499,7 @@ are otherwise buried in config, and shows:
 | Provider and model | selected provider, resolved model, endpoint, plus the selector form |
 | Providers and keys | one row per known credential, **masked** (last-4 + fingerprint) or `absent`, with its source |
 | Memory router | `CLAIRE.md` path, size against its budget, and the verbatim over-budget warning |
+| Memories browser | a link to `/memory`, a separate page that lists the router and every note in the Obsidian-compatible vault, and searches both notes and the persisted summaries |
 | Today's calendar | today's events, formatted by the calendar's own `format_spoken` |
 | Self-check | the summary line, a link to the full report, and every non-READY check with its fix |
 | Last actions | the last eight action-journal records |

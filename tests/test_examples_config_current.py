@@ -173,6 +173,22 @@ def test_fish_audio_keys_match_defaults(example, defaults):
 
 
 @pytest.mark.unit
+def test_fish_key_file_default_is_portable(defaults):
+    """The shipped default must not name one machine's home directory.
+
+    It is a ``~`` path that consumers expand at use time, exactly like
+    ``vault_dir``: a real absolute home directory in ``examples/config.json``
+    is wrong on every other machine (and a "fix" that names a path that does
+    not exist is not a fix).  The owner overrides it with ``fish_key_file`` in
+    their own config, and that override still wins.
+    """
+    value = defaults["fish_key_file"]
+
+    assert value == "~/.config/claire/fish-keys.txt"
+    assert not Path(value).is_absolute(), value
+
+
+@pytest.mark.unit
 def test_wake_word_and_claire_aliases_are_current(example, defaults):
     """The wake word, full Claire alias list and fuzzy ratio must be current."""
     assert example["wake_word"] == "claire"

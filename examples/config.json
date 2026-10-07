@@ -34,7 +34,7 @@
   "tts_chatterbox_exaggeration": 0.5,
   "tts_chatterbox_cfg_weight": 0.5,
   "fish_voice_id": null,
-  "fish_key_file": "/home/mana/Documents/deepseek/TTS/TTS_TEST_FISH/fish-keys.txt",
+  "fish_key_file": "~/.config/claire/fish-keys.txt",
   "fish_latency": "low",
   "fish_model": "s1",
   "tts_piper_model_path": null,

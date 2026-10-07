@@ -60,9 +60,9 @@ DEFAULT_LATENCY = "low"
 DEFAULT_MODEL = "s1"
 
 #: Where the key file lives when the config does not say. Kept equal to the
-#: default in :mod:`claire.config` so the named error can always quote a real
-#: path instead of an empty string.
-DEFAULT_KEY_FILE = "/home/mana/Documents/deepseek/TTS/TTS_TEST_FISH/fish-keys.txt"
+#: default in :mod:`claire.config` — a portable ``~`` path, expanded at use
+#: time by ``FishKeyPool`` — so the named error can quote a real path.
+DEFAULT_KEY_FILE = "~/.config/claire/fish-keys.txt"
 
 #: BACKPRESSURE CEILING (MECHANISM 2). How many bytes of not-yet-played audio may
 #: sit in the queue ahead of the player. Exposed as a module constant because it

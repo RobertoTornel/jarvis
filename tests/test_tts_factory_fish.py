@@ -113,6 +113,20 @@ def test_missing_fish_config_attrs_fall_back_to_engine_defaults():
     assert engine.model == DEFAULT_MODEL
 
 
+def test_default_key_file_is_the_portable_config_default():
+    """``DEFAULT_KEY_FILE`` is documented as equal to config.py's default.
+
+    Pin it character for character so the two copies cannot drift, and pin it
+    portable: the engine's named error quotes this value, so a hard-coded
+    absolute home directory here would resurface the path in every message.
+    ``FishKeyPool`` expands the ``~`` when it opens the file.
+    """
+    from claire.config import get_default_config
+
+    assert DEFAULT_KEY_FILE == get_default_config()["fish_key_file"]
+    assert not Path(DEFAULT_KEY_FILE).is_absolute(), DEFAULT_KEY_FILE
+
+
 def test_fish_engine_does_not_reuse_a_piper_voice_name():
     # ``voice`` carries a Piper/Chatterbox voice name. Feeding that to Fish would
     # be the same wrong-voice substitution that the unknown-engine error

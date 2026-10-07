@@ -624,7 +624,7 @@ def get_default_config() -> Dict[str, Any]:
 
         # Fish Audio TTS (D6 config surface; engine lands in Wave 1)
         "fish_voice_id": None,
-        "fish_key_file": "/home/mana/Documents/deepseek/TTS/TTS_TEST_FISH/fish-keys.txt",
+        "fish_key_file": _default_fish_key_file(),  # portable ~ default; the owner's path belongs in the user config
         "fish_latency": "low",  # "low" | "normal"
         "fish_model": "s1",
 
@@ -962,7 +962,7 @@ def load_settings() -> Settings:
     # Fish Audio TTS settings (D6 config surface; engine lands in Wave 1)
     fish_voice_id_val = merged.get("fish_voice_id")
     fish_voice_id = None if fish_voice_id_val in (None, "", "null") else str(fish_voice_id_val)
-    fish_key_file = _expand_path(merged.get("fish_key_file")) or "/home/mana/Documents/deepseek/TTS/TTS_TEST_FISH/fish-keys.txt"
+    fish_key_file = _expand_path(merged.get("fish_key_file")) or _expand_path(_default_fish_key_file())
     fish_latency = str(merged.get("fish_latency", "low") or "low").strip().lower()
     if fish_latency not in ("low", "normal"):
         fish_latency = "low"
@@ -1272,3 +1272,21 @@ def load_settings() -> Settings:
         # MCP Integration
         mcps=mcps,
     )
+
+
+def _default_fish_key_file() -> str:
+    """The Fish Audio key file's default location, as a portable ``~`` path.
+
+    Deliberately *not* expanded here, unlike ``_default_db_path()``: this value
+    is also what ``examples/config.json`` ships, and a real absolute home
+    directory in an example file is wrong on every other machine.  Consumers
+    expand it — ``load_settings()`` through ``_expand_path()`` and
+    ``claire.output.fish_client.FishKeyPool`` through ``Path.expanduser()``.
+    No file or directory is created as a side effect of asking for the default:
+    the key file is the owner's secret to place (``chmod 600``).
+
+    Defined at the end of the module, far from ``_default_vault_dir()``, on
+    purpose: inserting it next to that helper would shift every line below and
+    silently invalidate the many ``config.py#LNNN`` anchors in ``docs/``.
+    """
+    return str(Path("~") / ".config" / "claire" / "fish-keys.txt")
