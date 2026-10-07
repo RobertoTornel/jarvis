@@ -58,6 +58,12 @@ _CGNAT_CACHE_FILE = _cache_base_dir() / "cgnat_cache.json"
 
 _cache_lock = threading.RLock()
 
+#: Whether UPnP discovery has been tried in this process, and what it returned.
+#: A UPnP query blocks for ~30s when no gateway answers, so it is attempted once
+#: rather than on every location lookup.
+_upnp_attempted = False
+_upnp_cached_ip: Optional[str] = None
+
 def _load_disk_caches() -> None:
     """Load caches from disk into memory (best-effort)."""
     try:
@@ -178,6 +184,17 @@ def _get_external_ip_via_upnp() -> Optional[str]:
     Returns:
         External IP address if successful, None otherwise.
     """
+    global _upnp_attempted, _upnp_cached_ip
+
+    # UPnP discovery is the slowest method by far when no gateway answers: the
+    # library's SSDP search blocks for around half a minute before giving up.
+    # Answering a question must not pay that repeatedly, so the first attempt is
+    # remembered -- success or failure -- and reused for the process lifetime.
+    # The cheaper socket and DNS methods below still run on every call.
+    if _upnp_attempted:
+        return _upnp_cached_ip
+    _upnp_attempted = True
+
     if not MINIUPNPC_AVAILABLE:
         return None
 
@@ -198,6 +215,7 @@ def _get_external_ip_via_upnp() -> Optional[str]:
 
         # Validate the IP address and ensure it's not private
         if external_ip and not _is_private_ip(external_ip) and "." in external_ip:
+            _upnp_cached_ip = external_ip
             return external_ip
 
     except Exception:

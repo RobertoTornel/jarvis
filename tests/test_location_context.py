@@ -1,10 +1,15 @@
 import types
 from unittest.mock import patch
+
+import pytest
+
 from claire.reply.engine import run_reply_engine
 from claire.utils.location import (
     get_location_context,
     _get_external_ip_automatically,
 )
+
+pytestmark = pytest.mark.unit
 
 
 class DummyDB:
@@ -115,3 +120,54 @@ def test_auto_detect_rejects_private_ip_from_opendns():
          patch("claire.utils.location._resolve_public_ip_via_opendns", return_value="192.168.1.1"):
         result = _get_external_ip_automatically()
         assert result is None
+
+
+# --- UPnP discovery must not be paid on every lookup --------------------------
+#
+# UPnP discovery blocks for roughly half a minute when no gateway answers, and
+# the location lookup runs on every reply. Before this memoisation that stall
+# landed on every single question.
+
+
+def _upnp_gateway(seen, answer=None):
+    class Gateway:
+        discoverdelay = 200
+        def discover(self):
+            seen.append(1)
+            return 0 if answer is None else 1
+        def selectigd(self):
+            return None
+        def externalipaddress(self):
+            return answer
+    return Gateway()
+
+
+def test_upnp_discovery_is_attempted_at_most_once(monkeypatch):
+    from claire.utils import location
+
+    seen = []
+    monkeypatch.setattr(location, "MINIUPNPC_AVAILABLE", True)
+    monkeypatch.setattr(location, "miniupnpc", types.SimpleNamespace(
+        UPnP=lambda: _upnp_gateway(seen)))
+    monkeypatch.setattr(location, "_upnp_attempted", False)
+    monkeypatch.setattr(location, "_upnp_cached_ip", None)
+
+    assert location._get_external_ip_via_upnp() is None
+    assert location._get_external_ip_via_upnp() is None
+    assert len(seen) == 1, 'a failed UPnP probe must not be repeated'
+
+
+def test_upnp_success_is_cached(monkeypatch):
+    from claire.utils import location
+
+    seen = []
+    monkeypatch.setattr(location, "MINIUPNPC_AVAILABLE", True)
+    monkeypatch.setattr(location, "miniupnpc", types.SimpleNamespace(
+        UPnP=lambda: _upnp_gateway(seen, "8.8.4.4")))
+    monkeypatch.setattr(location, "_upnp_attempted", False)
+    monkeypatch.setattr(location, "_upnp_cached_ip", None)
+
+    assert location._get_external_ip_via_upnp() == "8.8.4.4"
+    assert location._get_external_ip_via_upnp() == "8.8.4.4"
+    assert len(seen) == 1, 'a successful UPnP probe must be reused'
+

@@ -12,6 +12,8 @@ from src.claire.tools.builtin.weather import (
 from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
 
+pytestmark = pytest.mark.unit
+
 
 class TestWeatherTool:
     """Test weather tool functionality."""
@@ -255,6 +257,72 @@ class TestWeatherTool:
         # The extractor must have seen the user's utterance, not the args.
         called_text = mock_extract.call_args[0][0]
         assert "London" in called_text
+
+    @patch('requests.get')
+    @patch('src.claire.tools.builtin.weather._extract_place_from_user_text')
+    @patch('src.claire.tools.builtin.weather.get_location_info')
+    def test_configured_city_short_circuits_detection_and_extraction(
+        self, mock_location, mock_extract, mock_get,
+    ):
+        """A configured home city answers immediately: no IP detection (whose
+        UPnP probe can block for around half a minute) and no model call to
+        scrape a city out of the utterance.
+        """
+        self.context.cfg.location_city = "Lisbon"
+        self.context.redacted_text = "what's the weather tomorrow"
+
+        geo_response = Mock()
+        geo_response.status_code = 200
+        geo_response.json.return_value = {
+            "results": [{
+                "latitude": 38.7167,
+                "longitude": -9.1333,
+                "name": "Lisbon",
+                "country": "Portugal",
+                "admin1": "Lisboa",
+            }]
+        }
+        geo_response.raise_for_status = Mock()
+
+        weather_response = Mock()
+        weather_response.status_code = 200
+        weather_response.json.return_value = {
+            "current": {
+                "time": "2026-10-07T12:00",
+                "temperature_2m": 23.4,
+                "apparent_temperature": 23.0,
+                "relative_humidity_2m": 55,
+                "weather_code": 2,
+                "wind_speed_10m": 10.0,
+                "wind_gusts_10m": 15.0,
+            }
+        }
+        weather_response.raise_for_status = Mock()
+
+        mock_get.side_effect = [geo_response, weather_response]
+
+        result = self.tool.run({}, self.context)
+
+        assert result.success is True
+        assert "Lisbon" in result.reply_text
+        mock_location.assert_not_called()
+        mock_extract.assert_not_called()
+
+    @patch('requests.get')
+    @patch('src.claire.tools.builtin.weather.get_location_info')
+    def test_blank_configured_city_falls_through_to_detection(
+        self, mock_location, mock_get,
+    ):
+        """An empty or whitespace-only configured city is not a location."""
+        self.context.cfg.location_city = "   "
+        mock_location.return_value = {"error": "Location not available"}
+        self.context.redacted_text = ""
+
+        result = self.tool.run({}, self.context)
+
+        assert result.success is False
+        mock_location.assert_called_once()
+
 
     @patch('src.claire.tools.builtin.weather._extract_place_from_user_text')
     @patch('src.claire.tools.builtin.weather.get_location_info')

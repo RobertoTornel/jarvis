@@ -212,6 +212,18 @@ class WeatherTool(Tool):
             place_from_fallback = False
 
             if not location_str:
+                # A configured home city is authoritative and instant: it skips
+                # IP detection, whose UPnP probe can block for ~30s, and the
+                # extra model call that otherwise scrapes a city from the
+                # utterance once detection has failed.
+                # Only a real string counts: a config value that is missing or of
+                # the wrong type must not be stringified into a bogus city name.
+                configured_city = getattr(context.cfg, 'location_city', '')
+                if isinstance(configured_city, str) and configured_city.strip():
+                    location_str = configured_city.strip()
+                    debug_log(f"    📍 using configured location_city: {location_str}", "tools")
+
+            if not location_str:
                 # No location provided - try auto-detected coordinates first.
                 user_loc = self._get_user_location(context)
                 if user_loc:
