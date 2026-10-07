@@ -95,7 +95,9 @@ ProtectHome=read-only
 # ProtectHome=read-only and no path granted here, that download fails with
 # "Read-only file system: /home/<user>/.cache/huggingface" and Claire loses the
 # safety net that exists precisely for the case it was needed.
-ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/huggingface %h/.cache/numba
+# %h/.cache/claire holds the phone photo store behind POST /see. Without it
+# that route fails with "photo_store_failed: [Errno 30] Read-only file system".
+ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cache/huggingface %h/.cache/numba
 
 # numba caches compiled helpers next to whatever source file defines them unless
 # it is told otherwise. The NeMo Parakeet model reaches librosa, and librosa
