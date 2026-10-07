@@ -1,0 +1,10 @@
+{
+  "mcps": {
+    "example": {
+      "transport": "stdio",
+      "command": "<ABSOLUTE_PATH_TO_PYTHON>",
+      "args": ["<ABSOLUTE_PATH_TO_THIS_COPY>/server.py"],
+      "timeout_sec": 120
+    }
+  }
+}

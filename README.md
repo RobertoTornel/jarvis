@@ -299,7 +299,9 @@ their browser alive), with optional `idle_timeout_sec` and `timeout_sec` per
 entry. Tool names are namespaced by server. The daemon discovers and caches them
 at startup and prints a per-server count. Worked configuration examples (Home
 Assistant, Google Workspace, GitHub and others) are in
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md#mcp-integrations).
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#mcp-integrations), and
+[docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) covers the mechanism and how to build
+a server of your own from `templates/mcp_server/`.
 
 ---
 
