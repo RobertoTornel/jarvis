@@ -164,6 +164,21 @@ class FishEmptyStreamError(FishStreamError):
     """The stream ended after zero bytes; failure, not an empty success."""
 
 
+class FishUnsupportedAudioFormatError(FishError):
+    """The body is audio, but not PCM this player can render.
+
+    Fish Audio answers with WAV when asked (``format: wav``), but the player is
+    the only layer that can tell whether the bytes really are 16-bit PCM. When
+    they are something else - an MP3 body, a container whose header never
+    parses, a codec this build has no decoder for - the honest outcome is a
+    *named failure* for that sentence, never "play the bytes anyway". Those
+    bytes, reinterpreted as int16 PCM, are a full-scale burst rather than
+    speech: measured, an MP3 body reads back at 0.0 dBFS against her normal
+    speech at -15 dBFS, roughly 27 dB too loud. Raised, this is audible as a
+    reported failure; played, it is the loud sound the owner hears.
+    """
+
+
 class FishTransportError(FishError):
     """The HTTP call itself failed (connection, TLS, socket read)."""
 

@@ -46,6 +46,7 @@ from .fish_client import (
     FishEmptyStreamError,
     FishError,
     FishKeyPool,
+    FishUnsupportedAudioFormatError,
 )
 
 # --------------------------------------------------------------------------
@@ -97,6 +98,51 @@ TOTAL_TIMEOUT = 120.0
 
 #: How long _play_loop waits on the queue before re-checking whether it is idle.
 _IDLE_POLL_SECONDS = 0.05
+
+#: The one PCM format the output stream is opened with, and therefore the only
+#: format that may ever be written to it: signed 16-bit little-endian, one
+#: channel. This is a *contract*, not a preference. The format layer converts
+#: every payload to it, because a response that declares something else and is
+#: written verbatim is not merely lossy - int16 bytes read as float32, float32
+#: read as int16, or an MP3 body read as PCM all come out as a full-scale burst.
+PLAYBACK_CHANNELS = 1
+PLAYBACK_SAMPLE_WIDTH = 2
+PLAYBACK_FRAME_BYTES = PLAYBACK_CHANNELS * PLAYBACK_SAMPLE_WIDTH
+
+#: Fewest bytes needed before a body can be classified. Below this a short
+#: prefix is ambiguous (``b"\\xff"`` may be the start of an MP3 frame, ``b"RIF"``
+#: the start of a WAV), so the bytes are held rather than guessed at.
+MIN_FORMAT_SNIFF_BYTES = 4
+
+#: Leading bytes that positively identify a container or codec this layer cannot
+#: render, mapped to the name used in the error. Byte magic only, so the check
+#: is independent of any language the assistant happens to speak.
+#:
+#: Played as int16 PCM these are not speech at any volume - measured, an MP3
+#: body reads back with a peak of 32768/32768 (0.0 dBFS) and an RMS about 27 dB
+#: above her normal speech. Identifying them is what turns that burst into a
+#: named failure.
+_NON_PCM_MAGIC = (
+    (b"ID3", "MP3 with an ID3 tag"),
+    (b"\xff\xfb", "MP3"),
+    (b"\xff\xfa", "MP3"),
+    (b"\xff\xf3", "MP3"),
+    (b"\xff\xf2", "MP3"),
+    (b"OggS", "Ogg"),
+    (b"fLaC", "FLAC"),
+    (b"ADIF", "AAC/ADIF"),
+    (b"\x1f\x8b", "gzip"),
+    (b"<!DO", "an HTML page"),
+    (b"<?xm", "an XML document"),
+    (b'{"', "a JSON body"),
+)
+
+#: Ceiling applied to every block by the device player, in int16 units.
+#: -3 dBFS: far above her own speech (measured peak -15 dBFS) and the thinking
+#: pad (-8 dBFS), so normal audio is untouched, but nothing that reaches the
+#: device can be a full-scale burst. This is a backstop for the format gate
+#: above, not the fix: the fix is that unrecognised bytes are never played.
+_PEAK_CEILING = 23197  # int(10 ** (-3 / 20) * 32767)
 
 
 #: How long stop() waits for each worker thread before giving up on it (the
@@ -185,11 +231,15 @@ def _riff_data_offset(buf: bytes) -> Optional[int]:
 
 
 def _parse_wav_header(buf: bytes) -> Optional[tuple]:
-    """``(sample_rate, channels, sample_width)`` from a WAV header, else None.
+    """``(sample_rate, channels, sample_width, comptype)`` from a WAV header.
 
-    Uses the stdlib :mod:`wave` over a :class:`io.BytesIO`. The header need only
-    be complete up to the start of the ``data`` chunk — ``wave`` does not read
-    the payload at open time — so this works on a partially arrived stream.
+    Returns None when the bytes are not a WAVE the stdlib :mod:`wave` will
+    accept — which includes a compressed or IEEE-float container, since this
+    build has no decoder for one and must never pretend the payload is PCM.
+
+    Uses :mod:`wave` over a :class:`io.BytesIO`. The header need only be
+    complete up to the start of the ``data`` chunk — ``wave`` does not read the
+    payload at open time — so this works on a partially arrived stream.
     """
     try:
         reader = wave.open(io.BytesIO(buf), "rb")
@@ -200,6 +250,7 @@ def _parse_wav_header(buf: bytes) -> Optional[tuple]:
             int(reader.getframerate()),
             int(reader.getnchannels()),
             int(reader.getsampwidth()),
+            str(reader.getcomptype()),
         )
     except (wave.Error, EOFError, OSError):
         return None
@@ -210,71 +261,187 @@ def _parse_wav_header(buf: bytes) -> Optional[tuple]:
             pass
 
 
+def _to_playback_pcm(data: bytes, channels: int, sample_width: int) -> bytes:
+    """Convert whole frames of ``data`` to signed 16-bit little-endian mono.
+
+    The stream contract is fixed (see :data:`PLAYBACK_FRAME_BYTES`); this is the
+    one place that makes an arbitrary declared PCM layout satisfy it. Without it
+    a declared layout is *reinterpreted* rather than converted, and the audible
+    result of that is a loud, harsh burst.
+    """
+    import numpy as np  # local: the module imports with no audio/numeric cost
+
+    if sample_width == 1:
+        # 8-bit WAV is unsigned with a 128 bias; 8 bits are the top 8 of 16.
+        flat = (np.frombuffer(data, dtype=np.uint8).astype(np.int16) - 128) * 256
+    elif sample_width == 2:
+        flat = np.frombuffer(data, dtype="<i2")
+    elif sample_width == 3:
+        raw = np.frombuffer(data, dtype=np.uint8).reshape(-1, 3).astype(np.int32)
+        value = raw[:, 0] | (raw[:, 1] << 8) | (raw[:, 2] << 16)
+        value = (value << 8) >> 8  # sign-extend 24 bits into int32
+        flat = (value >> 8).astype(np.int16)  # keep the top 16 bits
+    elif sample_width == 4:
+        flat = (np.frombuffer(data, dtype="<i4") >> 16).astype(np.int16)
+    else:  # pragma: no cover - guarded by the caller, kept as a hard stop
+        raise ValueError(f"unsupported sample width {sample_width}")
+    if channels > 1:
+        frames = flat.reshape(-1, channels).astype(np.int32)
+        flat = (frames.sum(axis=1) // channels).astype(np.int16)
+    return np.ascontiguousarray(flat, dtype="<i2").tobytes()
+
+
 class _PcmStreamFormat:
     """Resolve a Fish response into ``(rate, frame_bytes)`` plus payload bytes.
 
     Fish answers with either a WAV container or headerless PCM, and the two
     arrive on the same socket with no external hint. This class sniffs the first
     bytes, keeps only as many as a header can need, and from then on returns the
-    payload verbatim — the stream is never buffered whole (MECHANISM 2).
+    payload in the one format the device stream accepts — the stream is never
+    buffered whole (MECHANISM 2).
+
+    Three guarantees, each of which was a real defect before it existed:
+
+    * bytes that positively identify a codec this layer cannot render (an MP3
+      body, an HTML error page) raise
+      :class:`~claire.output.fish_client.FishUnsupportedAudioFormatError`
+      instead of being played as if they were PCM — played, they are a
+      full-scale burst, measured at 0.0 dBFS against her speech at -15 dBFS;
+    * a RIFF container whose header never resolves is a *reported failure* once
+      the sniff budget is spent, not a payload to blast out header and all;
+    * the bytes returned are always whole frames of 16-bit mono, so the device
+      never sees a partial sample (``RawOutputStream.write`` rejects one, and
+      the rejection used to be swallowed as silence).
     """
 
     def __init__(self) -> None:
         self._buf = bytearray()
+        #: A trailing partial frame held back so every emitted block is whole
+        #: frames: RawOutputStream.write rejects a buffer that is not a multiple
+        #: of the sample size, and that rejection used to be swallowed as silence.
+        self._carry = b""
         self.resolved = False
         self.sample_rate: int = DEFAULT_SAMPLE_RATE
-        self.frame_bytes: int = 2  # 16-bit mono is what headerless PCM is taken to be
+        #: Layout of what the device receives - always the stream contract.
+        self.frame_bytes: int = PLAYBACK_FRAME_BYTES
+        #: Layout the response declared, before conversion.
+        self.channels: int = PLAYBACK_CHANNELS
+        self.sample_width: int = PLAYBACK_SAMPLE_WIDTH
+        self._source_frame_bytes: int = PLAYBACK_FRAME_BYTES
 
     def feed(self, chunk: bytes) -> bytes:
         """Absorb ``chunk``; return the payload bytes that are ready to play."""
         if self.resolved:
-            return chunk
+            return self._emit(chunk)
         if not chunk:
             return b""
         self._buf.extend(chunk)
 
+        # Too few bytes to classify: b"\xff" may begin an MP3 frame and b"RIF"
+        # may begin a WAV, so hold rather than guess. A real response arrives in
+        # multi-kilobyte chunks and is never delayed by this.
+        if len(self._buf) < MIN_FORMAT_SNIFF_BYTES:
+            return b""
+
         # Headerless PCM: anything that is not a RIFF container. Decide as soon
-        # as the bytes can no longer spell RIFF (so a short first chunk is not
-        # mistaken for a header and delayed).
-        if bytes(self._buf[:4]) != _RIFF_MAGIC[: len(self._buf[:4])]:
-            self._resolve(DEFAULT_SAMPLE_RATE, 2)
+        # as the bytes can no longer spell RIFF, but never play a body we can
+        # positively identify as a codec this layer cannot render.
+        if bytes(self._buf[:4]) != _RIFF_MAGIC:
+            self._reject_known_non_pcm(bytes(self._buf))
+            self._resolve(DEFAULT_SAMPLE_RATE, PLAYBACK_CHANNELS, PLAYBACK_SAMPLE_WIDTH)
             return self._take_all()
 
         header = _parse_wav_header(bytes(self._buf))
         offset = _riff_data_offset(bytes(self._buf)) if header else None
         if header is not None and offset is not None:
-            rate, channels, width = header
-            # Play at the rate the response declares (MECHANISM 4).
-            self._resolve(_coerce_sample_rate(rate), max(1, channels) * max(1, width))
+            rate, channels, width, comptype = header
+            if comptype != "NONE" or width not in (1, 2, 3, 4) or channels < 1:
+                raise FishUnsupportedAudioFormatError(
+                    f"Fish Audio returned a WAVE container this player cannot "
+                    f"render (compression={comptype!r}, channels={channels}, "
+                    f"sample_width={width}); refusing to write it into a 16-bit "
+                    f"mono stream, where it would be a full-scale burst rather "
+                    f"than speech (N10)."
+                )
+            # Play at the rate the response declares (MECHANISM 4), and convert
+            # the declared layout to the stream's one supported layout.
+            self._resolve(_coerce_sample_rate(rate), channels, width)
             header_part = bytes(self._buf[:offset])
             del self._buf[:offset]
             debug_log(
                 f"Fish TTS: WAV header {len(header_part)} bytes, "
-                f"rate={self.sample_rate}Hz frame={self.frame_bytes}B",
+                f"rate={self.sample_rate}Hz source={channels}ch/{width * 8}bit "
+                f"-> played {PLAYBACK_CHANNELS}ch/16bit",
                 "tts",
             )
             return self._take_all()
 
         if len(self._buf) > MAX_WAV_HEADER_BYTES:
-            # A "RIFF" prefix that never yields a parseable header (truncated or
-            # bogus) must not silence the utterance: fall back to headerless PCM
-            # and play what arrived instead of waiting for ever.
-            debug_log(
-                "Fish TTS: unparseable WAV header past "
-                f"{MAX_WAV_HEADER_BYTES} bytes; treating as headerless PCM",
-                "tts",
+            # A "RIFF" prefix that never yields a parseable header. Before this
+            # guard existed the whole body - header and all - was declared
+            # headerless PCM and played, which for a container stdlib `wave`
+            # will not open (IEEE-float WAVE, for one) is a full-scale burst.
+            raise FishUnsupportedAudioFormatError(
+                f"Fish Audio returned a RIFF/WAVE body whose header never "
+                f"resolved within {MAX_WAV_HEADER_BYTES} bytes; refusing to play "
+                f"it as raw PCM, which would be a full-scale burst rather than "
+                f"speech (N10)."
             )
-            self._resolve(DEFAULT_SAMPLE_RATE, 2)
-            return self._take_all()
         return b""  # still inside the header: hold these bytes back
 
-    def _resolve(self, rate: int, frame_bytes: int) -> None:
+    def flush_tail(self) -> bytes:
+        """Release (and drop) a trailing incomplete frame at end of sentence.
+
+        Returns ``b""``: a partial sample cannot be written to the device, so
+        the honest outcome is to drop the single dangling byte rather than hand
+        the stream a buffer it will reject. Only reachable when a sentence's
+        payload is not a whole number of frames.
+        """
+        if self._carry:
+            debug_log(
+                f"Fish TTS: dropping {len(self._carry)} trailing byte(s) that "
+                f"do not complete a {self._source_frame_bytes}-byte frame",
+                "tts",
+            )
+            self._carry = b""
+        return b""
+
+    def _reject_known_non_pcm(self, buf: bytes) -> None:
+        """Raise if ``buf`` positively identifies a codec we cannot render."""
+        for magic, name in _NON_PCM_MAGIC:
+            if buf.startswith(magic):
+                raise FishUnsupportedAudioFormatError(
+                    f"Fish Audio answered with {name}, not PCM audio "
+                    f"(leading bytes {buf[:8]!r}). An int16 stream would read "
+                    f"those bytes back as a full-scale burst - measured at "
+                    f"0.0 dBFS against her speech at -15 dBFS - so this sentence "
+                    f"is reported as failed instead of played (N10)."
+                )
+
+    def _resolve(self, rate: int, channels: int, sample_width: int) -> None:
         self.sample_rate = rate
-        self.frame_bytes = max(1, frame_bytes)
+        self.channels = max(1, channels)
+        self.sample_width = sample_width
+        self._source_frame_bytes = max(1, self.channels * sample_width)
+        # What the device receives is always 16-bit mono, whatever was declared.
+        self.frame_bytes = PLAYBACK_FRAME_BYTES
         self.resolved = True
 
+    def _emit(self, chunk: bytes) -> bytes:
+        """Return whole 16-bit mono frames for ``chunk``, carrying any remainder."""
+        source_frame = self._source_frame_bytes
+        data = self._carry + chunk
+        whole = len(data) - (len(data) % source_frame)
+        self._carry = data[whole:]
+        if whole == 0:
+            return b""
+        body = data[:whole]
+        if self.channels == PLAYBACK_CHANNELS and self.sample_width == PLAYBACK_SAMPLE_WIDTH:
+            return body  # her normal path: already exactly what the stream wants
+        return _to_playback_pcm(body, self.channels, self.sample_width)
+
     def _take_all(self) -> bytes:
-        payload = bytes(self._buf)
+        payload = self._emit(bytes(self._buf))
         del self._buf[:]
         return payload
 
@@ -359,6 +526,11 @@ class _SoundDevicePlayer:
         # unconditionally. It is kept as an option, but the engine now passes
         # the resolved device so speech goes where the user's system routes it.
         self._device = device
+        # A trailing partial frame: ``RawOutputStream.write`` raises
+        # ValueError('len(data) not divisible by samplesize') on a buffer that
+        # is not a whole number of frames, and that raise used to be caught and
+        # discarded, so the block fell silent with nothing reported.
+        self._carry = b""
 
     def open(self, sample_rate: int) -> None:
         import sounddevice as sd  # imported here so importing this module needs no audio stack
@@ -367,27 +539,37 @@ class _SoundDevicePlayer:
         self._aborted.clear()
         stream = sd.RawOutputStream(
             samplerate=int(sample_rate),
-            channels=1,
+            channels=PLAYBACK_CHANNELS,
             dtype="int16",
             blocksize=0,
             device=self._device,
         )
         stream.start()
         self._stream = stream
-        debug_log(f"Fish TTS: output stream open at {sample_rate}Hz", "tts")
+        debug_log(
+            f"Fish TTS: output stream open at {sample_rate}Hz "
+            f"({PLAYBACK_CHANNELS}ch, int16)",
+            "tts",
+        )
 
     def write(self, chunk: bytes) -> None:
         stream = self._stream
         if stream is None or not chunk:
             return
+        data = self._carry + bytes(chunk)
+        whole = len(data) - (len(data) % PLAYBACK_FRAME_BYTES)
+        self._carry = data[whole:]
+        if whole == 0:
+            return
         try:
-            stream.write(bytes(chunk))
+            stream.write(_limit_peak(data[:whole]))
         except Exception as exc:  # a device lost mid-sentence: report, never fake success
             if not self._aborted.is_set():
                 debug_log(f"Fish TTS: device write failed: {exc}", "tts")
 
     def abort(self) -> None:
         self._aborted.set()
+        self._carry = b""
         stream = self._stream
         if stream is None:
             return
@@ -406,12 +588,43 @@ class _SoundDevicePlayer:
 
     def _close_stream(self) -> None:
         stream, self._stream = self._stream, None
+        self._carry = b""
         if stream is None:
             return
         try:
             stream.close()
         except Exception as exc:
             debug_log(f"Fish TTS: device close failed: {exc}", "tts")
+
+
+def _limit_peak(block: bytes) -> bytes:
+    """Return ``block`` unchanged, or scaled so its peak is at most the ceiling.
+
+    A backstop, not the fix: the format gate above is what stops unrecognised
+    bytes from ever reaching here. This exists so that a bug *below* the gate -
+    a stale buffer, a mis-sized chunk, a response nobody classified - still
+    cannot put a full-scale burst on the speaker. Her own speech peaks around
+    -15 dBFS, so the ceiling is never reached by normal audio and normal audio
+    is returned byte-for-byte.
+    """
+    import numpy as np  # local: only this hot path needs the numeric stack
+
+    samples = np.frombuffer(block, dtype="<i2")
+    if samples.size == 0:
+        return block
+    peak = int(np.abs(samples.astype(np.int32)).max())
+    if peak <= _PEAK_CEILING:
+        return block
+    scale = _PEAK_CEILING / float(peak)
+    limited = np.clip(
+        np.rint(samples.astype(np.float64) * scale), -32768.0, 32767.0
+    ).astype("<i2")
+    debug_log(
+        f"Fish TTS: peak {peak} exceeds the {_PEAK_CEILING} ceiling; scaled by "
+        f"{scale:.3f} before the device",
+        "tts",
+    )
+    return limited.tobytes()
 
 
 # --------------------------------------------------------------------------
@@ -787,6 +1000,9 @@ class FishTTS:
                     generation, utterance_id, text, fmt.sample_rate, fmt.frame_bytes, payload
                 )
                 sentence_bytes += len(payload)
+            # A dangling byte that cannot complete a frame is dropped here rather
+            # than handed to a stream that would reject the whole buffer.
+            fmt.flush_tail()
             if sentence_bytes == 0:
                 # The client already treats a zero-byte stream as failure; this
                 # covers the remaining case of a stream that was header only.
