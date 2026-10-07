@@ -323,6 +323,28 @@ def test_topic_hinted_memory_turn_still_runs_its_own_topic_call():
 
 
 @pytest.mark.unit
+def test_planner_fail_open_turn_is_served_by_the_prefetch():
+    """The dominant fire case in real traffic: the planner returns an empty
+    plan (timeout / disabled / too short), so the engine falls open to memory
+    with no topic hint. That turn must reuse the speculative answer too."""
+    seen = []
+
+    def fake_extract(query, *a, **kwargs):
+        seen.append((query, threading.current_thread().name))
+        return {"keywords": ["dentist"]}
+
+    _run_with([], fake_extract)
+
+    assert len(seen) == 1, (
+        f"a fail-open memory turn must make exactly one extractor call; got {seen!r}"
+    )
+    assert seen[0][1] == "memory-extractor-prefetch", (
+        "the fail-open turn's extractor call must be the speculative prefetch, "
+        f"not a serial call; got thread {seen[0][1]!r}"
+    )
+
+
+@pytest.mark.unit
 def test_repeat_topic_free_turn_does_not_restart_the_prefetch():
     """Once the answer is cached, the next identical turn must not start a
     second speculative call — the prefetch's own start gate reads the cache."""
