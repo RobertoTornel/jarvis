@@ -182,12 +182,10 @@ literal) and its coercion block.
 
 ## Documentation drift
 
-- **`tts.spec.md` describes only local synthesis** and never mentions the Fish
-  Audio streaming engine that is the configured default
-  (`src/claire/output/tts.spec.md:3` versus `src/claire/config.py:631`). The
-  listening-side consequence is real: whether `tts.interrupt()` cuts audio off
-  within tens of milliseconds depends on the engine, and only the Fish engine
-  implements `flush` (`src/claire/output/fish_tts.py:827`).
+- **Barge-in latency depends on the configured engine.** Whether
+  `tts.interrupt()` cuts audio off within tens of milliseconds depends on the
+  engine, and only the Fish engine implements `flush`
+  (`src/claire/output/fish_tts.py:827`).
 - **`listener.py` fallback defaults differ from the config defaults** for the
   wake ratio, the voice-energy floor and the LLM warmup probe:
   `getattr(self.cfg, "wake_fuzzy_ratio", 0.78)` at

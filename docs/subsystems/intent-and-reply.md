@@ -135,17 +135,15 @@ a spoken error:
 
 ## Documentation drift
 
-- **`reply.spec.md` and `llm.spec.md` describe the LLM layer as Ollama-defaulted.**
+- **`reply.spec.md` describes the LLM layer as Ollama-defaulted.**
   `reply.spec.md:9` lists "the pluggable backend abstraction (`LLMBackend` ABC +
-  `OllamaBackend` impl, factory at `get_llm_backend(settings)`)", and
-  `llm/llm.spec.md:67` gives the default as `llm_provider` = `"ollama"` while
-  `llm.spec.md:8` says the defaults "remain `127.0.0.1:11434`". The shipped
-  default is `"llm_provider": "openai_compatible"` (`src/claire/config.py:570`)
-  pointing at OmniRouter (`config.py:47`), with the key read from
-  `OMNIROUTE_API_KEY` (`config.py:48`, `:567`). Ollama remains a supported
-  provider, and `_resolve_provider` still falls back to it for an unknown value
-  (`src/claire/llm/factory.py:28`–`:33`), so the spec's *fallback* claim is
-  right and only its *default* is stale.
+  `OllamaBackend` impl, factory at `get_llm_backend(settings)`)", but does not
+  say which provider ships as the default. The shipped default is
+  `"llm_provider": "openai_compatible"` (`src/claire/config.py:570`) pointing at
+  OmniRouter (`config.py:47`), with the key read from `OMNIROUTE_API_KEY`
+  (`config.py:48`, `:567`). Ollama remains a supported provider, and
+  `_resolve_provider` still falls back to it for an unknown value
+  (`src/claire/llm/factory.py:28`–`:33`).
 - **`reply.spec.md` calls `src/claire/system_prompt.py` the single unified
   `SYSTEM_PROMPT`** (`reply.spec.md:8`). The module still exists
   (`src/claire/system_prompt.py:53` holds the template) but the prompt is

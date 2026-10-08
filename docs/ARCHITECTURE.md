@@ -148,7 +148,7 @@ src/claire/reply/planner.spec.md            planning
 src/claire/reply/prompts/prompts.spec.md    prompts
 src/claire/tools/selection.spec.md          tool routing
 src/claire/tools/external/mcp_runtime.spec.md   MCP runtime
-src/claire/output/tts.spec.md               speech output (see the TTS spoke: it is stale)
+src/claire/output/tts.spec.md               speech output
 src/claire/memory/db.spec.md                SQLite store
 src/claire/memory/router.spec.md            the vault router
 src/claire/memory/recall_gate.spec.md       recall gating
