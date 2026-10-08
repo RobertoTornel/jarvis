@@ -217,6 +217,29 @@ change memory behaviour. Every value is overridable per key in the config file.
 | `memory_digest_enabled` | `None` (`:753`) | `None` = auto (on for small models), `true`/`false` force it |
 | `tool_result_digest_enabled` | `None` (`:759`) | same tri-state for distilling raw tool results |
 | `llm_extractor_timeout_sec` | `8.0` (`:606`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:966`–`:969`) |
+| `embedding_provider` | `""` (`:569`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
+| `embedding_model` | provider-aware (`:917`–`:932`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
+| `embedding_base_url` | `""` (`:570`) | per-provider override; the Gemini default is `https://generativelanguage.googleapis.com/v1beta` |
+| `embedding_api_key` | `""` (`:571`) | empty on the Gemini path reads `GEMINI_API_KEY`, then `GOOGLE_API_KEY`; the chat key is never reused |
+
+**The vector index is 768 floats wide, and embedding backends are pinned to
+it.** The sqlite-vss table is declared `vss0(vec(768))` (`db.py:69`) and the
+fallback store is constructed with `dimension=EMBEDDING_DIMENSION` (`db.py:135`,
+the constant lives in `utils/embedding_vector.py`). Neither can be migrated in
+place, so the dimension is a storage contract rather than a config key: the
+Gemini client sends `outputDimensionality: 768` and discards any vector that
+comes back a different length (`llm/gemini.py`). The pure-Python fallback store
+is width-agnostic and skips mismatched pairs at search time
+(`utils/vector_store.py:102`). Switching embedding *models* is still a
+re-index even when the width matches: Google documents
+`gemini-embedding-001` and `gemini-embedding-2` as living in incompatible
+embedding spaces.
+
+The two sides of a retrieval carry different task types — `RETRIEVAL_DOCUMENT`
+when a summary is indexed (`conversation.py:356`, `:616`, `:1838`) and
+`RETRIEVAL_QUERY` when memory is searched (`:1908`, `:1999`) — because symmetric
+usage is measurably worse for retrieval. A failed embed is logged and falls back
+to keyword search; it never writes a vector of the wrong shape.
 
 **The vault path has an environment override:** `CLAIRE_VAULT_DIR`
 (`notes.py:82`). Resolution order is explicit argument, then the environment

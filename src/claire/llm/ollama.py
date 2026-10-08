@@ -342,8 +342,12 @@ class OllamaBackend(LLMBackend):
         text: str,
         model: str,
         timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
     ) -> Optional[List[float]]:
-        """Embed ``text`` via Ollama's ``/api/embeddings``."""
+        """Embed ``text`` via Ollama's ``/api/embeddings``.
+
+        ``task_type`` is accepted for interface parity and ignored: Ollama's
+        embeddings endpoint has no asymmetric-retrieval field."""
         try:
             resp = requests.post(
                 f"{self._base_url}/api/embeddings",

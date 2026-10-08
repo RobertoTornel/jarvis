@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional, List, Tuple, Union, Callable
 from .db import Database
-from ..llm import get_embedding_backend, get_llm_backend
+from ..llm import (
+    TASK_RETRIEVAL_DOCUMENT,
+    TASK_RETRIEVAL_QUERY,
+    get_embedding_backend,
+    get_llm_backend,
+)
 from ..debug import debug_log
 from ..utils.redact import redact, scrub_secrets
 
@@ -66,14 +71,35 @@ def _stream_llm(cfg, system_prompt: str, user_content: str, *,
     )
 
 
-def _embed_text(text: str, cfg, *, timeout_sec: float = 15.0) -> Optional[list[float]]:
+def _embed_text(
+    text: str,
+    cfg,
+    *,
+    timeout_sec: float = 15.0,
+    task_type: Optional[str] = None,
+) -> Optional[list[float]]:
     """Embed ``text`` via the configured embedding backend. Returns ``None``
-    on any failure so callers can fall back to FTS-only paths."""
+    on any failure so callers can fall back to FTS-only paths.
+
+    ``task_type`` selects the side of the retrieval: pass
+    ``TASK_RETRIEVAL_DOCUMENT`` when indexing a memory and
+    ``TASK_RETRIEVAL_QUERY`` when searching for one (see
+    :mod:`claire.llm.gemini`). Backends without an asymmetric-retrieval field
+    ignore it; on the Gemini backend the two sides genuinely produce
+    different vectors, which is what retrieval wants.
+
+    A failure is logged rather than swallowed: the keyword fallback is
+    correct behaviour, but it must never be *silent* — otherwise a missing
+    key or a renamed model looks like "search just isn't very good"."""
     try:
         return get_embedding_backend(cfg).embed(
-            text, cfg.embedding_model, timeout_sec=timeout_sec,
+            text, cfg.embedding_model, timeout_sec=timeout_sec, task_type=task_type,
         )
-    except Exception:
+    except Exception as e:
+        debug_log(
+            f"⚠️ embedding failed ({type(e).__name__}); falling back to keyword search",
+            "memory",
+        )
         return None
 
 
@@ -327,6 +353,7 @@ def rewrite_all_diary_summaries(
                 text_for_embedding = db.get_summary_embedding_text(summary_id)
                 vec = _embed_text(
                     text_for_embedding, cfg, timeout_sec=embed_timeout_sec,
+                    task_type=TASK_RETRIEVAL_DOCUMENT,
                 ) if text_for_embedding is not None else None
                 if vec is not None:
                     embedding_refreshed = db.upsert_summary_embedding(summary_id, vec, text_for_embedding) is not None
@@ -586,6 +613,7 @@ def optimise_diary_topics(
                     text_for_embedding = db.get_summary_embedding_text(summary_id)
                     vec = _embed_text(
                         text_for_embedding, cfg, timeout_sec=embed_timeout_sec,
+                        task_type=TASK_RETRIEVAL_DOCUMENT,
                     ) if text_for_embedding is not None else None
                     if vec is not None:
                         embedding_refreshed = db.upsert_summary_embedding(summary_id, vec, text_for_embedding) is not None
@@ -1805,7 +1833,10 @@ def update_daily_conversation_summary(
         if db.has_vector_store and cfg.embedding_model:
             try:
                 text_for_embedding = db.get_summary_embedding_text(summary_id)
-                vec = _embed_text(text_for_embedding, cfg, timeout_sec=15.0) if text_for_embedding is not None else None
+                vec = _embed_text(
+                    text_for_embedding, cfg, timeout_sec=15.0,
+                    task_type=TASK_RETRIEVAL_DOCUMENT,
+                ) if text_for_embedding is not None else None
                 if vec is not None:
                     db.upsert_summary_embedding(summary_id, vec, text_for_embedding)
             except Exception as e:
@@ -1872,7 +1903,10 @@ def search_conversation_memory_by_keywords(
 
         if cfg.embedding_model:
             try:
-                vec = _embed_text(embed_query, cfg, timeout_sec=timeout_sec)
+                vec = _embed_text(
+                    embed_query, cfg, timeout_sec=timeout_sec,
+                    task_type=TASK_RETRIEVAL_QUERY,
+                )
                 vec_json = json.dumps(vec) if vec is not None else None
 
                 if vec_json:
@@ -1960,7 +1994,10 @@ def search_conversation_memory(
         if search_query and search_query.strip() and cfg.embedding_model:
             # Primary: Use vector search for semantic similarity
             try:
-                vec = _embed_text(search_query, cfg, timeout_sec=timeout_sec)
+                vec = _embed_text(
+                    search_query, cfg, timeout_sec=timeout_sec,
+                    task_type=TASK_RETRIEVAL_QUERY,
+                )
                 vec_json = json.dumps(vec) if vec is not None else None
 
                 if vec_json:

@@ -253,6 +253,28 @@ speak HTTP directly, so the provider is a configuration choice:
 - `llm_provider: "ollama"` for a fully local Ollama server, defaulting to
   `http://127.0.0.1:11434`.
 
+**Embeddings are a separate route.** `embedding_provider` overrides the chat
+provider for memory-search embeddings: leave it empty to inherit the chat
+provider, set `"ollama"` to keep embeddings local when chat is remote, or set
+`"gemini"` to use Google's embedding models over the native
+`generativelanguage` API:
+
+```json
+{
+  "embedding_provider": "gemini",
+  "embedding_model": "gemini-embedding-2"
+}
+```
+
+An empty `embedding_api_key` is read from `GEMINI_API_KEY` (then
+`GOOGLE_API_KEY`), the same way the chat key comes from `OMNIROUTE_API_KEY`.
+The model is configurable: `gemini-embedding-2` is the default (newest, and
+the model the owner asked for), `gemini-embedding-001` is the text-only
+alternative. Their embedding spaces are not interchangeable, so switching
+models means re-embedding existing memories. With no working embeddings —
+no key, no reachable service, a renamed model — memory search logs the failure
+and degrades to keyword search rather than writing anything unusable.
+
 Two tiers are resolved from settings: the **chat model** (`llm_chat_model`) and
 a **fast model** (`fast_model`) used for real-time classification-shaped work —
 the intent judge, tool routing, planner, digests and the memory keyword
@@ -581,7 +603,9 @@ metadata, and [docs/CONFIGURATION.md](docs/CONFIGURATION.md) documents the same
 keys by hand. The knobs most worth knowing:
 
 - **Model route**: `llm_provider`, `llm_base_url`, `llm_api_key`,
-  `llm_chat_model`, `fast_model`, `embedding_provider`, `embedding_model`, and
+  `llm_chat_model`, `fast_model`, `embedding_provider`, `embedding_model`,
+  `embedding_base_url`, `embedding_api_key` (`GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` when empty and the provider is `gemini`), and
   the `*_timeout_sec` family. The `ollama_*` keys remain readable for older
   config files and are promoted into the provider-aware keys on load.
 - **Voice**: `wake_word`, `wake_aliases`, `wake_fuzzy_ratio`, `stt_engine`,

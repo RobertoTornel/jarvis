@@ -17,6 +17,15 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional
 
 
+# Asymmetric-retrieval hints passed to ``embed(task_type=...)``. They live on
+# the interface, not in the Gemini module, because they describe the *caller's*
+# intent (is this text a document being indexed, or a query searching for one?)
+# rather than any one provider's wire format. Only providers with a task-type
+# field consume them; the rest ignore them.
+TASK_RETRIEVAL_DOCUMENT = "RETRIEVAL_DOCUMENT"
+TASK_RETRIEVAL_QUERY = "RETRIEVAL_QUERY"
+
+
 # Fields allowed per message ``role`` in the OpenAI Chat Completions schema.
 # Any field outside this set (e.g. engine-internal annotations like
 # ``tool_name``, ``tool_failed``, ``_is_context_injected``) MUST be
@@ -136,17 +145,43 @@ class LLMBackend(ABC):
         text: str,
         model: str,
         timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
     ) -> Optional[List[float]]:
         """Embed ``text`` with ``model``. Returns the float vector or
         ``None`` on error / unsupported. Backends without an embedding
         endpoint (e.g. some oMLX builds) may always return ``None`` —
-        memory routing will then fall back per the embeddings config."""
+        memory routing will then fall back per the embeddings config.
+
+        ``task_type`` is the optional asymmetric-retrieval hint
+        (``"RETRIEVAL_DOCUMENT"`` when indexing, ``"RETRIEVAL_QUERY"`` when
+        searching). Backends whose wire protocol has no such field accept
+        and ignore it; only the Gemini backend consumes it. Callers may
+        always pass it — passing it must never be the reason a backend
+        fails."""
 
     @abstractmethod
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         """List the model names the runtime currently has loaded /
         available locally. Returns an empty list on error or when the
         runtime exposes no listing endpoint."""
+
+    def embed_batch(
+        self,
+        texts: List[str],
+        model: str,
+        timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
+    ) -> List[Optional[List[float]]]:
+        """Embed several texts, returning one entry per input (``None`` for
+        an input that failed). The default implementation issues one
+        request per text, which is correct for runtimes with no batch
+        endpoint; the Gemini backend overrides this with
+        ``batchEmbedContents`` so indexing many memories does not fan out
+        into one HTTP round-trip each."""
+        return [
+            self.embed(text, model, timeout_sec=timeout_sec, task_type=task_type)
+            for text in texts
+        ]
 
     def warm_up(
         self,

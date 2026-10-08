@@ -372,7 +372,16 @@ class OpenAICompatibleBackend(LLMBackend):
         text: str,
         model: str,
         timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
     ) -> Optional[List[float]]:
+        """Embed ``text`` through the OpenAI-compatible ``/embeddings`` route.
+
+        ``task_type`` is accepted for interface parity and ignored: the
+        OpenAI embeddings schema has no asymmetric-retrieval field, and the
+        compatibility layers in front of it (Gemini, vLLM, LM Studio) either
+        ignore or reject unknown body keys, so sending one would be a silent
+        no-op at best. The Gemini backend uses its native API and does honour
+        it."""
         try:
             resp = requests.post(
                 f"{self._base_url}/embeddings",
