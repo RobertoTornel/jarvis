@@ -517,8 +517,8 @@ def _match_question(node_data: str, questions: list[str]) -> str:
 # Both the extractor (needs to know what the assistant already sees so it can
 # skip redundant questions) and the agentic loop (needs fresh time/location
 # each turn) consume the same time+location string. Centralise the lookup to
-# avoid drift and to let `get_location_context_with_timezone`'s cache do its
-# job across the two call sites.
+# avoid drift across the two call sites. The lookup is now configuration-only
+# (no IP/UPnP/GeoLite2 probe), so there is nothing left to cache.
 
 # Max short-term dialogue messages mirrored into the extractor hint, and the
 # per-message truncation length. Kept small — the extractor runs on a tiny
@@ -633,18 +633,14 @@ def _maybe_digest_tool_result(
 
 
 def _live_time_location_string(cfg) -> str:
-    """Return a one-liner describing current local time and location, or ""."""
+    """Return a one-liner describing current local time and location, or "".
+
+    Location is configuration-only now (a city the user set, or nothing), so
+    this cannot block on the network. With no city configured the timezone is
+    ``None`` and ``format_time_context`` reports the OS local time.
+    """
     try:
-        tz_name: Optional[str] = None
-        if not getattr(cfg, 'location_enabled', True):
-            location_context = "Location: Disabled"
-        else:
-            location_context, tz_name = get_location_context_with_timezone(
-                config_ip=getattr(cfg, 'location_ip_address', None),
-                auto_detect=getattr(cfg, 'location_auto_detect', True),
-                resolve_cgnat_public_ip=getattr(cfg, 'location_cgnat_resolve_public_ip', True),
-                location_cache_minutes=getattr(cfg, 'location_cache_minutes', 60),
-            )
+        location_context, tz_name = get_location_context_with_timezone(cfg=cfg)
         return f"Current local time: {format_time_context(tz_name)}. {location_context}"
     except Exception as e:
         debug_log(f"live time/location lookup failed: {e}", "memory")

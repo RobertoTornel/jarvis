@@ -46,7 +46,7 @@ from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
 from .listening.listener import VoiceListener
 from .listening.wake_detection import is_wake_word_detected
-from .utils.location import get_location_context, is_location_available
+from .utils.location import get_location_context
 
 
 class _UnavailableTTS:
@@ -1532,29 +1532,19 @@ def main(smoke_test: bool = False) -> None:
     except Exception as e:
         debug_log(f"graph legacy-shape migration failed (non-fatal): {e}", "memory")
 
-    # Check location detection status
-    if cfg.location_enabled and not is_location_available():
-        print("⚠️ 📍 Optional location features unavailable. Add a GeoLite2 database in Setup → Location.", flush=True)
-    elif cfg.location_enabled:
-        location_context = get_location_context(
-            config_ip=cfg.location_ip_address,
-            auto_detect=cfg.location_auto_detect,
-            resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
-            location_cache_minutes=cfg.location_cache_minutes,
-        )
-        if location_context == "Location: Unknown":
-            print("📍 Location detection not available", flush=True)
-            if not is_location_available():
-                print("     GeoLite2 database not found. Download from:", flush=True)
-                print("     https://www.maxmind.com/en/geolite2/signup", flush=True)
-            else:
-                print("     Could not detect public IP address.", flush=True)
-                print("     Configure 'location_ip_address' in config.json", flush=True)
-                print("     or run the setup wizard to configure location.", flush=True)
-        else:
-            print(f"📍 {location_context}", flush=True)
-    else:
+    # Location status. IP/UPnP/GeoLite2 detection was removed, so the only
+    # possible source is a city the user configured explicitly. Say plainly
+    # which of the three states we are in; never probe the network here.
+    location_context = get_location_context(cfg)
+    if location_context == "Location: Disabled":
         print("📍 Location services disabled", flush=True)
+    elif location_context == "Location: Unknown":
+        print(
+            "📍 No location configured (set 'location_city' in config.json)",
+            flush=True,
+        )
+    else:
+        print(f"📍 {location_context}", flush=True)
 
     # Initialize TTS. A failure here (an unknown engine name, a missing voice
     # model, a missing key) disables speech output; it must not take the whole

@@ -370,8 +370,6 @@ def should_show_setup_wizard(force_server_check: bool = False) -> bool:
 # These imports are wrapped to avoid import errors when only detection functions are needed
 # (e.g., on headless CI systems where system Qt libraries may be missing)
 
-import sys as _sys
-
 try:
     from PyQt6.QtWidgets import (
         QApplication, QWizard, QWizardPage, QVBoxLayout, QHBoxLayout,
@@ -386,29 +384,6 @@ try:
     from desktop_app.qt_worker import KeepAliveWorker
     from desktop_app.themes import CLAIRE_THEME_STYLESHEET, WIZARD_STYLESHEET, COLORS, _ensure_icons, _ICON_STYLESHEET_TEMPLATE
     from desktop_app.mcp_catalogue import get_wizard_entries, MCPEntry
-
-    # Import location utilities with crash protection for Windows native modules
-    try:
-        from claire.utils.location import (
-            get_location_info,
-            get_location_context,
-            is_location_available,
-            _get_database_path,
-            _is_private_ip,
-            _is_cgnat_ip,
-            GEOIP2_AVAILABLE,
-        )
-    except Exception as e:
-        if _sys.platform == 'win32':
-            print(f"  ⚠️  Location utilities import failed: {e}", flush=True)
-        # Provide stubs so the wizard can still run without location features
-        get_location_info = lambda *a, **k: {}
-        get_location_context = lambda *a, **k: "Location: Unknown"
-        is_location_available = lambda: False
-        _get_database_path = lambda: None
-        _is_private_ip = lambda ip: True
-        _is_cgnat_ip = lambda ip: False
-        GEOIP2_AVAILABLE = False
 
     _PYQT6_AVAILABLE = True
 except ImportError:
@@ -429,16 +404,9 @@ except ImportError:
         """Stub for pyqtSignal when PyQt6 is not available."""
         return None
 
-    # Stub location utilities that depend on themes
+    # Stub theme constants when PyQt6 is not available
     CLAIRE_THEME_STYLESHEET = ""
     COLORS = {}
-    get_location_info = lambda *a, **k: {}
-    get_location_context = lambda *a, **k: "Location: Unknown"
-    is_location_available = lambda: False
-    _get_database_path = lambda: None
-    _is_private_ip = lambda ip: True
-    _is_cgnat_ip = lambda ip: False
-    GEOIP2_AVAILABLE = False
 
 
 class StatusCheckWorker(KeepAliveWorker):
@@ -513,7 +481,7 @@ class ScrollableWizardPage(QWizardPage):
             "WelcomePage": 1, "OpenAICompatiblePage": 1,
             "OllamaInstallPage": 1, "OllamaServerPage": 1, "ModelsPage": 1,
             "MCPPage": 2, "SearchProvidersPage": 2,
-            "LocationPage": 2, "CompletePage": 3,
+            "CompletePage": 3,
         }[type(self).__name__]
         header = QHBoxLayout()
         if has_scroll and layout.contentsMargins().left() == 0:
@@ -571,7 +539,6 @@ class SetupWizard(QWizard):
         self.mlx_whisper_page = WhisperSetupPage(self)
         self.mcp_page = MCPPage(self)
         self.search_providers_page = SearchProvidersPage(self)
-        self.location_page = LocationPage(self)
         self.complete_page = CompletePage(self)
 
         self.welcome_page_id = self.addPage(self.welcome_page)
@@ -583,7 +550,6 @@ class SetupWizard(QWizard):
         self.models_page_id = self.addPage(self.models_page)
         self.mcp_page_id = self.addPage(self.mcp_page)
         self.search_providers_page_id = self.addPage(self.search_providers_page)
-        self.location_page_id = self.addPage(self.location_page)
         self.complete_page_id = self.addPage(self.complete_page)
 
         # Speech recognition comes first; the provider choice then branches
@@ -606,7 +572,6 @@ class SetupWizard(QWizard):
         # Store status for sharing between pages
         self.ollama_status: Optional[OllamaStatus] = None
         self.mlx_whisper_status: Optional[MLXWhisperStatus] = None
-        self._location_working: Optional[bool] = None
         self._apply_theme()
 
     def ollama_entry_page_id(self) -> int:
@@ -619,25 +584,6 @@ class SetupWizard(QWizard):
         if not status.is_server_running:
             return self.ollama_server_page_id
         return self.models_page_id
-
-    def is_location_working(self) -> bool:
-        """Check if location detection is working (cached)."""
-        if self._location_working is None:
-            try:
-                cfg = load_settings()
-                # If location is disabled, treat as "working" so we skip the page
-                if not getattr(cfg, 'location_enabled', True):
-                    self._location_working = True
-                else:
-                    context = get_location_context(
-                        config_ip=cfg.location_ip_address,
-                        auto_detect=cfg.location_auto_detect,
-                        resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
-                    )
-                    self._location_working = context != "Location: Unknown"
-            except Exception:
-                self._location_working = False
-        return self._location_working
 
     def _apply_theme(self):
         """Apply the shared Claire theme with SVG indicator icons."""
@@ -731,7 +677,6 @@ class WelcomePage(ScrollableWizardPage):
         self.cli_status = self._create_status_row("💻 Ollama CLI", "Checking...")
         self.server_status = self._create_status_row("🌐 Ollama Server", "Checking...")
         self.models_status = self._create_status_row("🧠 AI Models", "Checking...")
-        self.location_status = self._create_status_row("📍 Location", "Checking...")
 
         # MLX Whisper status (only shown on Apple Silicon)
         self.mlx_whisper_status = self._create_status_row("🎤 MLX Whisper", "Checking...")
@@ -745,8 +690,6 @@ class WelcomePage(ScrollableWizardPage):
             status_layout.addWidget(self.mlx_whisper_status)
         else:
             self.mlx_whisper_status.setVisible(False)
-
-        status_layout.addWidget(self.location_status)
 
         layout.addWidget(self.status_card)
 
@@ -853,26 +796,6 @@ class WelcomePage(ScrollableWizardPage):
             self._update_status_row(self.models_status, f"✅ All models ready ({len(status.installed_models)} installed)", True)
         else:
             self._update_status_row(self.models_status, f"⚠️ Missing: {', '.join(status.missing_models)}", False)
-
-        # Update location status
-        if not is_location_available():
-            self._update_status_row(self.location_status, "⚠️ Database not installed", False)
-        else:
-            try:
-                cfg = load_settings()
-                location_context = get_location_context(
-                    config_ip=cfg.location_ip_address,
-                    auto_detect=cfg.location_auto_detect,
-                    resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
-                )
-            except Exception:
-                location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
-            if location_context == "Location: Unknown":
-                self._update_status_row(self.location_status, "⚠️ Not configured", False)
-            else:
-                # Extract just the location part after "Location: "
-                loc_text = location_context.replace("Location: ", "")
-                self._update_status_row(self.location_status, f"✅ {loc_text}", True)
 
         # Update MLX Whisper status (Apple Silicon only)
         if self._is_apple_silicon:
@@ -3302,297 +3225,6 @@ class WhisperSetupPage(ScrollableWizardPage):
         return super().nextId()
 
 
-class LocationPage(ScrollableWizardPage):
-    """Page for configuring location detection."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setTitle("")
-
-        # Main layout with scroll area
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(0, 0, 0, 0)
-
-        # Scroll area for content
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("""
-            QScrollArea { background: transparent; }
-            QScrollArea > QWidget > QWidget { background: transparent; }
-            QScrollArea > QWidget#qt_scrollarea_viewport { background: transparent; }
-        """)
-
-        # Content widget inside scroll area
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setSpacing(20)
-        layout.setContentsMargins(28, 20, 28, 20)
-
-        # Header
-        title = QLabel("Make Claire feel at home")
-        title.setObjectName("title")
-        layout.addWidget(title)
-
-        subtitle = QLabel("Location helps Claire provide weather, local services, and time-aware responses.")
-        subtitle.setObjectName("subtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        layout.addSpacing(20)
-
-        # Status card
-        card = QFrame()
-        card.setObjectName("card")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(18, 16, 18, 16)
-        card_layout.setSpacing(12)
-
-        status_title = QLabel("🔍 Detection Status")
-        status_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
-        card_layout.addWidget(status_title)
-        card_layout.addSpacing(8)
-
-        self.status_label = QLabel("Checking location detection...")
-        self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("line-height: 1.6;")
-        card_layout.addWidget(self.status_label)
-
-        layout.addWidget(card)
-
-        # IP configuration section
-        config_card = QFrame()
-        config_card.setObjectName("card")
-        config_layout = QVBoxLayout(config_card)
-        config_layout.setContentsMargins(18, 16, 18, 16)
-        config_layout.setSpacing(12)
-
-        config_title = QLabel("⚙️ Manual Configuration (Optional)")
-        config_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
-        config_layout.addWidget(config_title)
-        config_layout.addSpacing(8)
-
-        config_info = QLabel("If automatic detection fails, you can manually enter your public IP address.")
-        config_info.setWordWrap(True)
-        config_info.setStyleSheet("color: #a1a1aa;")
-        config_layout.addWidget(config_info)
-
-        config_layout.addSpacing(8)
-
-        # IP input row
-        ip_layout = QHBoxLayout()
-        ip_layout.setSpacing(12)
-
-        self.ip_input = QLineEdit()
-        self.ip_input.setPlaceholderText("Enter your public IP (e.g., 203.0.113.45)")
-        self.ip_input.setMinimumHeight(44)
-        ip_layout.addWidget(self.ip_input, stretch=1)
-
-        self.test_btn = QPushButton("🧪 Test")
-        self.test_btn.clicked.connect(self._test_ip)
-        self.test_btn.setMinimumHeight(44)
-        ip_layout.addWidget(self.test_btn)
-
-        config_layout.addLayout(ip_layout)
-
-        layout.addWidget(config_card)
-
-        # Test result label
-        self.test_result_label = QLabel("")
-        self.test_result_label.setWordWrap(True)
-        layout.addWidget(self.test_result_label)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(12)
-
-        self.open_ip_btn = QPushButton("🔍 Detect My IP")
-        self.open_ip_btn.setObjectName("secondary")
-        self.open_ip_btn.setMinimumHeight(44)
-        self.open_ip_btn.clicked.connect(self._open_ip_lookup)
-        btn_layout.addWidget(self.open_ip_btn)
-
-        self.save_btn = QPushButton("💾 Save IP to Config")
-        self.save_btn.setObjectName("success")
-        self.save_btn.setMinimumHeight(44)
-        self.save_btn.clicked.connect(self._save_ip_to_config)
-        self.save_btn.setEnabled(False)
-        btn_layout.addWidget(self.save_btn)
-
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
-
-        # Save status label
-        self.save_status_label = QLabel("")
-        self.save_status_label.setWordWrap(True)
-        layout.addWidget(self.save_status_label)
-
-        layout.addStretch()
-
-        scroll.setWidget(content)
-        main_layout.addWidget(scroll)
-        self.setLayout(main_layout)
-        self._validated_ip: Optional[str] = None
-
-    def initializePage(self):
-        """Check location status when page is shown."""
-        self._check_location_status()
-
-    def _check_location_status(self):
-        """Check current location detection status."""
-        status_parts = []
-
-        if not GEOIP2_AVAILABLE:
-            status_parts.append("❌ GeoIP2 library not installed (pip install geoip2)")
-        elif not is_location_available():
-            db_path = _get_database_path()
-            status_parts.append("❌ GeoLite2 database not found")
-            status_parts.append(f"   Expected location: {db_path}")
-            status_parts.append("")
-            status_parts.append("   To set up:")
-            status_parts.append("   1. Register at: maxmind.com/en/geolite2/signup")
-            status_parts.append("   2. Download GeoLite2-City (MMDB format)")
-            status_parts.append(f"   3. Save as: {db_path}")
-        else:
-            status_parts.append("✅ GeoLite2 database found")
-            try:
-                cfg = load_settings()
-                location_context = get_location_context(
-                    config_ip=cfg.location_ip_address,
-                    auto_detect=cfg.location_auto_detect,
-                    resolve_cgnat_public_ip=cfg.location_cgnat_resolve_public_ip,
-                )
-            except Exception:
-                location_context = get_location_context(auto_detect=True, resolve_cgnat_public_ip=True)
-
-            if location_context == "Location: Unknown":
-                status_parts.append("❌ Could not detect public IP address")
-                status_parts.append("")
-                status_parts.append("   Your network likely uses NAT without UPnP support.")
-                status_parts.append("   Enter your public IP below to enable location features.")
-            else:
-                status_parts.append(f"✅ {location_context}")
-                status_parts.append("")
-                status_parts.append("   Location is working! You can skip this step.")
-
-        self.status_label.setText("\n".join(status_parts))
-
-    def _open_ip_lookup(self):
-        """Resolve public IP via OpenDNS and populate the input field."""
-        from claire.utils.location import _resolve_public_ip_via_opendns
-        resolved = _resolve_public_ip_via_opendns()
-        if resolved:
-            self.ip_input.setText(resolved)
-            self.test_result_label.setText(f"✅ Detected public IP: {resolved}")
-            self.test_result_label.setStyleSheet("color: #4ade80;")
-        else:
-            self.test_result_label.setText("⚠️ Could not detect public IP via DNS")
-            self.test_result_label.setStyleSheet("color: #fbbf24;")
-
-    def _test_ip(self):
-        """Test the entered IP address."""
-        ip = self.ip_input.text().strip()
-
-        if not ip:
-            self.test_result_label.setText("❌ Please enter an IP address")
-            self.test_result_label.setStyleSheet("color: #f87171;")
-            self.save_btn.setEnabled(False)
-            self._validated_ip = None
-            return
-
-        import re
-        ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-        if not re.match(ip_pattern, ip):
-            self.test_result_label.setText("❌ Invalid IP format. Use format: 203.0.113.45")
-            self.test_result_label.setStyleSheet("color: #f87171;")
-            self.save_btn.setEnabled(False)
-            self._validated_ip = None
-            return
-
-        octets = ip.split('.')
-        for octet in octets:
-            if int(octet) > 255:
-                self.test_result_label.setText("❌ Invalid IP: octets must be 0-255")
-                self.test_result_label.setStyleSheet("color: #f87171;")
-                self.save_btn.setEnabled(False)
-                self._validated_ip = None
-                return
-
-        if _is_private_ip(ip):
-            self.test_result_label.setText("⚠️ This appears to be a private IP. Use your public IP instead.")
-            self.test_result_label.setStyleSheet("color: #fbbf24;")
-            self.save_btn.setEnabled(False)
-            self._validated_ip = None
-            return
-
-        if _is_cgnat_ip(ip):
-            self.test_result_label.setText("⚠️ This is a CGNAT IP (100.64.0.0/10). Use your true public IP instead.")
-            self.test_result_label.setStyleSheet("color: #fbbf24;")
-            self.save_btn.setEnabled(False)
-            self._validated_ip = None
-            return
-
-        if not is_location_available():
-            self.test_result_label.setText("⚠️ Cannot test: GeoLite2 database not installed")
-            self.test_result_label.setStyleSheet("color: #fbbf24;")
-            self.save_btn.setEnabled(True)
-            self._validated_ip = ip
-            return
-
-        location_info = get_location_info(ip_address=ip)
-
-        if "error" in location_info:
-            self.test_result_label.setText("⚠️ IP not found in database. It may still work.")
-            self.test_result_label.setStyleSheet("color: #fbbf24;")
-            self.save_btn.setEnabled(True)
-            self._validated_ip = ip
-        else:
-            city = location_info.get("city", "Unknown")
-            country = location_info.get("country", "Unknown")
-            self.test_result_label.setText(f"✅ Location: {city}, {country}")
-            self.test_result_label.setStyleSheet("color: #4ade80;")
-            self.save_btn.setEnabled(True)
-            self._validated_ip = ip
-
-    def _save_ip_to_config(self):
-        """Save the validated IP to config file."""
-        if not self._validated_ip:
-            self.save_status_label.setText("❌ Please test an IP address first")
-            self.save_status_label.setStyleSheet("color: #f87171;")
-            return
-
-        try:
-            from claire.config import _load_json, _save_json
-
-            config_path = default_config_path()
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-
-            config = _load_json(config_path) or {}
-            config["location_ip_address"] = self._validated_ip
-
-            # _save_json keeps the file at 0o600 (it can hold llm_api_key).
-            _save_json(config_path, config)
-
-            self.save_status_label.setText(f"✅ Saved to {config_path}")
-            self.save_status_label.setStyleSheet("color: #4ade80;")
-            self._check_location_status()
-
-        except Exception as e:
-            self.save_status_label.setText(f"❌ Error saving config: {e}")
-            self.save_status_label.setStyleSheet("color: #f87171;")
-
-    def isComplete(self) -> bool:
-        """Page is always complete - location is optional."""
-        return True
-
-    def nextId(self) -> int:
-        """Go to complete page next."""
-        wizard = self.wizard()
-        if isinstance(wizard, SetupWizard):
-            return wizard.complete_page_id
-        return super().nextId()
-
-
 class MCPPage(ScrollableWizardPage):
     """Page for selecting popular MCP servers to enable."""
 
@@ -3911,8 +3543,8 @@ class SearchProvidersPage(ScrollableWizardPage):
     def nextId(self) -> int:
         wizard = self.wizard()
         if isinstance(wizard, SetupWizard):
-            if not wizard.is_location_working():
-                return wizard.location_page_id
+            # Search providers is the last configuration step: the Location
+            # page that used to follow it was removed with IP geolocation.
             return wizard.complete_page_id
         return super().nextId()
 

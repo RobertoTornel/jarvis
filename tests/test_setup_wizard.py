@@ -29,7 +29,6 @@ from claire.config import DEFAULT_CHAT_MODEL
 from claire.utils.location import (
     get_location_context,
     is_location_available,
-    _is_private_ip,
 )
 
 # The unit gate deselects any test that is not marked `unit`; a module-level
@@ -677,7 +676,11 @@ class TestProviderChoicePage:
 
 
 class TestWizardPageOrder:
-    """The tail of the wizard runs models -> MCP -> search -> location -> complete."""
+    """The tail of the wizard runs models -> MCP -> search -> complete.
+
+    The Location page used to sit between search providers and complete; it
+    was removed along with IP geolocation.
+    """
 
     def test_tail_pages_are_added_in_that_order(self, qapp):
         import tempfile
@@ -693,7 +696,6 @@ class TestWizardPageOrder:
                 wiz.models_page_id
                 < wiz.mcp_page_id
                 < wiz.search_providers_page_id
-                < wiz.location_page_id
                 < wiz.complete_page_id
             )
         finally:
@@ -704,12 +706,10 @@ class TestWizardPageOrder:
             ModelsPage,
             MCPPage,
             SearchProvidersPage,
-            LocationPage,
         )
         wizard = MagicMock()
         wizard.mcp_page_id = 10
         wizard.search_providers_page_id = 11
-        wizard.location_page_id = 12
         wizard.complete_page_id = 13
 
         def page_of(cls):
@@ -720,13 +720,26 @@ class TestWizardPageOrder:
         with patch("desktop_app.setup_wizard.SetupWizard", MagicMock):
             assert page_of(ModelsPage).nextId() == wizard.mcp_page_id
             assert page_of(MCPPage).nextId() == wizard.search_providers_page_id
-            # Location is skipped when detection already works...
-            wizard.is_location_working = MagicMock(return_value=True)
+            # Search providers is the last configuration step; there is no
+            # location page to detour through any more.
             assert page_of(SearchProvidersPage).nextId() == wizard.complete_page_id
-            # ...and inserted when it does not.
-            wizard.is_location_working = MagicMock(return_value=False)
-            assert page_of(SearchProvidersPage).nextId() == wizard.location_page_id
-            assert page_of(LocationPage).nextId() == wizard.complete_page_id
+
+    def test_location_page_is_gone(self, qapp):
+        import tempfile
+        from pathlib import Path
+        import desktop_app.setup_wizard as sw
+
+        assert not hasattr(sw, "LocationPage")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            f.write("{}")
+            cfg_path = Path(f.name)
+        try:
+            with patch("claire.config.default_config_path", return_value=cfg_path):
+                wiz = sw.SetupWizard()
+            assert not hasattr(wiz, "location_page_id")
+            assert not hasattr(wiz, "is_location_working")
+        finally:
+            cfg_path.unlink(missing_ok=True)
 
 
 class TestWelcomePageFlow:
@@ -1107,67 +1120,26 @@ class TestOllamaStatusDataclass:
         assert status.missing_models == []
 
 
-class TestLocationDetectionForWizard:
-    """Tests for location detection utilities used in setup wizard."""
+class TestLocationConfigForWizard:
+    """The wizard no longer detects location.
 
-    def test_private_ip_detection(self):
-        """Private IPs are correctly identified."""
-        # RFC 1918 private ranges
-        assert _is_private_ip("10.0.0.1") is True
-        assert _is_private_ip("10.255.255.255") is True
-        assert _is_private_ip("172.16.0.1") is True
-        assert _is_private_ip("172.31.255.255") is True
-        assert _is_private_ip("192.168.0.1") is True
-        assert _is_private_ip("192.168.255.255") is True
+    The module reports an explicitly configured city and nothing else; there
+    is no IP/UPnP/GeoLite2 path for the wizard to call.
+    """
 
-        # Loopback
-        assert _is_private_ip("127.0.0.1") is True
+    def test_no_city_configured_is_unknown(self):
+        assert get_location_context(SimpleNamespace(location_enabled=True)) == "Location: Unknown"
 
-        # Public IPs (8.8.8.8 is Google DNS, 1.1.1.1 is Cloudflare)
-        assert _is_private_ip("8.8.8.8") is False
-        assert _is_private_ip("1.1.1.1") is False
+    def test_configured_city_is_reported(self):
+        assert get_location_context(SimpleNamespace(location_city="Lisbon")) == "Location: Lisbon"
 
-    def test_location_context_returns_unknown_when_unavailable(self):
-        """Location context returns 'Unknown' when detection fails."""
-        # Disable auto-detect to avoid network calls, no config IP
-        with patch("claire.utils.location._get_external_ip_automatically", return_value=None):
-            with patch("claire.utils.location._get_local_network_ip", return_value="192.168.1.1"):
-                context = get_location_context(config_ip=None, auto_detect=True)
-                # Should return Unknown since 192.168.x.x can't be geolocated
-                assert "Unknown" in context or "error" in context.lower()
+    def test_disabled_master_toggle_wins(self):
+        cfg = SimpleNamespace(location_enabled=False, location_city="Lisbon")
+        assert get_location_context(cfg) == "Location: Disabled"
 
-    def test_location_availability_check(self):
-        """is_location_available checks for GeoIP2 and database."""
-        with patch("claire.utils.location.GEOIP2_AVAILABLE", False):
-            # When library not available, should return False
-            # Note: We can't easily patch the constant after import,
-            # so we test the behavior indirectly
-            pass
-
-        # With patched database path
-        with patch("claire.utils.location._get_database_path") as mock_path:
-            mock_path_obj = MagicMock()
-            mock_path_obj.exists.return_value = False
-            mock_path.return_value = mock_path_obj
-
-            # Can't easily test due to import-time GEOIP2_AVAILABLE check
-            # but the function should return False if DB doesn't exist
-
-    def test_location_context_with_config_ip(self):
-        """When config IP is provided and valid, uses it for location."""
-        mock_location = {
-            "city": "San Francisco",
-            "region": "California",
-            "country": "United States",
-            "timezone": "America/Los_Angeles",
-        }
-
-        with patch("claire.utils.location.get_location_info", return_value=mock_location):
-            context = get_location_context(config_ip="203.0.113.45")
-
-            assert "San Francisco" in context
-            assert "California" in context
-            assert "United States" in context
+    def test_location_available_only_with_configured_city(self):
+        assert is_location_available(SimpleNamespace()) is False
+        assert is_location_available(SimpleNamespace(location_city="Lisbon")) is True
 
 
 class TestModelOptions:

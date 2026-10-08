@@ -16,7 +16,7 @@ pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
     ui.OpenAICompatiblePage, ui.ModelsPage, ui.ProviderChoicePage,
     ui.SearchProvidersPage,
     ui.WelcomePage, ui.OllamaInstallPage, ui.OllamaServerPage,
-    ui.WhisperSetupPage, ui.LocationPage, ui.MCPPage, ui.CompletePage,
+    ui.WhisperSetupPage, ui.MCPPage, ui.CompletePage,
 ])
 @pytest.mark.parametrize("width,height", [(700, 600), (700, 800), (960, 780)])
 def test_controls_fit_on_short_display(qapp, monkeypatch, page_type, width, height):
