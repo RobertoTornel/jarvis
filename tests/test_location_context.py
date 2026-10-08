@@ -142,10 +142,19 @@ class TestReplyPathCannotBlock:
         assert elapsed < 2.0, f"live context took {elapsed:.2f}s; it must not block"
 
     def test_engine_uses_context_supplied_by_its_caller(self):
-        """The engine attribute stays patchable, so evals can inject a city."""
+        """The engine attribute stays patchable, so evals can inject a city.
+
+        The evals patch this symbol with a keyword-only mock
+        (``def mock_get_location(**kwargs)``), so the engine must call it with
+        keyword arguments and no positional ones.
+        """
+
+        def mock_get_location(**kwargs):
+            return ("Location: Berlin, Germany", None)
+
         with patch(
             "claire.reply.engine.get_location_context_with_timezone",
-            return_value=("Location: Berlin, Germany", None),
+            side_effect=mock_get_location,
         ):
             out = _live_time_location_string(_cfg())
 
