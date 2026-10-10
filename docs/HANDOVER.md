@@ -13,6 +13,10 @@ load-bearing rules are in [`AGENTS.md`](../AGENTS.md): all LLM traffic goes thro
 gateway, secrets never enter a repository file, and no action is ever claimed that was not
 performed.
 
+The hardening work through `1305415` is committed and pushed on both `claire-rewrite` and `main` of the
+`personal` remote ([`RobertoTornel/jarvis`](https://github.com/RobertoTornel/jarvis.git)); `main` is
+`0db56d9`, a merge whose tree is byte-for-byte identical to `1305415`.
+
 ---
 
 ## 1. What this is, and how to run it
@@ -96,14 +100,14 @@ cd /home/mana/Documents/jarvis_cloud
 .venv/bin/python -m pytest tests/ -m unit -q -p no:cacheprovider
 ```
 
-Current result: **5303 passed, 2 skipped, 25 deselected, 0 failed** (about 190 s). The total
-collected is 5330.
+Current result: **5364 passed, 2 skipped, 25 deselected, 0 failed** (about 3.5 min). The total
+collected is 5391.
 
 ### The trap that used to hide tests: an unmarked test is deselected, not failed
 
 `pytest -m unit` selects only tests carrying the `unit` marker; a test carrying no marker is
 **deselected**. Deselection is silent — the gate prints a green summary and the test never runs.
-That trap had hidden 1,460 of the suite's 5,330 tests, and it is closed: those tests now run in the
+That trap had hidden 1,460 tests, and it is closed: those tests now run in the
 gate, so the only deselections left — **25** — are deliberate (`integration`, `e2e`, `performance`).
 
 The guard is [`tests/test_test_files_are_marked.py`](../tests/test_test_files_are_marked.py). It
@@ -123,7 +127,7 @@ The newly visible tests had rotted while nothing ran them: two tests in
 because they drove their scenario through a tool that had been deleted, and were repaired by
 `1acc426` and `4722826`.
 
-The cost is real. The gate now takes about **190 s** and peaks near **6.8 GB RSS**, against roughly
+The cost is real. The gate now takes about **3.5 min** and peaks near **6.8 GB RSS**, against roughly
 138 s and 1.75 GB before the change; run it alone on a memory-tight machine.
 
 Three tests carry both `unit` and `integration` — one in
@@ -195,7 +199,11 @@ it.
 | `83154d2` | **The marking guard detects partial marking per test** by asking pytest's own collection (`--collect-only -m ""` with a recording plugin), replacing a whole-file substring match that hid 356 tests inside otherwise-marked files (101 of 104 in `test_voice_listener.py`). `PRE_EXISTING_UNMARKED` is now empty. |
 | `4b62a82` | **The Settings window can represent the shipped `fish` TTS default.** The `tts_engine` dropdown had offered only Piper and Chatterbox while `config.py` defaults the engine to `fish`; Fish is now the first choice. Removed the strict xfail that had recorded the bug and left the per-field default-in-choices test asserting it. |
 | `d49f9d5` | Dropped the retired keys from `docs/CONFIGURATION.md` (the `whisper_min_word_length` "vestigial key" paragraph) and from `src/desktop_app/settings_window.spec.md` (`active_profiles`, `allowlist_bundles`, `stop_command_fuzzy_ratio`, `whisper_min_word_length`). |
-| this revision | Refreshed this handover: the gate section and its numbers, §6.2, §6.3, §6.4, §6.11 and the delivery table. |
+| `8ee91a2`, `c26af76`, `8287345` | **Removed the whole location-discovery chain** — `get_location_info()`, the IP/UPnP/OpenDNS probes, the GeoLite2 download and its disk caches — and re-exposed `location_city` as the only location source, so the reply path never resolves an IP or touches the network. See §6.5. |
+| `88ce6d4`, `7273cb3` | **Added a Gemini embeddings provider** (`embedding_provider: "gemini"`, output pinned to the 768-dim index, key in `x-goog-api-key`) and made embedding asymmetric (`RETRIEVAL_DOCUMENT` when indexing, `RETRIEVAL_QUERY` when searching, tool selection included), with `embed_batch` on the backend interface. The live config still leaves it unset; see §6.6. |
+| `8ee8c78` | **A refused TTS start disables speech instead of killing the daemon.** The Fish engine reads its key file lazily inside `start()`, after `_initialize_tts_engine` returned, so a missing, empty or world-readable key file, or an absent voice id, raised out of `daemon.main`. The refusal is now caught and logged, the inert stand-in is swapped in, and Claire keeps running with speech disabled. |
+| `07113b0`, `1305415` | **The Android app was run on a real phone for the first time**, which caught and fixed a dead-shutter defect and refuted two others; the underlying intermittent CameraX bind failure is still open. See §6.8. |
+| this revision | Refreshed this handover: the unit-gate numbers (5364 passed / 5391 collected), the on-device Android results and the open CameraX bind failure (§6.8), the Gemini embeddings route (§6.6), the corrected §6.3 list, and the delivery table. |
 
 ---
 
@@ -258,9 +266,9 @@ prose page is the thing to fix.
 ## 6. What is still open
 
 This is the section to read twice. Items are ordered roughly by how much they cost to get wrong.
-A few subsections record work that has since closed — the unit gate (6.2), the retired
-`location_city` key (6.4) and the two owner follow-ups (6.11) — because the closing facts still
-matter to whoever reads this next.
+A few subsections record work that has since closed — the doc/code contradiction list (6.3), the
+unit gate (6.2), the retired `location_city` key (6.4), the location-discovery landmine (6.5) and the
+two owner follow-ups (6.11) — because the closing facts still matter to whoever reads this next.
 
 ### 6.1 The planner/router overlap is disproven, not pending a retry
 
@@ -300,23 +308,27 @@ ordering of the two calls. The four commits are left in history on purpose.
 See section 2. The deselection trap is closed: 1,460 formerly invisible tests run in the gate, the
 25 remaining deselections are all deliberate, `PRE_EXISTING_UNMARKED` is empty, and the guard now
 detects partial marking per test through pytest's own collection rather than a file-level substring
-match. What remains is cost, not a hidden hole: about 190 s and ~6.8 GB peak RSS per run, so it is
+match. What remains is cost, not a hidden hole: about 3.5 min and ~6.8 GB peak RSS per run, so it is
 not something to run alongside other heavy work. Fixing the gate exposed rot as well as missing
 coverage — some of the newly visible tests were stale — so when a test is added, give it an honest
 marker rather than shrinking what the gate runs.
 
-### 6.3 Doc/code contradictions deliberately left
+### 6.3 Doc/code contradictions (the listed ones are corrected)
 
-These live in files this pass did not own (they sit under `src/`). Each was verified against the
-current source; these are the current line numbers. They are known and intentionally untouched,
-not fresh findings.
+The contradictions this section used to record as deliberately left have since been corrected in the
+source. Each was re-checked against the code for this revision, and none remains:
 
-| Location | The disagreement |
-|---|---|
-| [`src/claire/output/tts.spec.md`](../src/claire/output/tts.spec.md) lines 3-5 | Claims synthesis "runs locally" and that "neither backend sends user text or audio to a cloud synthesis service". Fish Audio is the default engine and is cloud. The real policy is stated in [`ARCHITECTURE.md`](ARCHITECTURE.md) and `AGENTS.md`: synthesis is the cloud exception, Piper and Chatterbox are the offline fallbacks. |
-| [`src/claire/phone/bridge.spec.md`](../src/claire/phone/bridge.spec.md) line 186 | Says `DEFAULT_PORT == 8765`. Its own section 2.1 (line 51) and the code say `8788` ([`bridge.py:203`](../src/claire/phone/bridge.py)). The SSH example at line 200 repeats 8765. |
-| [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md) line 43 and line 123 | Line 43's `warm_up` row and line 123's "two-phase probe" both describe the removed two-phase warm-up. `b484518` replaced it with a single-token chat completion, because the `GET /models` gate always timed out. Line 123 is the explicit "two-phase" statement; line 43 is the API-table description that carries the same stale shape. Neither names the 180/300/60 ceilings that `9e5714f` replaced either. |
-| [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md) line 67 | Gives `llm_provider` a default of `"ollama"`. The code default is `"openai_compatible"` ([`config.py:554`](../src/claire/config.py), also `:862`). |
+* [`src/claire/output/tts.spec.md`](../src/claire/output/tts.spec.md) now opens by naming `piper`,
+  `chatterbox` and `fish` as the three engines, records that `fish` is the shipped default, and says
+  plainly that the cloud path is what a fresh install takes. The old "runs locally / neither backend
+  sends user text or audio to a cloud synthesis service" claim is gone.
+* [`src/claire/phone/bridge.spec.md`](../src/claire/phone/bridge.spec.md) now reads
+  `DEFAULT_PORT == 8788`, matching [`bridge.py:203`](../src/claire/phone/bridge.py); the remaining
+  `8765` mentions are the panel-port explanation, not a stale default.
+* [`src/claire/llm/llm.spec.md`](../src/claire/llm/llm.spec.md)'s `warm_up` row now describes the
+  single-token `OpenAICompatibleBackend` probe with no `GET /models` gate, and its factory table
+  gives `llm_provider` the code default `"openai_compatible"`. The only `"ollama"` default left is
+  the v1 -> v2 migration step, which is what `_migrate_config` does.
 
 Two other candidates reported as drift turned out to be **already correct**:
 
@@ -368,15 +380,23 @@ The city is now whatever `location_city` says — the live config sets
 `"Lisbon"`, so the assistant names a real city — and an empty value falls back
 to `"Location: Unknown"`.
 
-### 6.6 Embeddings do not work; memory search is keyword-only
+### 6.6 Embeddings are still not reachable at runtime
 
-The embedding provider is unset, so it follows the LLM provider (`openai_compatible`, the local
-OmniRoute gateway), whose `/v1/embeddings` answers `model "nomic-embed-text" not found, try pulling
-it first`. Ollama *is* installed and listening on `127.0.0.1:11434`, but it holds only a chat model
-(`gemma-4-26b-heretic:latest`) and no embedding model. Memory search therefore falls back to
-keyword matching. [`docs/CONFIGURATION.md`](CONFIGURATION.md) line 71 documents the intended
-fallback; the fix is either to configure an embedding route or to accept keyword search as the
-state.
+The embedding provider is unset in the live config, so it follows the LLM provider
+(`openai_compatible`, the local OmniRoute gateway), whose `/v1/embeddings` answers
+`model "nomic-embed-text" not found, try pulling it first`. Ollama *is* installed and listening on
+`127.0.0.1:11434`, but it holds only a chat model (`gemma-4-26b-heretic:latest`) and no embedding
+model. Memory search therefore falls back to keyword matching.
+
+The route that fixes this now exists in the code: a native Gemini embeddings provider, selected with
+`embedding_provider: "gemini"`, keyed by `embedding_api_key` or `GEMINI_API_KEY` / `GOOGLE_API_KEY`,
+whose output is pinned to the 768-dim `sqlite-vss` table and FAISS index and is embedded
+asymmetrically (`RETRIEVAL_DOCUMENT` when indexing a memory, `RETRIEVAL_QUERY` when searching, tool
+selection included); `embedding_model` defaults to `gemini-embedding-2` on that path. It is
+documented in [`README.md`](../README.md) and [`docs/CONFIGURATION.md`](CONFIGURATION.md) and
+specified in [`src/claire/llm/gemini.spec.md`](../src/claire/llm/gemini.spec.md). Because the live
+config still leaves the key unset, nothing has changed in practice yet: the fix is either to
+configure that route or to accept keyword search as the state.
 
 ### 6.7 Graceful shutdown is still not graceful
 
@@ -387,11 +407,51 @@ intermittent, so it is not reproducible on demand. [`daemon.py:788`](../src/clai
 using SIGTERM with a 20 s wait then SIGKILL. The risk that matters is the mid-write kill, not the
 delay. Treat as unverified and worth a dedicated investigation.
 
-### 6.8 Mobile/phone defects 3-6 are unverified
+### 6.8 The Android app: on-device results, and three things still open
 
-No Android device or emulator was ever attached during the programme (`adb devices` is empty), so
-the instrumented tests for defects 3-6 have never run. The client source is
-[`android/`](../android). Everything about those defects is unverified by construction.
+The app has now been run on a physical phone — the first time — and the instrumented suite was driven
+against it. Device: a Redmi 15 5G (`25057RN09E`, `spring_eea`, `device:spring`), Android 15 / SDK 35,
+arm64-v8a, 1080x2340 @ 450 dpi, reached over wireless ADB at `100.68.123.69:36077`. The app under
+test is `com.claire.companion`, versionCode 4 / "0.4.0", a **debug** build. The client source is
+[`android/`](../android).
+
+**Instrumented result: 11 executed — 10 passed, 1 skipped, 0 failed**
+(`CameraAndVoiceTest` 7, `CompanionUiTest` 4).
+
+* **Defects 4 and 5 are refuted on-device** (both pass): the shutter clears the gesture area and is
+  large enough to hit, and the rendered location line never recites coordinates —
+  `ClaireState.setLastFix` discards lat/lon and stores only `"±%.0f m"`.
+* **A real defect was found and fixed** (`1305415`). In
+  [`CameraActivity.java`](../android/app/src/main/java/com/claire/companion/CameraActivity.java),
+  `startCamera()`'s catch block called `shutter.setEnabled(false)`. That made `capture()`'s
+  deliberate "the camera had not finished binding — tap again" retry unreachable, because `showLive()`
+  is the only other enable path and a bind failure never reaches it; the owner was stranded on a dead
+  shutter button, which is exactly the reported "photos error out" / "I can't tap it" symptom. The fix
+  keeps the shutter enabled so the retry works. The pre-existing test
+  `theShutterEitherTakesAPhotoOrNamesTheRealError` caught it, and no assertion was weakened.
+
+**Still open — the shutter fix must not be read as having solved the camera problem:**
+
+1. **The intermittent CameraX bind failure itself is not fixed.** Logs show `com.claire.companion`
+   connecting to camera device 0 and dying within about 4 s with
+   `DIED client(s) with PID ... reason: Binder died unexpectedly`. The next step is capturing logcat
+   tags `CameraX` / `Camera2CameraImpl` at the moment of failure.
+2. **Defect 3 is not verified — it skips, which is not a pass.** It is gated by
+   `assumeTrue(!prefs.fishToken().isEmpty())`, and the test device has no Fish key
+   (`fish_token non_empty=False len=0`). It needs a saved Fish Audio key plus internet to
+   `api.fish.audio`.
+3. **Defect 6 has no definition anywhere in the repository.** A repo-wide grep finds only defects 3, 4
+   and 5 labelled, and only inside `CameraActivity` / `CameraAndVoiceTest`-adjacent files. This is a
+   documentation gap to fill, not a defect to test — do not invent one.
+
+**A MIUI/ROM obstacle anyone repeating this will hit.** `connectedDebugAndroidTest` hangs rather than
+fails when the phone is in use: Xiaomi denies an activity launch from the instrumentation process
+while another app is foreground (`ActivityStarterImpl: MIUILOG- Permission Denied Activity`), and UTP
+passes `-e testTimeoutSeconds 31536000`, so a blocked run hangs for a year. The proven workaround is to
+run `adb shell am start -W -n com.claire.companion/.MainActivity` immediately before a launch-based
+test and leave the phone idle and unlocked. `adb install -g` and `pm grant` are both **blocked on this
+ROM** (`INSTALL_GRANT_RUNTIME_PERMISSIONS` / `GRANT_RUNTIME_PERMISSIONS` denied to shell), but the
+owner's five runtime permissions were already granted and survived reinstalls.
 
 ### 6.9 The memory vault has no notes
 
@@ -438,11 +498,12 @@ their sources and specs are gone. The hard rule stands — describe, do not dele
 
 * `README.md` and the prose docs have been cleared of references to the removed tool; do not
   re-report those.
-* Four earlier handoff/status documents remain on disk and are stale or partly superseded:
-  [`STATUS.md`](../STATUS.md) (Wave 0), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and two
-  outside the repository in `/home/mana/Documents/Jarvis/` (`handoff_tmrw.md`,
-  `omniroute-latency-forensics.md`). The last is the most detailed latency evidence available for
-  the shared gateway and is worth reading before touching anything about capacity.
+* Five earlier handoff/status documents remain on disk and are stale or partly superseded:
+  [`STATUS.md`](../STATUS.md) (Wave 0), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and
+  three outside the repository in `/home/mana/Documents/Jarvis/` (`handoff_tmrw.md`,
+  `OWNER_ACTIONS_2026-10-07.md`, `omniroute-latency-forensics.md`). Of these,
+  `omniroute-latency-forensics.md` is the most detailed latency evidence available for the shared
+  gateway and is worth reading before touching anything about capacity.
 
 ---
 
@@ -468,5 +529,7 @@ their sources and specs are gone. The hard rule stands — describe, do not dele
   `MemoryCurrent`. Claire was OOM-killed at least once during this programme. Before starting
   anything heavy, check `free -m` and expect contention; assert nothing about latency on a loaded
   machine without taking an interleaved A/B baseline.
-* **A green gate is not evidence.** Run the gate, then run the hidden files with `-m ""` before
-  reporting success (section 2).
+* **A green gate is not the whole story.** The gate runs `unit` only; the deliberately deselected
+  `integration`, `e2e` and `performance` tests still run outside it, so use `-m ""` (section 2) when a
+  change touches those paths. The unmarked-test trap that used to hide tests *inside* the gate is
+  closed and guarded, so the gate's own count is trustworthy.

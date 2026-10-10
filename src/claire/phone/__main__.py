@@ -1,10 +1,12 @@
 """Run the phone bridge, and look after the token it authenticates with.
 
-Nothing in the project started :mod:`claire.phone.bridge`: ``claire.daemon``
-does not reference it and no other module imports it, so the bridge was
-reachable only from a Python REPL.  This module is the entry point that was
-missing, and it is deliberately the smallest one that makes the bridge usable
-from a terminal:
+``claire.daemon`` starts the bridge in-process: it imports
+:class:`~claire.phone.bridge.PhoneBridge` and
+:func:`~claire.phone.bridge.create_server`, calls ``_start_phone_bridge``, and
+injects the running voice loop's ``_phone_utterance_sink``, so a phone utterance
+reaches the same conversation as speech.  This module is the separate, terminal
+entry point -- the smallest one that makes the bridge usable outside the daemon,
+and the way to manage the token it authenticates with:
 
 ``python -m claire.phone serve``
     Bind the bridge and serve until interrupted.  Loopback by default, exactly

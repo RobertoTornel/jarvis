@@ -1,14 +1,15 @@
 # The phone client: an always-listening Android app for the phone bridge
 
-Date: 2026-10-06. This note documents the Android client that now lives in
+This note documents the Android client that now lives in
 `android/`, the two decisions that had to be made before a line of it could be
 written (which port, which protocol), and — in section 8 — exactly what was and
 was not verified, including the one thing that is still blocked.
 
-It supersedes two statements in `docs/PHONE_BRIDGE_LIVE_TEST.md`, which is older
-and was correct when written: the bridge no longer listens on **8765** (see
-§3), and "there is no phone app in this repo" is no longer true (§2). That file
-is not edited here because it is another writer's document.
+`docs/PHONE_BRIDGE_LIVE_TEST.md` is the companion record, and complements this
+one: it is the **bridge-only** live test, driven from the handset over `adb
+shell` before this app existed, and it is kept as the record of what was proven
+about the bridge without one. This note is the app's own record — what the
+Android client is, and what was observed on the phone (§8, §8.1).
 
 ## 1. What the app is for
 
@@ -25,8 +26,10 @@ listening notification.
 
 `android/` is a standalone Gradle project (`com.claire.companion`, versionCode 4,
 versionName 0.4.0, minSdk 24, targetSdk 35, AGP 8.5.2, Gradle 8.10.2, Java 17
-source level, built with JDK 21). Nineteen app classes plus three tools that run
-on the laptop, and an instrumentation test class (§8.1, §11):
+source level, built with JDK 21). Twenty app classes — every `.java` file under
+`app/src/main/java/com/claire/companion/` — plus four tools that run on the
+laptop, and two instrumentation test classes — `CameraAndVoiceTest` (7 tests)
+and `CompanionUiTest` (4), eleven in all (§8.1, §11):
 
 | Class | What it is |
 | --- | --- |
@@ -34,6 +37,7 @@ on the laptop, and an instrumentation test class (§8.1, §11):
 | `AudioSegmenter.java` | The energy VAD: per-frame RMS and zero-crossing rate, an adaptive noise floor, a pre-roll ring, and a hangover. Decides where the owner's sentences start and stop. Pure Java, also laptop-runnable. |
 | `ClaireClient.java` | Every HTTP call, on `HttpURLConnection`. One credential, one way of presenting it. `Answer` carries either a status and a body or a transport failure; nothing throws for an HTTP answer. |
 | `VoiceService.java` | The foreground service: one service carrying `microphone|location|camera`. Holds the microphone open, segments, uploads, polls for Claire's replies, runs the always-on location stream and the periodic camera, retries across a network drop, watches battery and audio focus, and arms the watchdog. |
+| `FishTts.java` | Claire's voice, called from the phone and played while it is still arriving: the Fish Audio TTS request (WAV, not MP3) and streaming playback through `AudioTrack` in `MODE_STREAM`, so no player ever has to trust the placeholder RIFF length. The token is used in one header and never logged; the settings screen shows a fingerprint, never the key. |
 | `ClaireState.java` | What this phone is doing right now: `Link`/`Mic`/`Loc`/`Cam` enums, a singleton, volatile fields, listeners on the main thread. The service writes it, the screen only reads it (§12.1). |
 | `Survival.java` | The two MIUI exemptions and the watchdog: battery exemption, `SYSTEM_ALERT_WINDOW`, `canRestartInBackground()` (which is exactly the overlay permission), and the inexact 15-minute repeating alarm. |
 | `Notifier.java` | Three channels (silent status, real alerts, camera) and the notification actions Photo / Pause / Resume / Stop, plus the nudge the watchdog posts when the platform refuses a restart. |
@@ -45,6 +49,7 @@ on the laptop, and an instrumentation test class (§8.1, §11):
 | `SettingsActivity.java` | Address, port, token, photo question, the always-on switches (continuous location + interval, autonomous photos + period, watchdog), the permission rows, the two exemption rows, and four behaviour switches. |
 | `ClairePrefs.java` | Where those live. |
 | `Conversation.java` / `ConversationAdapter.java` | The conversation as the phone saw it: an append-only capped list mirrored to `files/conversation.jsonl`, and its `RecyclerView` adapter with the long-press copy. |
+| `Diag.java` | The app's own one-line lifecycle diary, under one tag (`ClaireLife`): `note()` and `failed()` lines for the service starting and stopping, the network appearing and disappearing, and the watchdog's decision, so `adb logcat -s ClaireLife` is the whole story and the screen messages stay checkable after the fact. Deliberately carries nothing the owner said, no token and no coordinate. |
 | `BootReceiver.java` | Posts a notification after a restart. Deliberately does not start the service (§6). |
 | `tools/WireSelfTest.java`, `tools/SegmenterSelfTest.java` | Laptop-runnable checks for the two pure-Java classes. |
 | `tools/PhoneE2E.java` | The end-to-end client: drives the app's own `ClaireWire` against a live bridge (§5). |
@@ -278,9 +283,16 @@ the reason:
    while reporting a missing alert is worse, and the same words are already in
    the conversation view.
 
-Only the `microphone` foreground-service type is declared. Camera and location
-need no service type here: both are used from an activity that the owner opened,
-or from a notification action that starts one.
+All three foreground-service types are declared on the one service:
+`android:foregroundServiceType="microphone|location|camera"` on `.VoiceService`
+in `app/src/main/AndroidManifest.xml`. That is a requirement, not decoration: a
+foreground service that uses the microphone, the camera or location must declare
+the matching type or the platform throws at `startForeground()` time. Declaring
+all three is safe because the type mask passed to `startForeground()` is built
+conditionally — `VoiceService.types()` sets a bit only when that runtime
+permission is actually granted, so a declared-but-ungranted type never becomes a
+`SecurityException`. §8.1 shows the result on the handset:
+`types=0x000000C8`, all three bits at once.
 
 Audio focus is handled in **both directions, and not by grabbing it**. This is an
 always-on listener: taking `AUDIOFOCUS_GAIN` would stop the owner's music so
@@ -310,11 +322,15 @@ speaker identification, which is a different piece of work.
 
 ## 8. What was observed on the phone, and what was not
 
-This section was rewritten on 2026-10-07 for versionCode 4 / versionName 0.4.0.
-The earlier text said "the APK has never run on a phone"; that stopped being true
-when the phone became reachable over wireless `adb` (tailnet, `adb connect
-100.68.123.69:37637`). What follows is only what was seen, with the command that
-showed it, and §8.2 lists everything still unproven.
+The APK has run on the phone, versionCode 4 / versionName 0.4.0, and the phone
+was reachable over wireless `adb` on the tailnet with `adb connect
+100.68.123.69:36077`. Read that address — host and port — off the phone's own
+**Settings → Developer options → Wireless debugging** screen:
+`100.68.123.69:36077` is the pair that was verified working, but the port is
+assigned by the phone, and both it and the IP can change between sessions and
+reboots. If the connection is refused, re-read them from that screen rather than
+assuming the value written here. What follows is only what was seen, with the
+command that showed it, and §8.2 lists everything still unproven.
 
 ### 8.1 Observed
 
@@ -467,14 +483,10 @@ showed it, and §8.2 lists everything still unproven.
   `/reply` is drain-once, so the phone is the only reader.
 * The evidence for a photo is a new file in the bridge's `photo_dir`; for a
   location, the `location` key of `/health`.
-* **This tree is written by more than one person at a time.** As of
-  `2026-10-07 01:27` a second writer was mid-way through streaming Fish Audio TTS
-  in `FishTts.java` and had touched `VoiceService.java`, `ClairePrefs.java` and
-  `ClaireState.java`, so the APK that builds from the working tree is *not* the
-  one section 8 observed on the phone (that was sha256 `f7b5445b…`, 7,017,395
-  bytes; the later rebuild is sha256 `8f90f7dc…`, 7,148,623 bytes, with their
-  unfinished work in it). Rebuild and re-verify after the other writer lands, and
-  do not quote an APK hash without checking which edits it contains.
+* **This tree is written by more than one person at a time.** The APK that
+  builds from the working tree may not be the one section 8 observed on the
+  phone, so rebuild and re-verify, and do not quote an APK hash without checking
+  which edits it contains.
 
 
 ## 9. Security, stated plainly
@@ -504,7 +516,7 @@ showed it, and §8.2 lists everything still unproven.
 ## 10. Reproducing all of it
 
 ```sh
-# the gate (should be green; 3405 passed, 1 skipped at the time of writing)
+# the gate (should be green: 5364 passed, 2 skipped, 25 deselected, 0 failed)
 cd /home/mana/Documents/jarvis_cloud
 .venv/bin/python -m pytest tests/ -m unit -q -p no:cacheprovider
 
@@ -546,19 +558,23 @@ curl -sSLo /tmp/json.jar https://repo1.maven.org/maven2/org/json/json/20240303/j
 ## 11. Files added and changed
 
 Added under `android/`: the Gradle project (`build.gradle`, `settings.gradle`,
-`gradle.properties`, `local.properties`, `gradlew`, the wrapper, `.gitignore`),
+`gradle.properties`, `gradlew`, `gradlew.bat`, `gradle/wrapper/*`, `.gitignore` —
+`local.properties` is machine-local and deliberately untracked, per `.gitignore`),
 `app/build.gradle`, `app/proguard-rules.pro`, `app/src/main/AndroidManifest.xml`,
-the app classes and three tools listed in §2, and the resources
+the app classes and four tools listed in §2, and the resources
 (`values/{strings,colors,themes,arrays}.xml`, `drawable/*` — including the
 notification, state and action icons — `layout/{activity_main,activity_settings,
 activity_camera,item_conversation,row_setting_action}.xml`,
 `menu/main.xml`, `xml/data_extraction_rules.xml`).
 
 Added in 0.4.0 (§12): `ClaireState.java`, `Survival.java`, `Notifier.java`,
-`CameraCapture.java`, `ServiceActionReceiver.java`, `WatchdogReceiver.java`;
+`CameraCapture.java`, `ServiceActionReceiver.java`, `WatchdogReceiver.java`,
+`FishTts.java`, `Diag.java`; and the two instrumentation test classes,
+`android/app/src/androidTest/java/com/claire/companion/CameraAndVoiceTest.java`
+(7 tests) and
 `android/app/src/androidTest/java/com/claire/companion/CompanionUiTest.java`
-(instrumentation tests — see §8.2 item 6 before running anything Gradle-built on
-the phone). The 0.4.0 layouts are Material 3 across all three screens, and
+(4) — see §8.2 item 6 before running anything Gradle-built on the phone. The
+0.4.0 layouts are Material 3 across all three screens, and
 `ConversationAdapter` is a `RecyclerView.Adapter` rather than the `BaseAdapter`
 of 0.3.0.
 

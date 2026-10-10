@@ -1,33 +1,48 @@
 # Phone bridge: live test from the handset
 
-Date: 2026-10-06. Owner's request: "install and test the phone app".
+Owner's request: "install and test the phone app".
 
-Scope of this note: what the phone bridge actually is, whether a phone-side app
-exists, and what happened when the bridge was exercised over Tailscale from the
-attached handset (`redmi-15-5g` = `100.68.123.69`) rather than from the laptop.
+Scope of this note: what the phone bridge actually is, and what happened when
+the bridge was exercised over Tailscale from the attached handset
+(`redmi-15-5g` = `100.68.123.69`) rather than from the laptop. It is the record
+of the **bridge-only** test — driven with `adb shell` and the phone's system
+`curl` before this repository had a phone client. The Android app now exists
+here and has been run on a device; its own on-device results live in
+`docs/PHONE_CLIENT.md` (§8, §8.1) and `docs/HANDOVER.md` (§6.8), not in this
+note.
 
-## 1. There is no phone app in this repo, and none was installed
+## 1. The phone app exists here now; this note is the bridge-only test
 
-* `src/claire/phone/` contains three files: `bridge.py`, `bridge.spec.md`,
-  `__init__.py`. The bridge is an HTTP **server that runs on the laptop**
-  (`http.server`, HMAC-free bearer auth, loopback by default).
-* No APK, no `AndroidManifest.xml`, no Gradle project and no `.java`/`.kt`
-  source exists anywhere under `/home/mana/Documents/jarvis_cloud`.
-* The phone itself has no Claire client installed: `adb shell pm list packages`
-  matches `claire`, `companion` and `jarvis` only for Android's own
-  `com.android.companiondevicemanager`. **Termux is not installed either**
-  (`com.termux` is absent).
-* An Android project *does* exist at `/home/mana/Documents/deepseek/Claire/android`
-  (with a built debug APK). That directory is outside this repo and out of
-  scope, so nothing there was read for interface matching beyond noting it
-  exists; it is a **different** project and its wire format is not known to
-  match `bridge.spec.md`.
-
-So "the phone app" does not exist as an installable thing. What the phone side
-*can* be today, and what was used here, is the Android 15 built-in
-`/system/bin/curl` (curl 8.8.0-DEV) driven over `adb shell`. A real client would
-have to be one of: a small app built from `bridge.spec.md`, a Termux script, or
-a browser page (the GET endpoints are browser-reachable; the POSTs need fetch).
+* The repository contains a full Android client at [`android/`](../android): a
+  Gradle project (AGP 8.5.2, wrapper Gradle 8.10.2) with a tracked
+  `android/app/src/main/AndroidManifest.xml` and **26 tracked `.java`/`.kt`
+  files**.
+* Debug APKs have been built under `android/app/build/outputs/apk/`; those are
+  build outputs and deliberately untracked (`.gitignore` ignores `build/`).
+* The app `com.claire.companion`, versionCode 4 / "0.4.0", a **debug** build,
+  has been installed and run on a real phone — a Redmi 15 5G, Android 15 /
+  SDK 35, reached over wireless ADB — and **11 instrumented tests ran there: 10
+  passed, 1 skipped, 0 failed**. That run caught and fixed a real defect: a dead
+  camera shutter after a bind failure (commit `1305415`). Those on-device results
+  are recorded in [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L322) §8 and §8.1,
+  and in [`docs/HANDOVER.md`](HANDOVER.md#L410) §6.8.
+* What this note records is narrower, and still useful: the **bridge itself** —
+  its interface, and its behaviour when exercised from the handset *before an
+  app existed*. The bridge is an HTTP **server that runs on the laptop**
+  (`http.server`, HMAC-free bearer auth, loopback by default), and
+  `src/claire/phone/` contains four files: `bridge.py`, `bridge.spec.md`,
+  `__init__.py` and `__main__.py`.
+* At the time of this test the phone had no Claire client installed: `adb shell
+  pm list packages` matched `claire`, `companion` and `jarvis` only for
+  Android's own `com.android.companiondevicemanager`, and `com.termux` was
+  absent. That is why the phone side here is the Android 15 built-in
+  `/system/bin/curl` (curl 8.8.0-DEV) driven over `adb shell`; the app was
+  installed only later.
+* An earlier Android project of the same application id lives outside this
+  repository at `/home/mana/Documents/deepseek/Claire/android`
+  (`com.claire.companion`, versionCode 2 / "0.2.0"); it was noted at the time
+  and not read for interface matching. The client that now exists is this
+  repository's [`android/`](../android).
 
 ## 2. The bridge's real interface
 
@@ -40,23 +55,32 @@ a browser page (the GET endpoints are browser-reachable; the POSTs need fetch).
 | token | auto-minted (`secrets.token_urlsafe(32)`) into the 0600 key store under `PHONE_BRIDGE_TOKEN`; reported only masked |
 | key store | `~/.config/claire/keys.json`, override with `$CLAIRE_KEY_STORE` |
 
-Endpoints: `POST /text` (`{"text":...}` → 202), `POST /see` (raw
+Endpoints: `POST /text` (`{"text":...}` → 202), `POST /say` (`{"text":...}` for
+the phone to speak, or `{"command":"photo"|"location",...}` → 200 `queued`),
+`POST /transcribe` (raw WAV audio → 200 `text`, the endpoint the installed app's
+always-open microphone posts to), `POST /see` (raw
 `image/jpeg|png|webp` + optional `?question=` or `X-Claire-Question`, or JSON
 `{"image_base64":...}` → 200 with `description`, or a named not-seen failure),
 `POST /loc` (`{"latitude","longitude","accuracy"}` → 200 `recorded`),
 `GET /reply` (drain-once), `GET /health` (reachability + masked token handle).
+The shipped 0.2 client's compatibility spellings `POST /location` and
+`GET /where` resolve to `/loc` and `/reply`.
 
-`/text` needs an utterance **sink**. Nothing in the repo wires one:
-`claire.daemon` does not reference the phone bridge at all, and no module
-outside `src/claire/phone/` imports it. Until a sink exists, `/text` answers a
-named 503. For a transport test the bridge was started with `--echo`, which
-returns each received utterance through `GET /reply`; that is a diagnostic, not
-the production wiring.
+`/text` and `/transcribe` need an utterance **sink**. At the time of this test
+nothing in the repo wired one: `claire.daemon` did not reference the phone
+bridge, and no module outside `src/claire/phone/` imported it. With no sink the
+bridge answers a named 503, which is why this transport test was started with
+`--echo`, returning each received utterance through `GET /reply`. The daemon now
+starts the bridge itself and injects the production sink (`_start_phone_bridge`
+→ `_phone_utterance_sink` in `src/claire/daemon.py`), so an utterance from the
+installed app reaches the same conversation as speech; `--echo` remains a
+diagnostic.
 
 ## 3. What was missing, and what was added
 
-Nothing started the bridge. There was no console script, no `__main__`, and no
-daemon hook, so the module was reachable only from a REPL. Added:
+At that point nothing started the bridge. There was no console script, no
+`__main__`, and no daemon hook, so the module was reachable only from a REPL.
+Added:
 
 * `src/claire/phone/__main__.py` — `python -m claire.phone serve` (with
   `--host`, `--port`, `--allow-public-bind`, `--echo`, `--photo-dir`,
@@ -69,6 +93,9 @@ daemon hook, so the module was reachable only from a REPL. Added:
   advice printed `unrecognized arguments: keys`. They now name
   `python -m claire.phone keys ...`, which exists. `bridge.spec.md` was updated
   to match.
+
+The daemon hook came later, with the app: `_start_phone_bridge` now starts the
+bridge inside `claire.daemon`, wired to the running voice loop (see §2 and §5).
 
 ### The real bug the live test found
 
@@ -148,13 +175,16 @@ Two things worth recording honestly:
   byte-for-byte (`43d4d575cdd55046206ab3093f57c299`), so the transport is
   lossless.
 
-## 5. What still does not exist
+## 5. What was missing at the time, and what still is
 
-* **A phone-side client.** Nothing installable; testing used `adb shell` +
-  the Android system `curl`. Termux was not installed and was not installed
-  here.
-* **A production utterance sink.** `POST /text` works only because the bridge
-  was started with `--echo`. The daemon does not wire the bridge, so in normal
-  service the owner's words reach the bridge and then a named 503.
-* **TLS.** The bridge is plain HTTP by design and says so; it is safe over
+* **A phone-side client.** There was none: testing used `adb shell` + the
+  Android system `curl`, and Termux was not installed. The client now exists in
+  this repository at [`android/`](../android), and its on-device results are in
+  [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L322) §8 and §8.1.
+* **A production utterance sink.** At the time `POST /text` worked only because
+  the bridge was started with `--echo`. The daemon now starts the bridge and
+  injects the production sink (`_start_phone_bridge` → `_phone_utterance_sink`
+  in `src/claire/daemon.py`), so an utterance from the installed app reaches the
+  same conversation as speech rather than a named 503.
+* **TLS.** Still plain HTTP by design, and the bridge says so; it is safe over
   Tailscale/WireGuard, not over an untrusted LAN.

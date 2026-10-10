@@ -127,7 +127,11 @@ The daemon warms the recogniser at startup with one dummy transcribe so the mode
 
 ## Documentation drift
 
-1. **The daemon does not wire the bridge.** `src/claire/phone/__main__.py:3-4` says "`claire.daemon` does not reference it and no other module imports it, so the bridge was reachable only from a Python REPL." The code contradicts this: `src/claire/daemon.py:1275` defines `_start_phone_bridge`, `:1319` imports `PhoneBridge`/`create_server`, and `:1581` calls it after the listener starts. `docs/PHONE_BRIDGE_LIVE_TEST.md:50` and `:157` repeat the same stale claim ("`claire.daemon` does not reference the phone bridge at all"; "The daemon does not wire the bridge").
-2. **"There is no phone app in this repo."** `docs/PHONE_BRIDGE_LIVE_TEST.md:9` and `:14` say no APK, `AndroidManifest.xml`, Gradle project or `.java`/`.kt` source exists anywhere under this repository. The `android/` directory is tracked here (61 files, including `android/app/src/main/AndroidManifest.xml` and built APKs under `android/app/build/outputs/apk/`). `docs/PHONE_CLIENT.md:1-13` states plainly that it supersedes those statements, but the older file still carries them. `docs/PHONE_BRIDGE_LIVE_TEST.md:11` also says `src/claire/phone/` contains three files; it contains four (`bridge.py`, `bridge.spec.md`, `__init__.py`, `__main__.py`).
-3. **`serve()` names a non-existent entry point.** `src/claire/phone/bridge.py:2534` calls itself "the blocking, real-process entry point (`python -m claire.phone.bridge`)", but `bridge.py` has no `if __name__ == "__main__"` block, so that invocation defines the module and exits. The real entry point is `python -m claire.phone serve` (`src/claire/phone/__main__.py:9`, implemented at `:192`).
-4. **Spec ownership list is incomplete.** `src/claire/phone/bridge.spec.md:8-10` lists the owned files and omits `src/claire/phone/__main__.py`, which the spec's own section 2.4 (`:96-125`) relies on as the way the bridge runs as its own process.
+* `docs/PHONE_CLIENT.md:8-11` says it supersedes two statements in
+  `docs/PHONE_BRIDGE_LIVE_TEST.md` -- that the bridge listens on **8765**, and
+  that "there is no phone app in this repo". Neither statement is in that note
+  any more: it records the four files under `src/claire/phone/`, describes the
+  tracked `android/` project, and defers on-device results to
+  `docs/PHONE_CLIENT.md` §8 and `docs/HANDOVER.md` §6.8. The supersede paragraph,
+  and its "that file is not edited here" aside, describe a version of the note
+  that no longer exists.
