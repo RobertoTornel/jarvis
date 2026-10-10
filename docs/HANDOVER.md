@@ -498,11 +498,12 @@ their sources and specs are gone. The hard rule stands — describe, do not dele
 
 * `README.md` and the prose docs have been cleared of references to the removed tool; do not
   re-report those.
-* Four earlier handoff/status documents remain on disk and are stale or partly superseded:
-  [`STATUS.md`](../STATUS.md) (Wave 0), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and two
-  outside the repository in `/home/mana/Documents/Jarvis/` (`handoff_tmrw.md`,
-  `omniroute-latency-forensics.md`). The last is the most detailed latency evidence available for
-  the shared gateway and is worth reading before touching anything about capacity.
+* Five earlier handoff/status documents remain on disk and are stale or partly superseded:
+  [`STATUS.md`](../STATUS.md) (Wave 0), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and
+  three outside the repository in `/home/mana/Documents/Jarvis/` (`handoff_tmrw.md`,
+  `OWNER_ACTIONS_2026-10-07.md`, `omniroute-latency-forensics.md`). Of these,
+  `omniroute-latency-forensics.md` is the most detailed latency evidence available for the shared
+  gateway and is worth reading before touching anything about capacity.
 
 ---
 

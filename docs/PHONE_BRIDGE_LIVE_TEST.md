@@ -1,6 +1,6 @@
 # Phone bridge: live test from the handset
 
-Date: 2026-10-06. Owner's request: "install and test the phone app".
+Owner's request: "install and test the phone app".
 
 Scope of this note: what the phone bridge actually is, whether a phone-side app
 exists, and what happened when the bridge was exercised over Tailscale from the
