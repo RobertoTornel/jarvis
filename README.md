@@ -445,13 +445,15 @@ cannot know today's temperature anywhere.
 
 ### Location
 
-`claire.utils.location` resolves the user's location from an IP address using a
-**local MaxMind GeoLite2 database**. Keys: `location_enabled`,
-`location_auto_detect`, `location_ip_address`,
-`location_cgnat_resolve_public_ip` and `location_cache_minutes` (default 60).
-Auto-detection may query the local router over UPnP; the only external query is
-a single opt-in OpenDNS DNS lookup for CGNAT addresses. Without the database the
-daemon prints a note and location features stay off.
+Location is configuration-only. `claire.utils.location` reads the single city
+key `location_city` (with `location_enabled` as the master toggle) — the city
+the owner names in `config.json`, e.g. `"Lisbon"`, which the daemon prints as
+`📍 Location: Lisbon`. There is no IP detection, no router/UPnP probe, no MaxMind
+GeoLite2 database and no external lookup of any kind: the machine never asks the
+network where it is. An empty `location_city` yields `Location: Unknown`, and
+turning off `location_enabled` yields `Location: Disabled`. A city name is not
+an IANA timezone, so the ambient time context falls back to the OS local
+timezone (the `getTime` tool still resolves a city the user names explicitly).
 
 ---
 
@@ -545,7 +547,8 @@ application with:
 - an **auto-generated settings window** built from config metadata (only
   non-default values are written, unknown keys are preserved);
 - a **first-run setup wizard** that doesn't configure everything, only what
-  needs a user decision (provider, models, recogniser, location);
+  needs a user decision (provider, models, recogniser, MCP servers, search
+  providers);
 - a **memory viewer** (Flask) for diary entries, knowledge-graph nodes and meals;
 - an end-of-session **diary dialog** and an **update checker**.
 
@@ -615,8 +618,8 @@ keys by hand. The knobs most worth knowing:
 - **Reply behaviour**: `tool_selection_strategy`, `agentic_max_turns`,
   `tool_carryover_max_turns`, `low_power_mode`,
   `transcript_buffer_duration_sec`.
-- **Location**: `location_enabled`, `location_auto_detect`,
-  `location_ip_address`, `location_cache_minutes`.
+- **Location**: `location_enabled`, `location_city` (the only location source;
+  there is no IP detection or GeoLite2 database).
 - **MCP**: `mcps` (empty by default).
 
 ### Secrets

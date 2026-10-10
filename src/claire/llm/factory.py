@@ -53,8 +53,13 @@ _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _GEMINI_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 
 #: Accepted spellings of the Gemini provider.  ``google`` is the spelling
-#: people reach for when they think of the vendor rather than the product.
-_GEMINI_ALIASES = frozenset({GEMINI_PROVIDER, "google", "google_gemini"})
+#: people reach for when they think of the vendor rather than the product;
+#: ``claire.config`` normalises ``embedding_provider`` to ``"gemini"`` and
+#: rewrites ``"google"`` to it, but this factory is also called with raw
+#: settings objects, so it keeps that spelling.  ``"google_gemini"`` is not
+#: here: config's allow-list rejects it before it can reach this alias set,
+#: and nothing else names it.
+_GEMINI_ALIASES = frozenset({GEMINI_PROVIDER, "google"})
 
 
 def _resolve_provider(value: Any) -> str:

@@ -33,7 +33,7 @@ them. The MCP boot step is documented in [`mcp.md`](mcp.md).
 Plainly: **the systemd unit starts the daemon only.** The web panel
 (`python -m claire.panel.server`) and the desktop app
 (`scripts/run_desktop_app.sh`) are separate processes and are not in the unit.
-The phone bridge is started by the daemon itself (`daemon.py:1581`), which is why
+The phone bridge is started by the daemon itself (`daemon.py:1605`), which is why
 `start.sh` must not start it too.
 
 ## Entry points
@@ -43,7 +43,7 @@ The phone bridge is started by the daemon itself (`daemon.py:1581`), which is wh
 | `claire` (console script) | `pyproject.toml:29` → `claire.cli:main` | Installed by `pip install -e .` or a wheel; in a bare checkout the unit does not use it. |
 | `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:77) and what `start.sh` spawns (`-m claire`). |
 | `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py:2515`). |
-| `python -m claire.daemon` | `src/claire/daemon.py:1786`–`:1789` | Reads `--smoke-test` straight from `sys.argv`. |
+| `python -m claire.daemon` | `src/claire/daemon.py:1810`–`:1812` | Reads `--smoke-test` straight from `sys.argv`. |
 | `python -m claire.panel.server` | `src/claire/panel/server.py:4114` (`main`) | The web panel; not part of the unit. |
 | `python -m claire.platform.service --self-check` | `src/claire/platform/service.py:1249` (`main`), `--self-check` at `:1217` | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
 
@@ -51,7 +51,7 @@ The phone bridge is started by the daemon itself (`daemon.py:1581`), which is wh
 (`cli.py:24`–`:28`), then hands off to `daemon.main(smoke_test=...)`
 (`cli.py:49`–`:51`). `--smoke-test` initialises every subsystem, prints
 `SMOKE_TEST_INIT_OK`, tears the subsystems down and returns without entering the
-loop (`daemon.py:1583`–`:1622`).
+loop (`daemon.py:1607`–`:1646`).
 
 ## Key artifacts and code anchors
 
@@ -231,26 +231,26 @@ the sdist file list (legacy default first, then `MANIFEST.in`) to assert the
    `$LOG_DIR/daemon.log` (`_spawn`, `start.sh:349`–`:364`).
 3. `python -m claire` → `__main__.py:3` → `cli.main` → `daemon.main`
    (`cli.py:49`–`:51`).
-4. In `daemon.main` (`daemon.py:1386`): reset the stop flag (`:1398`), install
-   signal handlers (`:1401`, handler at `:783`–`:794`), `load_settings()`
-   (`:1403`), open the `Database` (`:1404`).
-5. MCP preflight discovery (`:1428`–`:1458`), then `DialogueMemory`
-   (`:1462`–`:1465`), warm-profile graph listener wiring (`:1468`–`:1520`),
+4. In `daemon.main` (`daemon.py:1409`): reset the stop flag (`:1421`), install
+   signal handlers (`:1424`, handler at `:806`–`:815`), `load_settings()`
+   (`:1426`), open the `Database` (`:1427`).
+5. MCP preflight discovery (`:1451`–`:1481`), then `DialogueMemory`
+   (`:1485`–`:1488`), warm-profile graph listener wiring (`:1491`–`:1543`),
    legacy graph migration (`:1546`–`:1556`), location (`:1558`–`:1570`).
-6. TTS (`:1563`–`:1567`), the voice listener thread (`:1571`–`:1576`), then the
-   phone bridge (`:1581`).
+6. TTS (`:1579`–`:1583`), the voice listener thread (`:1596`–`:1600`), then the
+   phone bridge (`:1602`–`:1605`).
 7. If `smoke_test`, print `SMOKE_TEST_INIT_OK`, stop the pieces and return
-   (`:1583`–`:1622`).
-8. Otherwise start the voice-feedback worker (`:1624`) and, when the platform or
-   `CLAIRE_STDIN_IPC=1` calls for it, the stdin monitor (`:1630`–`:1666`,
-   started at `:1674`–`:1683`), then enter the main loop (`:1685`–`:1703`): a 1 s
+   (`:1607`–`:1646`).
+8. Otherwise start the voice-feedback worker (`:1648`) and, when the platform or
+   `CLAIRE_STDIN_IPC=1` calls for it, the stdin monitor (`:1663`–`:1690`,
+   started at `:1705`–`:1707`), then enter the main loop (`:1711`–`:1726`): a 1 s
    tick that runs the periodic diary update under the single-writer chat lock.
    After the loop the voice thread is kept alive until it exits
-   (`:1704`–`:1712`).
+   (`:1728`–`:1736`).
 9. On `KeyboardInterrupt` or stop request, the `finally` block
-   (`daemon.py:1716`) stops the feedback worker (`:1717`), the voice thread and
-   TTS, calls `shutdown_runtime()` for MCP (`:1763`–`:1764`), closes the
-   database, and runs a final diary update (`:1754`).
+   (`daemon.py:1740`) stops the feedback worker (`:1741`), the voice thread and
+   TTS, calls `shutdown_runtime()` for MCP (`:1786`–`:1788`), closes the
+   database, and runs a final diary update (`:1777`).
 
 ### systemd path
 
@@ -263,7 +263,7 @@ then follows the same boot order as above. Journald captures stdout/stderr.
 ### Shutdown signal handling
 
 `_install_signal_handlers` maps `SIGINT`, `SIGTERM` and `SIGBREAK` to the same
-`KeyboardInterrupt`-raising handler (`daemon.py:783`–`:794`), which is why the
+`KeyboardInterrupt`-raising handler (`daemon.py:806`–`:815`), which is why the
 unit's `SIGINT` and `start.sh`'s `SIGTERM` both reach the same cleanup path.
 
 ## Configuration and environment
@@ -272,33 +272,33 @@ unit's `SIGINT` and `start.sh`'s `SIGTERM` both reach the same cleanup path.
 
 | What | Path | Override |
 |---|---|---|
-| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH` (`config.py:849`–`:850`), `XDG_CONFIG_HOME` (`:343`) |
-| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:808`–`:817`, `service.py:404`) |
-| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:556`, `_default_db_path` at `:67`) |
+| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH` (`config.py:825`–`:826`), `XDG_CONFIG_HOME` (`:333`) |
+| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:784`–`:793`, `service.py:404`) |
+| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:546`, `_default_db_path` at `:72`) |
 
 `load_settings()` merges `config.json` over `get_default_config()`
-(`config.py:857`–`:858`, `:865`–`:866`). Config keys that change deployment behaviour
-include `db_path` (default from `config.py:556`), `voice_debug` (`:870`, env
+(`config.py:841`–`:842`). Config keys that change deployment behaviour
+include `db_path` (default from `config.py:546`), `voice_debug` (`:846`, env
 `CLAIRE_VOICE_DEBUG`), `llm_base_url` (defaults to
-`http://127.0.0.1:20129/v1`, `config.py:47`/`:910`), `llm_chat_model`
-(`config.py:917`), `tts_engine` (default `"fish"`, `:631`), `stt_engine`
-(default `"parakeet"`, `:690`), `wake_word` (default `"claire"`, `:665`) and
-`mcps` (`:795`).
+`http://127.0.0.1:20129/v1`, `config.py:47`/`:885`), `llm_chat_model`
+(`config.py:898`–`:904`), `tts_engine` (default `"fish"`, `:615`), `stt_engine`
+(default `"parakeet"`, `:673`), `wake_word` (default `"claire"`, `:649`) and
+`mcps` (`:771`).
 
 ### Environment variables the code reads
 
-- `CLAIRE_CONFIG_PATH` — config file location (`config.py:849`).
-- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:808`–`:817`).
-- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:870`).
+- `CLAIRE_CONFIG_PATH` — config file location (`config.py:825`).
+- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:784`–`:793`).
+- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:846`).
 - `CLAIRE_PHONE_BRIDGE` — `0`/`false`/`no` disables the phone bridge
-  (`daemon.py:1295`).
+  (`daemon.py:1318`).
 - `OMNIROUTE_API_KEY` — the LLM key, read from the environment; never stored in
-  `config.json` (`config.py:47`–`:48`, `:915`).
+  `config.json` (`config.py:47`–`:48`, `:890`).
 - `CLAIRE_KEY_STORE`, `CLAIRE_VAULT_DIR`, `CLAIRE_BACKUP_ROOT`,
   `CLAIRE_SCHEDULE_PATH`, `CLAIRE_WHISPER_BACKEND` — feature-specific path and
   backend overrides read elsewhere in `config.py`.
 - `CLAIRE_STDIN_IPC` — tells the daemon it owns stdin and should run the stdin
-  monitor (`daemon.py:1674`–`:1680`).
+  monitor (`daemon.py:1698`–`:1703`).
 
 ### Environment variables `start.sh` honours
 
@@ -338,7 +338,7 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
   in `start.sh` (`:902`–`:910`), spawn it with `_spawn` (`:349`) into
   `$STATE_DIR/run/*.pid` and `$LOG_DIR/*.log`, and teach `command_status`
   (`:649`) about it. Starting a component from inside the daemon is the existing
-  alternative — that is how the phone bridge is wired (`daemon.py:1581`).
+  alternative — that is how the phone bridge is wired (`daemon.py:1605`).
 - **Add a config key.** Add the default in `get_default_config()` and a field on
   `Settings` in `config.py`, then read it where needed; `load_settings()` merges
   it automatically.
@@ -359,9 +359,9 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 | A live Claire runs from the venv | `ensure_deps` refuses to modify that venv unless `--force-install` / `CLAIRE_FORCE_INSTALL=1` (`start.sh:244`–`:250`, `:274`). |
 | Preflight problem (config dir not writable, no Python) | `start` prints the items and returns exit code `3` without starting (`start.sh:684`–`:689`). |
 | Self-check not green | Claire still starts unless `--strict` was given (`start.sh:698`–`:706`); each line names its own fix. |
-| TTS unavailable at boot | `_initialize_tts_engine` returns `None` on an unknown engine, a missing voice model or a missing key; the daemon substitutes `_UnavailableTTS` and keeps running (`daemon.py:1559`–`:1567`, `_UnavailableTTS` at `:52`, `_initialize_tts_engine` at `:87`). |
-| Voice recogniser fails to load | The listener runs in its own thread; the daemon still boots and prints the failure thread's guidance (`daemon.py:1571`–`:1576`; the PortAudio error text is at `listener.py:163`–`:167`). |
-| MCP server fails to start | Discovery catches per server, prints the error beside the server name, and continues (`daemon.py:1444`–`:1456`); the whole preflight is wrapped again so nothing aborts boot. |
+| TTS unavailable at boot | `_initialize_tts_engine` returns `None` on an unknown engine, a missing voice model or a missing key; the daemon substitutes `_UnavailableTTS` and keeps running (`daemon.py:1579`–`:1583`, `_UnavailableTTS` at `:52`, `_initialize_tts_engine` at `:87`). |
+| Voice recogniser fails to load | The listener runs in its own thread; the daemon still boots and prints the failure thread's guidance (`daemon.py:1596`–`:1600`; the PortAudio error text is at `listener.py:163`–`:167`). |
+| MCP server fails to start | Discovery catches per server, prints the error beside the server name, and continues (`daemon.py:1467`–`:1479`); the whole preflight is wrapped again so nothing aborts boot. |
 | Port in use (panel) | `create_server` binds without catching `OSError` (`src/claire/panel/server.py:4076`–`:4086`), so a taken port makes the panel exit non-zero with a traceback in `panel.log`. `start.sh` normally prevents this: it checks the port first and declines to start a second panel (`:447`–`:451`), and if the spawn still fails it waits `CLAIRE_START_WAIT` (default 60 s), tails the log and returns exit code `4` (`:466`–`:473`). |
 | Daemon exits immediately (direct mode) | `start_daemon` tails the last 25 lines of `daemon.log` and returns exit code `4` (`start.sh:426`–`:430`). |
 | Daemon never becomes active under systemd | After `CLAIRE_START_WAIT` (60 s) it prints `systemctl --user status` output and fails (`start.sh:404`–`:409`). |
@@ -413,13 +413,13 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
    (`src/claire/listening/listener.py:170`–`:176`, `_configures_whisper` at
    `:2053`–`:2055`), and `daemon.main` prints the recogniser banner with no
    Whisper fallback advertised because "advertising a Whisper fallback would be
-   a lie printed at every boot" (`src/claire/daemon.py:1414`–`:1426`). The
+   a lie printed at every boot" (`src/claire/daemon.py:1437`–`:1449`). The
    hardening (a writable numba cache) is still correct; only the
    fallback narrative is stale.
 2. **Not a contradiction, but worth knowing:** the unit's `KillSignal=` comment
    says "SIGINT, not SIGTERM" (`claire.service:78`–`:79`), while the daemon
    installs the same clean-shutdown handler for `SIGINT`, `SIGTERM` and
-   `SIGBREAK` (`daemon.py:789`–`:790`); `start.sh` stops direct-mode processes
+   `SIGBREAK` (`daemon.py:811`–`:812`); `start.sh` stops direct-mode processes
    with `SIGTERM` (`start.sh:489`). Both signals reach the same cleanup path.
 3. **The service spec does not record the template or its installer.**
    `src/claire/platform/service.spec.md` documents the unit's facts

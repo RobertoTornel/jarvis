@@ -55,11 +55,13 @@ def _normalise_response(data: Dict[str, Any]) -> Dict[str, Any]:
     If the server already returns Ollama's shape (some hybrid servers
     expose both endpoints), the response is passed through unchanged.
 
-    Scope: this helper is OpenAI-shape-specific. Other providers
-    (Anthropic, etc.) need their own normaliser inside their own
-    backend module — Anthropic's content-block + ``tool_use`` shape
-    diverges enough that sharing one normaliser would be more
-    confusing than useful. Keep one normaliser per backend.
+    Scope: this helper is OpenAI-shape-specific. Ollama has its own
+    shape and its own normaliser; Gemini is embeddings-only and has no
+    chat normaliser at all. Any future chat backend whose wire shape
+    diverges from OpenAI's — content blocks plus ``tool_use``-style
+    blocks, say — would carry its own normaliser in its own module:
+    sharing one would be more confusing than useful. Keep one
+    normaliser per backend.
     """
     if "message" in data and isinstance(data["message"], dict):
         return data
