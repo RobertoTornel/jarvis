@@ -6,6 +6,8 @@ cannot supply — a camera frame (`POST /see`) and a position (`POST /loc`) — 
 what she has to say (`GET /reply`) and check the link (`GET /health`).
 
 Owner: the phone-bridge agent. Files: `src/claire/phone/bridge.py`,
+`src/claire/phone/__main__.py` (the CLI entry point: `python -m claire.phone
+serve` runs the bridge, and `keys ...` manages its bearer token),
 `src/claire/phone/__init__.py`, `src/claire/phone/bridge.spec.md`,
 `tests/test_phone_bridge.py`. Nothing else is owned here:
 `src/claire/platform/keys.py` (the 0600 key store) and

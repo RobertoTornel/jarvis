@@ -2531,8 +2531,10 @@ def serve(
 ) -> None:
     """Create the server and serve until interrupted.
 
-    This is the blocking, real-process entry point (``python -m
-    claire.phone.bridge``).  The test suite does not call it: it calls
+    This is the blocking, real-process serve loop.  ``bridge.py`` has no
+    ``__main__`` block, so ``python -m claire.phone.bridge`` does not reach it;
+    the command that runs the bridge from a terminal is ``python -m claire.phone
+    serve`` (:mod:`claire.phone.__main__`).  The test suite does not call it: it calls
     :func:`create_server` with ``port=0`` and serves that in a thread, so the
     tests exercise the real HTTP stack on a real socket without ever holding a
     fixed port.  Two past bugs -- a bodyless ``GET`` answered with ``411``, and a
