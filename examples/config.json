@@ -115,10 +115,7 @@
     "shut up"
   ],
   "location_enabled": true,
-  "location_cache_minutes": 60,
-  "location_ip_address": null,
-  "location_auto_detect": true,
-  "location_cgnat_resolve_public_ip": true,
+  "location_city": "",
   "web_search_enabled": true,
   "brave_search_api_key": "",
   "wikipedia_fallback_enabled": true,

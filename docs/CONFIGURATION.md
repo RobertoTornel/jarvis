@@ -403,10 +403,19 @@ it still ran every network probe first, blocking the reply path for around
 **12 seconds** per turn to produce a value that was usually unknown anyway.
 
 The only remaining source is an explicitly configured city, read from
-`location_city`. That key is currently **not part of the config schema**, so
-there is presently no way for Claire to know her own city: location-aware
-answers (for example "what's the weather?") ask for a place instead. The
-local time is still correct — it comes from the operating system's timezone.
+`location_city` (default `""`, meaning no city is set):
+
+```json
+{
+  "location_enabled": true,
+  "location_city": "Lisbon"
+}
+```
+
+With no city set, location-aware answers (for example "what's the weather?")
+ask for a place instead. The local time is still correct — it comes from the
+operating system's timezone, since a city name is not an IANA zone and there
+is no database left to derive one.
 
 `location_enabled` is still honoured as a master toggle (setting it to
 `false` reports `"Location: Disabled"`). The other `location_*` keys

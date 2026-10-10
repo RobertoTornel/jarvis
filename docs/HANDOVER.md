@@ -337,22 +337,25 @@ context, and stay as they are:
 [`src/claire/reply/reply.spec.md`](../src/claire/reply/reply.spec.md) line 122 and
 [`src/claire/reply/planner.spec.md`](../src/claire/reply/planner.spec.md) lines 231-233.
 
-### 6.4 `location_city` was a dead config key (resolved)
+### 6.4 `location_city` was a dead config key (re-exposed, live again)
 
 `location_city` was declared, defaulted and merged but read by no code — its only consumer was the
-`getWeather` tool that `82605e5` removed. It has been **retired** along with six other dead keys
-(`c5fefe5`), so the schema no longer carries it. The live `~/.config/claire/config.json` still has
-the old `"Lisbon"` value as an unknown key, where it is inert; config load preserves unknown keys by
-design, and no migration is needed.
+`getWeather` tool that `82605e5` removed — so it was **retired** along with six other dead keys
+(`c5fefe5`). The live `~/.config/claire/config.json` kept the old `"Lisbon"` value as an unknown
+key: config load preserved it, but nothing read it.
+
+**Resolved:** with IP detection and the GeoLite2 database gone, a configured city is the only
+location source left, so the key is **exposed again** as `Settings.location_city` (default `""`)
+and is read by `claire.utils.location`. The owner's existing `"Lisbon"` takes effect with no
+migration, because unknown keys are merged over the defaults — the value was already on disk.
 
 ### 6.5 `get_location_info()` is a live landmine (resolved)
 
-[`get_location_info()`](../src/claire/utils/location.py) has `auto_detect: bool = True` (`:417`),
-and with auto-detect it takes about **12 s** on this host because there is no GeoLite2 database
-installed (the seeder is [`scripts/setup_geolocation.py`](../scripts/setup_geolocation.py)). It is
-off the hot path only because the live config sets `location_auto_detect: false`. A default-safe
-call is all that stands between Claire and a 12 s stall per reply; do not remove that config line
-without replacing the mechanism.
+[`get_location_info()`](../src/claire/utils/location.py) had `auto_detect: bool = True`, and with
+auto-detect it took about **12 s** on this host because there was no GeoLite2 database installed
+(the seeder was `scripts/setup_geolocation.py`, deleted with the feature). It was off the hot path
+only because the live config set `location_auto_detect: false` — a default-safe call was all that
+stood between Claire and a 12 s stall per reply.
 
 **Resolved:** the whole mechanism was removed rather than left dormant.
 `get_location_info()`, the IP/UPnP/OpenDNS discovery chain, the GeoLite2
@@ -361,7 +364,9 @@ explicitly configured city and never touches the network, so the config line
 is no longer load-bearing. The Location page was deleted from the setup
 wizard, and the reply path and time tool fall back to the OS timezone. See
 [`src/claire/utils/location.spec.md`](../src/claire/utils/location.spec.md).
-Because `location_city` is retired, Claire can no longer know her own city.
+The city is now whatever `location_city` says — the live config sets
+`"Lisbon"`, so the assistant names a real city — and an empty value falls back
+to `"Location: Unknown"`.
 
 ### 6.6 Embeddings do not work; memory search is keyword-only
 

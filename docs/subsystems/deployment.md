@@ -236,7 +236,7 @@ the sdist file list (legacy default first, then `MANIFEST.in`) to assert the
    (`:1403`), open the `Database` (`:1404`).
 5. MCP preflight discovery (`:1428`–`:1458`), then `DialogueMemory`
    (`:1462`–`:1465`), warm-profile graph listener wiring (`:1468`–`:1520`),
-   legacy graph migration (`:1525`–`:1533`), location (`:1535`–`:1557`).
+   legacy graph migration (`:1546`–`:1556`), location (`:1558`–`:1570`).
 6. TTS (`:1563`–`:1567`), the voice listener thread (`:1571`–`:1576`), then the
    phone bridge (`:1581`).
 7. If `smoke_test`, print `SMOKE_TEST_INIT_OK`, stop the pieces and return

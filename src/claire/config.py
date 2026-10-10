@@ -304,10 +304,11 @@ class Settings:
 
     # Location Services
     location_enabled: bool
-    location_cache_minutes: int
-    location_ip_address: str | None
-    location_auto_detect: bool
-    location_cgnat_resolve_public_ip: bool
+    # The city the assistant names in its location context, e.g. "Lisbon".
+    # Empty string means no city is configured. This is the only location
+    # source: IP auto-detection, GeoLite2 and the discovery caches were
+    # removed, so ``claire.utils.location`` reads exactly this key.
+    location_city: str
 
     # Web Search
     web_search_enabled: bool
@@ -755,12 +756,11 @@ def get_default_config() -> Dict[str, Any]:
 
         # Location Services
         "location_enabled": True,
-        "location_cache_minutes": 60,
-        "location_ip_address": None,
-        "location_auto_detect": True,
-        # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
-        # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
-        "location_cgnat_resolve_public_ip": True,
+        # The city the assistant reports as its location, e.g. "Lisbon".
+        # Empty string = no city configured (the context line becomes
+        # "Location: Unknown"). There is no IP auto-detection any more, so
+        # this is the only way to give the assistant a location.
+        "location_city": "",
 
         # Web Search
         "web_search_enabled": True,
@@ -1087,11 +1087,10 @@ def load_settings() -> Settings:
     if tool_search_max_calls < 0:
         tool_search_max_calls = 0
     location_enabled = bool(merged.get("location_enabled", True))
-    location_cache_minutes = int(merged.get("location_cache_minutes", 60))
-    location_ip_address_val = merged.get("location_ip_address")
-    location_ip_address = None if location_ip_address_val in (None, "", "null") else str(location_ip_address_val)
-    location_auto_detect = bool(merged.get("location_auto_detect", True))
-    location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
+    # Plain string, matching e.g. brave_search_api_key: a non-string or None
+    # on disk coerces to "" rather than raising, and the location shim
+    # strips/blank-checks it.
+    location_city = str(merged.get("location_city", "") or "").strip()
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
@@ -1251,10 +1250,7 @@ def load_settings() -> Settings:
 
         # Location Services
         location_enabled=location_enabled,
-        location_cache_minutes=location_cache_minutes,
-        location_ip_address=location_ip_address,
-        location_auto_detect=location_auto_detect,
-        location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+        location_city=location_city,
 
         # Web Search
         web_search_enabled=web_search_enabled,

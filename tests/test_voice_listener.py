@@ -1993,7 +1993,12 @@ class TestIsWhisperHallucination:
 
 
 class TestWeatherBannerExample:
-    """Tests for the adaptive weather example in the startup banner."""
+    """Tests for the adaptive weather example in the startup banner.
+
+    Location is configuration-only since the IP/GeoLite2 discovery was removed:
+    the banner names the configured ``location_city``, or falls back to the
+    ``[your city]`` placeholder when location is disabled or no city is set.
+    """
 
     def _make_listener(self, **cfg_overrides):
         from unittest.mock import MagicMock
@@ -2002,32 +2007,30 @@ class TestWeatherBannerExample:
         cfg = MagicMock()
         cfg.wake_word = cfg_overrides.get("wake_word", "claire")
         cfg.location_enabled = cfg_overrides.get("location_enabled", True)
-        cfg.location_auto_detect = cfg_overrides.get("location_auto_detect", True)
-        cfg.location_ip_address = cfg_overrides.get("location_ip_address", None)
+        cfg.location_city = cfg_overrides.get("location_city", "Lisbon")
 
         listener = object.__new__(VoiceListener)
         listener.cfg = cfg
         return listener
 
-    def test_plain_form_when_auto_detect_enabled(self):
-        """Plain 'How's the weather' example when auto-detect is on and database is present."""
+    def test_configured_city_is_named(self):
+        """The banner names the city that is actually configured."""
         from unittest.mock import patch
-        listener = self._make_listener(location_enabled=True, location_auto_detect=True)
+        listener = self._make_listener(location_enabled=True, location_city="Lisbon")
         with patch("claire.listening.listener.is_location_available", return_value=True):
             result = listener._weather_example("Claire")
-        assert result == "\"How's the weather, Claire?\""
+        assert result == "\"How's the weather in Lisbon, Claire?\""
 
-    def test_plain_form_when_manual_ip_configured(self):
-        """Plain form when auto-detect is off but a manual IP is set and database is present."""
+    def test_retired_ip_knobs_have_no_effect(self):
+        """The removed auto-detect/IP keys are ignored; only the city matters."""
         from unittest.mock import patch
-        listener = self._make_listener(
-            location_enabled=True,
-            location_auto_detect=False,
-            location_ip_address="1.2.3.4",
-        )
+        listener = self._make_listener(location_enabled=True, location_city="Porto")
+        # A stale config may still carry these; neither may change the banner.
+        listener.cfg.location_auto_detect = False
+        listener.cfg.location_ip_address = "1.2.3.4"
         with patch("claire.listening.listener.is_location_available", return_value=True):
             result = listener._weather_example("Claire")
-        assert result == "\"How's the weather, Claire?\""
+        assert result == "\"How's the weather in Porto, Claire?\""
 
     def test_city_placeholder_when_location_disabled(self):
         """City placeholder form when location is explicitly disabled."""
@@ -2035,20 +2038,16 @@ class TestWeatherBannerExample:
         result = listener._weather_example("Claire")
         assert result == "\"How's the weather in [your city], Claire?\""
 
-    def test_city_placeholder_when_no_location_source(self):
-        """City placeholder form when auto-detect is off and no manual IP is set."""
-        listener = self._make_listener(
-            location_enabled=True,
-            location_auto_detect=False,
-            location_ip_address=None,
-        )
+    def test_city_placeholder_when_no_city_configured(self):
+        """City placeholder form when no city is configured."""
+        listener = self._make_listener(location_enabled=True, location_city="")
         result = listener._weather_example("Claire")
         assert result == "\"How's the weather in [your city], Claire?\""
 
-    def test_city_placeholder_when_database_not_available(self):
-        """City placeholder form when GeoLite2 database is missing even if config enables location."""
+    def test_city_placeholder_when_location_unavailable(self):
+        """City placeholder form when the location helper reports nothing usable."""
         from unittest.mock import patch
-        listener = self._make_listener(location_enabled=True, location_auto_detect=True)
+        listener = self._make_listener(location_enabled=True, location_city="Lisbon")
         with patch("claire.listening.listener.is_location_available", return_value=False):
             result = listener._weather_example("Claire")
         assert result == "\"How's the weather in [your city], Claire?\""
@@ -2057,7 +2056,7 @@ class TestWeatherBannerExample:
         """Wake word title is correctly used in the example string."""
         from unittest.mock import patch
         with patch("claire.listening.listener.is_location_available", return_value=True):
-            listener = self._make_listener(location_enabled=True, location_auto_detect=True)
+            listener = self._make_listener(location_enabled=True, location_city="Lisbon")
             assert "Helix?" in listener._weather_example("Helix")
 
         listener2 = self._make_listener(location_enabled=False)

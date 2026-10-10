@@ -44,7 +44,7 @@ page transitions and model installation do not force a larger window.
 Whisper Setup (start) → Provider Choice ─┬─ Ollama → Welcome/Status → [Ollama Install] → [Ollama Server] → Models ─┐
                                           └─ OpenAI-compat → OpenAI-compatible config ───────────────────────────────────────┤
                                                                                                                               ▼
-                                            Dictation → MCP Servers → Search Providers → [Location] → Complete
+                                            Dictation → MCP Servers → Search Providers → Complete
 ```
 
 **Whisper Setup** is the first step (`setStartId`), so its model choice informs the later memory budget. **Provider Choice** then branches: the Ollama path goes through the Welcome/Status dashboard and install/server/models; the OpenAI-compatible path uses a connection and model page. Pages in brackets are conditional, skipped when their prerequisite is already satisfied.
@@ -63,8 +63,7 @@ Whisper Setup (start) → Provider Choice ─┬─ Ollama → Welcome/Status �
 | 8 | **Dictation** | Always | `dictation_enabled`, `dictation_hotkey`, `dictation_filler_removal` |
 | 9 | **MCP Servers** | Always | `mcps` |
 | 10 | **Search Providers** | Always | `brave_search_api_key`, `wikipedia_fallback_enabled` |
-| 11 | **Location** | Location enabled but detection failing | `location_ip_address` |
-| 12 | **Complete** | Always | — |
+| 11 | **Complete** | Always | — |
 
 Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 
@@ -72,7 +71,7 @@ Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 
 **ProviderChoicePage** — Two cards (radio buttons in a shared `QButtonGroup` so they are mutually exclusive across the separate card frames): Ollama (recommended) and OpenAI-compatible server. The copy makes clear both options are local: the OpenAI-compatible card describes pointing at another local app (LM Studio, oMLX, llama.cpp, vLLM, LocalAI) on your own machine or network, not a cloud service. Preselects from the current `llm_provider`. On validate, writes `llm_provider`; selecting Ollama omits the key and clears the OpenAI-compatible overrides (`llm_base_url`, `llm_api_key`, `llm_chat_model`, `embedding_*`) so the Ollama settings become authoritative again. `nextId` routes to the selected provider path.
 
-**WelcomePage / Status** — Reached only on the Ollama branch. Status dashboard showing CLI, server, models, location, and MLX Whisper (Apple Silicon) readiness; a background `StatusCheckWorker` populates `wizard.ollama_status`. Leads into the first applicable Ollama page via `SetupWizard.ollama_entry_page_id()` (install if the CLI is missing, server if it is not running, else models).
+**WelcomePage / Status** — Reached only on the Ollama branch. Status dashboard showing CLI, server, models, and MLX Whisper (Apple Silicon) readiness; a background `StatusCheckWorker` populates `wizard.ollama_status`. Leads into the first applicable Ollama page via `SetupWizard.ollama_entry_page_id()` (install if the CLI is missing, server if it is not running, else models).
 
 **OpenAICompatiblePage** — Shown only on the OpenAI-compatible path. Guided rather than freeform, designed so the common case is "Connect, then Next":
 
@@ -97,8 +96,6 @@ Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 **MCPPage** — Shows wizard-featured entries from `mcp_catalogue.py` as selectable cards (checkbox + name + description). Already-configured servers start checked. On validate, selected servers are added to `config.mcps` and deselected wizard entries are removed. Includes a tip pointing users to Settings → MCP Servers for the full catalogue and custom servers.
 
 **SearchProvidersPage** — Explains and configures the web-search fallback chain (DDG → Brave → Wikipedia → honest block). Always shown: the explainer is the point, not the configuration. Brave card takes an optional API key (password-masked) with a link to the Brave key portal. Wikipedia card is a toggle that defaults to on. Only non-default values are written to `config.json` (empty Brave key and enabled Wikipedia are both omitted), matching the settings window's minimal-diff invariant.
-
-**LocationPage** — Tests location auto-detection. If it fails (private/CGNAT IP), offers manual IP input with OpenDNS resolution and GeoLite2 validation.
 
 **CompletePage** — Success summary with tips. Hides Cancel button.
 

@@ -37,7 +37,7 @@ from .intent_judge import (
 )
 from ..debug import debug_log
 from ..llm import get_embedding_backend
-from ..utils.location import is_location_available
+from ..utils.location import get_configured_city, is_location_available
 
 if TYPE_CHECKING:
     from ..memory.db import Database
@@ -2863,19 +2863,18 @@ class VoiceListener(threading.Thread):
     def _weather_example(self, wake_title: str) -> str:
         """Return the weather query example for the startup banner.
 
-        Shows the plain form when a location source is configured, or the
-        [your city] placeholder form so the user knows to supply a city.
+        Location is configuration-only now: the banner names the city the
+        owner actually configured (``location_city``) when there is one, and
+        falls back to the ``[your city]`` placeholder — saying plainly that no
+        city is set — when location is disabled or no city is configured. The
+        old auto-detect / manual-IP knobs no longer exist, and calling
+        ``is_location_available()`` without a config could never be true.
         """
-        location_enabled = getattr(self.cfg, "location_enabled", True)
-        location_auto_detect = getattr(self.cfg, "location_auto_detect", True)
-        location_ip_address = getattr(self.cfg, "location_ip_address", None)
-        location_known = (
-            location_enabled
-            and (location_auto_detect or bool(location_ip_address))
-            and is_location_available()
-        )
-        if location_known:
-            return f"\"How's the weather, {wake_title}?\""
+        city = None
+        if getattr(self.cfg, "location_enabled", True) and is_location_available(self.cfg):
+            city = get_configured_city(self.cfg)
+        if city:
+            return f"\"How's the weather in {city}, {wake_title}?\""
         return f"\"How's the weather in [your city], {wake_title}?\""
 
     def run(self) -> None:

@@ -150,7 +150,8 @@ def _build_field_metadata() -> List[FieldMeta]:
       "llm_provider", "choice",
       choices=[("", "Same as chat provider"),
                ("ollama", "Ollama (local)"),
-               ("openai_compatible", "OpenAI-compatible server")])
+               ("openai_compatible", "OpenAI-compatible server"),
+               ("gemini", "Gemini (Google)")])
     f("embedding_base_url", "Embedding Base URL",
       "Override base URL for embeddings. Leave empty to inherit from the "
       "chat provider (or the Ollama URL).",
@@ -316,18 +317,10 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("location_enabled", "Enable Location",
       "Allow location-aware responses",
       "location", "bool")
-    f("location_auto_detect", "Auto-Detect",
-      "Automatically detect location from IP",
-      "location", "bool")
-    f("location_cache_minutes", "Cache Duration",
-      "Minutes to cache location data",
-      "location", "int", min_val=1, max_val=1440, step=5, suffix="min")
-    f("location_ip_address", "IP Address Override",
-      "Manual IP for geolocation (leave empty for auto)",
+    f("location_city", "City",
+      "The city Claire reports as her location, e.g. Lisbon. Leave empty to "
+      "report the location as unknown. There is no IP auto-detection.",
       "location", "str", nullable=True)
-    f("location_cgnat_resolve_public_ip", "CGNAT Resolve",
-      "Resolve public IP when behind CGNAT",
-      "location", "bool")
 
     # --- Features ---
     f("web_search_enabled", "Web Search",

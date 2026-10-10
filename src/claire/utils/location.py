@@ -21,9 +21,9 @@ name is not an IANA zone and there is no database to look one up — so
 :func:`get_location_context_with_timezone` always reports ``None`` and
 callers fall back to the OS local timezone.
 
-``location_city`` is currently retired from ``claire.config``; it is read
-defensively here so that re-exposing the key (a plain string, no discovery)
-is all that is needed to give the assistant a city again. See
+``location_city`` is a plain string on ``claire.config.Settings`` (default
+``""``) and is the only location source there is: the city the owner
+configures, e.g. ``"Lisbon"``. An empty string means no city is set. See
 ``location.spec.md``.
 """
 

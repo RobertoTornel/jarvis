@@ -49,7 +49,7 @@ attribute access and returns immediately.
 
 | Key | Status | Notes |
 |-----|--------|-------|
-| `location_city` | **retired, read defensively** | The only key that can still produce a location. It is currently not exposed by `claire.config`; re-exposing it (a plain string) is all that is needed to give the assistant a city again. |
+| `location_city` | **live, exposed** | The only key that can produce a location: the city to report, e.g. `"Lisbon"`. Declared on `claire.config.Settings` (default `""`), merged and coerced like any other string key — a non-string or `None` on disk becomes `""`. Empty or whitespace-only means no city is set. |
 | `location_enabled` | still read | Master toggle. When false the context is `"Location: Disabled"`. |
 | `location_auto_detect` | dead | Nothing is detected any more. |
 | `location_ip_address` | dead | No IP is geolocated any more. |
@@ -72,11 +72,14 @@ attribute access and returns immediately.
   models → MCP → search providers → complete.
 - **Listener** (`src/claire/listening/listener.py`): uses
   `is_location_available()` only to choose the weather example in the startup
-  banner; with no city configured it shows the `[your city]` placeholder form.
+  banner — it names the configured city, and falls back to the `[your city]`
+  placeholder form when location is disabled or no city is configured.
 
-### Honest consequence
+### Honest consequence of an unset city
 
-There is currently **no way for the assistant to know her own city**, because
-`location_city` is retired from the config schema. The capability returns
-without any code change here if that key is re-exposed; see the module
-docstring.
+`location_city` defaults to `""`, and an empty city is not an error: the
+context line is `"Location: Unknown"` and location-aware answers (for example
+"what's the weather?") ask for a place instead. Setting the key — in
+`config.json` or under **Settings → 📍 Location** — is all that is needed to
+give the assistant a city again. Nothing here probes, fetches or caches, so
+knowing the city is a config value and nothing more.
