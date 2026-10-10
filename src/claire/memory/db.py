@@ -127,7 +127,12 @@ class Database:
         # If sqlite-vss is not available, use best available vector store (FAISS or Python fallback)
         if not self.is_vss_enabled:
             from ..utils.vector_store import get_best_vector_store
-            self._python_vector_store = get_best_vector_store(db_path, dimension=768)
+            from ..utils.embedding_vector import EMBEDDING_DIMENSION
+            # The dimension is a storage contract, not a tunable: both this
+            # fallback index and the sqlite-vss schema above are fixed at
+            # EMBEDDING_DIMENSION, and embedding backends pin their output to
+            # the same constant. See claire/utils/embedding_vector.py.
+            self._python_vector_store = get_best_vector_store(db_path, dimension=EMBEDDING_DIMENSION)
             
             # Log which vector store implementation is being used
             import sys
@@ -402,7 +407,16 @@ class Database:
             return f"{row['summary'] or ''} {row['topics'] or ''}" if row is not None else None
 
     def upsert_summary_embedding(self, summary_id: int, vec: Sequence[float], source_text: str) -> Optional[int]:
-        """Refresh an embedding only while its captured diary text is current."""
+        """Refresh an embedding only while its captured diary text is current.
+
+        Dimension is enforced before this point, at both ends of the pipe:
+        the embedding client refuses a vector that is not the store's width,
+        and this store's own layer rejects one — ``normalise_embedding`` for
+        the FAISS/python index, the ``vec(768)`` column type for sqlite-vss.
+        Deliberately no length check here: the fallback store is constructed
+        at the index width in production, while tests drive this method with
+        short vectors through a deliberately dimension-agnostic store.
+        """
         if not isinstance(source_text, str):
             raise ValueError('Embedding source must be a string')
         if self.is_vss_enabled:

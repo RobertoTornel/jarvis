@@ -219,17 +219,42 @@ public class CameraAndVoiceTest {
     public void theLocationLineNeverRecitesCoordinates() {
         ClaireState state = ClaireState.get();
         state.setLastFix(38.7223, -9.1393, 12.0f);
-        String line = state.lastFix();
-        assertFalse("the location line contains a latitude: " + line,
-                line.contains("38.72") || line.contains("38.7"));
-        assertFalse("the location line contains a longitude: " + line,
-                line.contains("9.13") || line.contains("-9.1"));
-        assertFalse("the location line looks like a bare coordinate pair: " + line,
-                line.matches(".*-?\\d{1,3}\\.\\d+.*"));
-        assertTrue("the accuracy was dropped along with the coordinates: " + line,
-                line.contains("12"));
-        assertTrue("a fix that was just recorded reads as stale: " + line,
-                line.contains("just now"));
+
+        // Read the line the owner actually reads. MainActivity.renderState() composes
+        // it as "location sent " + since(lastFixAt()) + "  " + lastFix()
+        // (MainActivity.java:306), while ClaireState.setLastFix() stores only the
+        // accuracy, "±%.0f m" (ClaireState.java:183). So ClaireState.lastFix() is the
+        // accuracy half alone: the original assertion that it contains "just now" could
+        // never have passed, because the age is added by the screen and not by the
+        // state. No device ever ran it to find that out — as recorded in
+        // docs/HANDOVER.md section 6.8 — so this is fixed from the source, not from a
+        // run.
+        // Reading the rendered TextView is also strictly stronger: it catches the
+        // screen dropping the age or the accuracy, which the state-level assertion
+        // could not.
+        try (ActivityScenario<MainActivity> scenario =
+                     ActivityScenario.launch(MainActivity.class)) {
+            scenario.onActivity(activity -> {
+                TextView view = activity.findViewById(R.id.last_fix);
+                assertNotNull("the location line is absent from the home screen", view);
+                assertTrue("the location line is hidden even though a fix exists",
+                        view.getVisibility() == View.VISIBLE);
+                String line = String.valueOf(view.getText());
+                assertFalse("the location line contains a latitude: " + line,
+                        line.contains("38.72") || line.contains("38.7"));
+                assertFalse("the location line contains a longitude: " + line,
+                        line.contains("9.13") || line.contains("-9.1"));
+                assertFalse("the location line looks like a bare coordinate pair: " + line,
+                        line.matches(".*-?\\d{1,3}\\.\\d+.*"));
+                // The running service can replace the injected fix between setLastFix()
+                // and this render, so the accuracy is asserted as a shape rather than as
+                // the literal 12 m that was injected.
+                assertTrue("the accuracy was dropped along with the coordinates: " + line,
+                        line.matches(".*\u00b1\\d+ m.*"));
+                assertTrue("a fix that was just recorded reads as stale: " + line,
+                        line.contains("just now"));
+            });
+        }
     }
 
     // -- defect 3: the phone calls Fish itself, and streams it ------------ //
@@ -299,6 +324,13 @@ public class CameraAndVoiceTest {
         ClairePrefs prefs = new ClairePrefs(target());
         String beforeModel = prefs.fishModel();
         String beforeToken = prefs.fishToken();
+        // Everything this test writes must be put back. It runs against the owner's
+        // real, live preferences on the phone, so a missing restore is not untidiness:
+        // leaving the backend at TTS_DEVICE silently switches the owner's phone from
+        // Fish to its own voice, and resetting the voice id to "" throws away a voice
+        // they chose. The original finally did both.
+        String beforeVoiceId = prefs.fishVoiceId();
+        String beforeBackend = prefs.ttsBackend();
         try {
             String fake = "test-key-not-real-0000wxyz";
             prefs.setTtsBackend(ClairePrefs.TTS_FISH);
@@ -322,7 +354,8 @@ public class CameraAndVoiceTest {
         } finally {
             prefs.setFishModel(beforeModel);
             prefs.setFishToken(beforeToken);
-            prefs.setFishVoiceId("");
+            prefs.setFishVoiceId(beforeVoiceId);
+            prefs.setTtsBackend(beforeBackend);
         }
     }
 

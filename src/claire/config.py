@@ -46,6 +46,11 @@ SUPPORTED_CHAT_MODELS: Dict[str, Dict[str, str]] = {
 OMNIROUTE_PROVIDER_ALIAS = "omniroute"
 OMNIROUTE_BASE_URL = "http://127.0.0.1:20129/v1"
 OMNIROUTE_KEY_ENV = "OMNIROUTE_API_KEY"
+# Gemini embeddings (embedding_provider: "gemini"). Google's own SDKs and
+# examples use both names, so both are honoured; the first non-empty one wins.
+# The key belongs in the environment / runtime env file, never in config.json.
+GEMINI_KEY_ENV = "GEMINI_API_KEY"
+GOOGLE_KEY_ENV = "GOOGLE_API_KEY"
 # OmniRouter routes Claude-style model ids, not Ollama pull names. This is the
 # default chat model a fresh install asks for.
 OMNIROUTE_DEFAULT_CHAT_MODEL = "cmd/deepseek/deepseek-v4.1-flash"
@@ -102,7 +107,7 @@ class Settings:
     llm_base_url: str
     llm_api_key: str
     llm_chat_model: str
-    embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
+    embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible" | "gemini"
     embedding_base_url: str
     embedding_api_key: str
     embedding_model: str
@@ -299,10 +304,11 @@ class Settings:
 
     # Location Services
     location_enabled: bool
-    location_cache_minutes: int
-    location_ip_address: str | None
-    location_auto_detect: bool
-    location_cgnat_resolve_public_ip: bool
+    # The city the assistant names in its location context, e.g. "Lisbon".
+    # Empty string means no city is configured. This is the only location
+    # source: IP auto-detection, GeoLite2 and the discovery caches were
+    # removed, so ``claire.utils.location`` reads exactly this key.
+    location_city: str
 
     # Web Search
     web_search_enabled: bool
@@ -561,10 +567,12 @@ def get_default_config() -> Dict[str, Any]:
         # Empty means "resolve from the provider": an Ollama pull name on the
         # Ollama path, an OmniRouter-routed model id on the openai path.
         "llm_chat_model": "",
-        "embedding_provider": "",  # "" = same as llm_provider
+        "embedding_provider": "",  # "" = same as llm_provider; or "ollama" | "openai_compatible" | "gemini"
         "embedding_base_url": "",
-        "embedding_api_key": "",
-        "embedding_model": "",  # falls back to ollama_embed_model when empty
+        "embedding_api_key": "",  # empty = read GEMINI_API_KEY / GOOGLE_API_KEY when the provider is gemini
+        # Empty means "resolve from the provider": ollama_embed_model on the
+        # Ollama/OpenAI-compatible paths, gemini-embedding-2 on the Gemini path.
+        "embedding_model": "",
         "ollama_base_url": "http://127.0.0.1:11434",
         "ollama_embed_model": "nomic-embed-text",
         "ollama_chat_model": DEFAULT_CHAT_MODEL,
@@ -748,12 +756,11 @@ def get_default_config() -> Dict[str, Any]:
 
         # Location Services
         "location_enabled": True,
-        "location_cache_minutes": 60,
-        "location_ip_address": None,
-        "location_auto_detect": True,
-        # When behind CGNAT (100.64.0.0/10), attempt a privacy-light external DNS query to discover true public IP.
-        # Uses a single OpenDNS resolver lookup of myip.opendns.com over DNS (no HTTP services). Disable to avoid any external request.
-        "location_cgnat_resolve_public_ip": True,
+        # The city the assistant reports as its location, e.g. "Lisbon".
+        # Empty string = no city configured (the context line becomes
+        # "Location: Unknown"). There is no IP auto-detection any more, so
+        # this is the only way to give the assistant a location.
+        "location_city": "",
 
         # Web Search
         "web_search_enabled": True,
@@ -896,17 +903,41 @@ def load_settings() -> Settings:
     else:
         llm_chat_model = ollama_chat_model
     embedding_provider_raw = str(merged.get("embedding_provider", "") or "").strip().lower()
-    if embedding_provider_raw not in ("", "ollama", "openai_compatible"):
+    if embedding_provider_raw not in ("", "ollama", "openai_compatible", "gemini", "google"):
         embedding_provider_raw = ""
+    # "google" is an accepted spelling of the Gemini provider; the canonical
+    # name is what the rest of the codebase (and the docs) use.
+    if embedding_provider_raw == "google":
+        embedding_provider_raw = "gemini"
     embedding_provider = embedding_provider_raw
     embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
-    embedding_api_key = str(merged.get("embedding_api_key", "") or "").strip()
+    _embedding_api_key_explicit = str(merged.get("embedding_api_key", "") or "").strip()
     # Effective embedding provider inherits the chat provider when unset.
     _effective_embed_provider = embedding_provider or llm_provider
-    if _effective_embed_provider == "openai_compatible":
+    if _effective_embed_provider == "gemini":
+        # Provider-aware default: the Ollama pull name ("nomic-embed-text")
+        # would be rejected by Google's API, so an unset model resolves to a
+        # Gemini embedding model instead. See claire/llm/gemini.py for why
+        # gemini-embedding-2 is the default and 001 the text-only alternative.
+        from .llm.gemini import GEMINI_DEFAULT_EMBED_MODEL
+        embedding_model = str(merged.get("embedding_model", "") or "").strip() or GEMINI_DEFAULT_EMBED_MODEL
+    elif _effective_embed_provider == "openai_compatible":
         embedding_model = str(merged.get("embedding_model", "") or "").strip() or ollama_embed_model
     else:
         embedding_model = ollama_embed_model
+    if _embedding_api_key_explicit:
+        embedding_api_key = _embedding_api_key_explicit
+    elif _effective_embed_provider == "gemini":
+        # Same convention as the OmniRouter chat key: the secret lives in the
+        # environment (or the 0600 runtime env file the systemd unit loads),
+        # never in config.json. Never logged, never written back.
+        embedding_api_key = (
+            os.environ.get(GEMINI_KEY_ENV, "").strip()
+            or os.environ.get(GOOGLE_KEY_ENV, "").strip()
+        )
+    else:
+        embedding_api_key = ""
+
     use_stdin = bool(merged.get("use_stdin", False))
     tts_enabled = bool(merged.get("tts_enabled", True))
     tts_engine = str(merged.get("tts_engine", "fish")).strip().lower()
@@ -1056,11 +1087,10 @@ def load_settings() -> Settings:
     if tool_search_max_calls < 0:
         tool_search_max_calls = 0
     location_enabled = bool(merged.get("location_enabled", True))
-    location_cache_minutes = int(merged.get("location_cache_minutes", 60))
-    location_ip_address_val = merged.get("location_ip_address")
-    location_ip_address = None if location_ip_address_val in (None, "", "null") else str(location_ip_address_val)
-    location_auto_detect = bool(merged.get("location_auto_detect", True))
-    location_cgnat_resolve_public_ip = bool(merged.get("location_cgnat_resolve_public_ip", True))
+    # Plain string, matching e.g. brave_search_api_key: a non-string or None
+    # on disk coerces to "" rather than raising, and the location shim
+    # strips/blank-checks it.
+    location_city = str(merged.get("location_city", "") or "").strip()
     web_search_enabled = bool(merged.get("web_search_enabled", True))
     brave_search_api_key = str(merged.get("brave_search_api_key", "") or "").strip()
     wikipedia_fallback_enabled = bool(merged.get("wikipedia_fallback_enabled", True))
@@ -1220,10 +1250,7 @@ def load_settings() -> Settings:
 
         # Location Services
         location_enabled=location_enabled,
-        location_cache_minutes=location_cache_minutes,
-        location_ip_address=location_ip_address,
-        location_auto_detect=location_auto_detect,
-        location_cgnat_resolve_public_ip=location_cgnat_resolve_public_ip,
+        location_city=location_city,
 
         # Web Search
         web_search_enabled=web_search_enabled,

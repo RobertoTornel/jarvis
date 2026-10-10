@@ -1,7 +1,12 @@
 """Format the current time for injection into the LLM system context.
 
-Prefers the user's local timezone (derived from location) so the assistant can
-answer "what time is it?" in the form the user expects, instead of UTC.
+Nothing derives a timezone from the configured location: ``location_city`` is a
+city name, not an IANA zone, and the GeoIP lookup that once produced one is
+gone. The ambient context therefore passes ``tz_name=None`` and falls back to
+the OS local timezone, answering "what time is it?" in the form the user
+expects instead of UTC. A caller that genuinely knows a zone — the ``getTime``
+tool resolving a city the user named — still passes it through to
+``zoneinfo``.
 """
 
 from datetime import datetime, timezone
@@ -26,7 +31,9 @@ def format_time_context(
     """Return a human-readable string describing the current time.
 
     Resolution order:
-    1. ``tz_name`` via ``zoneinfo`` (when GeoIP exposes an IANA zone).
+    1. ``tz_name`` via ``zoneinfo``, when the caller supplies an IANA zone.
+       The ambient location context supplies none (location discovery was
+       removed); the ``getTime`` tool supplies one for a city the user names.
     2. The OS local timezone (``datetime.astimezone()``).
     3. UTC, as a last resort when neither zone can be named.
     """

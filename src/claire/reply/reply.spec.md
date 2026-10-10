@@ -244,7 +244,7 @@ The system injects fresh contextual information before each LLM call in the agen
 ```
 {original system prompt content}
 
-[Context: Monday, September 15, 2025 at 17:53 UTC, Location: San Francisco, CA, United States (America/Los_Angeles)]
+[Context: Current local time: Monday, September 15, 2025 at 17:53 CEST. Location: Lisbon]
 ```
 
 **Implementation Details:**
@@ -252,9 +252,9 @@ The system injects fresh contextual information before each LLM call in the agen
 - Note: Separate context messages are NOT used because adding system messages after the conversation starts breaks native tool calling in models like Llama 3.2
 - KV-cache discipline: the context string is computed **once per reply** (memoised) and the block sits at the tail of the system message, never the head. Every in-loop LLM call of one reply therefore sends a byte-identical system message, and the persona / model-components / warm-profile head stays identical across replies — the server's KV / prefix cache can reuse the whole prompt head instead of recomputing it
 - The `_is_context_injected` marker (stripped before the wire) makes the injection idempotent; a rebuilt system message (native→text-tool fallback, toolSearchTool allow-list widening) loses the marker and gets the block re-appended
-- Time is provided in UTC format with day name for clarity
-- Location is derived from configured IP address or auto-detection (if enabled)
-- Falls back gracefully to "Location: Unknown" if location services unavailable
+- Time is reported in the OS local timezone with the day name for clarity. There is no IANA zone to name any more, so no `(Region/City)` suffix appears
+- Location is the configured `location_city` only, e.g. `Location: Lisbon`. It is **not** derived from an IP address: IP auto-detection, UPnP, GeoLite2 and the disk caches were removed
+- Reports `Location: Unknown` when no city is configured, and `Location: Disabled` when `location_enabled` is false. Nothing is probed, so there is no location failure mode left to fall back from
 - Context gathering failures don't interrupt the conversation flow
 
 **Benefits:**
@@ -310,9 +310,8 @@ Turn 4: LLM → {content: "Here's a comprehensive comparison of the iPhone 15 mo
   - `agentic_max_turns` maximum turns in the agentic loop (default 8)
   - `tool_search_max_calls` (default 3) caps `toolSearchTool` invocations per reply. Extra calls return a tool-error nudging the model to decide with what is already available.
 - Context injection:
-  - `location_enabled` enables/disables location services
-  - `location_ip_address` manual IP configuration for geolocation
-  - `location_auto_detect` enables automatic IP detection (privacy consideration)
+  - `location_enabled` enables/disables location services (off = `Location: Disabled`)
+  - `location_city` is the city reported in the context line, e.g. `Lisbon`. Empty = `Location: Unknown`. IP auto-detection was removed, so this is the only location source
 - Output and debugging:
   - `voice_debug` toggles verbose stderr debug vs emoji console output.
 

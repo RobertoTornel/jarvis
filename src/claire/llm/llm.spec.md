@@ -1,11 +1,11 @@
 # LLM Backend Specification
 
-The `claire.llm` package owns every LLM HTTP call Claire makes and lets the same reply engine, planner, intent judge, evaluator, memory pipeline, and tools run against any local runtime: Ollama, an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's `llama-server`, vLLM, LocalAI), or an Anthropic-compatible server.
+The `claire.llm` package owns every LLM HTTP call Claire makes and lets the same reply engine, planner, intent judge, evaluator, memory pipeline, and tools run against any local runtime: Ollama or an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's `llama-server`, vLLM, LocalAI). Beyond the embeddings-only Gemini provider described under Embeddings, those are the only backends: an Anthropic-compatible chat backend is not implemented.
 
 ## Goals
 
-1. **Pluggable.** New backends drop in by subclassing `LLMBackend` and being registered in `factory.get_llm_backend`. Call sites stay unchanged.
-2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. Defaults remain `127.0.0.1:11434`.
+1. **Pluggable.** New backends drop in by subclassing `LLMBackend` and being registered in `factory.get_llm_backend` (chat) or `factory.get_embedding_backend` (embeddings-only, as Gemini is). Call sites stay unchanged.
+2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. The shipped default is `llm_provider = "openai_compatible"` against OmniRouter at `http://127.0.0.1:20129/v1` (`src/claire/config.py:47`, `:559`); the Ollama route falls back to `127.0.0.1:11434`. Both are loopback.
 3. **Single source of truth.** Every call site dispatches through `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. The `Settings` object carries provider, base URL, API key, and model fields; the factory reads them.
 
 ## Public surface
@@ -15,6 +15,9 @@ from claire.llm import (
     LLMBackend,                  # provider-agnostic ABC
     OllamaBackend,               # implementation: Ollama
     OpenAICompatibleBackend,     # implementation: OpenAI-compatible servers
+    GeminiEmbeddingBackend,      # implementation: Gemini embeddings (native API)
+    TASK_RETRIEVAL_DOCUMENT,     # embed() hint: this text is being indexed
+    TASK_RETRIEVAL_QUERY,        # embed() hint: this text is a search query
     ToolsNotSupportedError,
     get_llm_backend,             # factory: settings → chat backend
     get_embedding_backend,       # factory: settings → embedding backend
@@ -38,25 +41,44 @@ Two interchangeable styles dispatch to the same backend:
 | `direct(model, system, user, *, timeout_sec, thinking, num_ctx, temperature, max_tokens)` | `Optional[str]` | Single-shot system+user. Returns assistant text, or `None` on timeout / error / empty content. `max_tokens` caps generation length — essential for small reasoning models on classification tasks. |
 | `streaming(model, system, user, *, on_token, timeout_sec, thinking)` | `Optional[str]` | Streams tokens via `on_token`; returns the concatenated full text or `None` if no content was produced. |
 | `chat(model, messages, *, timeout_sec, extra_options, tools, thinking)` | `Optional[Dict]` | Arbitrary messages array. Returns the raw response dict so callers (today: the reply engine) can inspect `content` and `tool_calls`. Raises `ToolsNotSupportedError` when the model rejects native tools. Re-raises `requests.ConnectionError` so callers can distinguish "server unreachable" from a transient HTTP failure. |
-| `embed(text, model, *, timeout_sec)` | `Optional[List[float]]` | Vector embedding. Returns `None` on error or when the runtime does not expose embeddings. |
+| `embed(text, model, *, timeout_sec, task_type)` | `Optional[List[float]]` | Vector embedding. Returns `None` on error or when the runtime does not expose embeddings. `task_type` is an optional asymmetric-retrieval hint (`TASK_RETRIEVAL_DOCUMENT` when indexing, `TASK_RETRIEVAL_QUERY` when searching); backends whose wire protocol has no such field accept and ignore it, so callers may always pass it. |
+| `embed_batch(texts, model, *, timeout_sec, task_type)` | `List[Optional[List[float]]]` | Embed several texts, one result per input in order (`None` for an input that failed). The `LLMBackend` default loops over `embed()`, so a provider written before batching existed is unaffected; `GeminiEmbeddingBackend` overrides it with a real batch request. |
 | `list_models(*, timeout_sec)` | `List[str]` | Names of models the runtime has available. Returns `[]` on error. |
-| `warm_up(model, *, timeout_sec, keep_alive)` | `bool` | Pre-load probe before the first real request. The `LLMBackend` default returns `True` (no-op for runtimes without a useful probe). `OllamaBackend` verifies the server is Ollama via `GET /api/version`, then issues a minimal `/api/chat` completion with the caller-provided `keep_alive` duration (default `"30m"`, `"1m"` in low-power mode) to page the model into resident memory **and** trigger full inference-pipeline initialisation (JIT compilation, KV-cache allocation) — the chat-endpoint warmup prevents the timeout that an empty `/api/generate` ping would mask on the first real call. `OpenAICompatibleBackend` first runs a fast reachability check (`GET /models`, 25 % of budget, max 5 s), then sends a single-token chat completion (`max_tokens=1`) to force the runtime to load the model into memory. |
+| `warm_up(model, *, timeout_sec, keep_alive)` | `bool` | Pre-load probe before the first real request. The `LLMBackend` default returns `True` (no-op for runtimes without a useful probe). `OllamaBackend` verifies the server is Ollama via `GET /api/version`, then issues a minimal `/api/chat` completion with the caller-provided `keep_alive` duration (default `"30m"`, `"1m"` in low-power mode) to page the model into resident memory **and** trigger full inference-pipeline initialisation (JIT compilation, KV-cache allocation) — the chat-endpoint warmup prevents the timeout that an empty `/api/generate` ping would mask on the first real call. `OpenAICompatibleBackend` sends a single-token chat completion (`max_tokens=1`, `content: "ping"`); that inference request *is* the reachability probe, with no `GET /models` gate in front of it. |
 
 `direct()` and `streaming()` are convenience methods over `chat()`: they construct the `[system, user]` messages array internally so callers running classification-shaped passes (planner, intent judge, evaluator, enrichment extractor) do not have to. `chat()` is the low-level primitive for arbitrary message arrays — multi-turn dialogue, native tool calls, and anything that needs custom roles.
 
 ### Tool calling
 
-The `tools` parameter accepts the OpenAI-compatible JSON-schema format produced by `claire.tools.registry.generate_tools_json_schema()`. Ollama 0.4+ adopts that exact format, so no translation layer is needed for the Ollama backend; OpenAI-compatible and Anthropic-compatible backends translate inside their `chat()` methods so the reply engine sees a single shape.
+The `tools` parameter accepts the OpenAI-compatible JSON-schema format produced by `claire.tools.registry.generate_tools_json_schema()`. Ollama 0.4+ adopts that exact format, so no translation layer is needed for the Ollama backend; the OpenAI-compatible backend translates inside its `chat()` method so the reply engine sees a single shape.
 
 When a model rejects the `tools` parameter (Ollama returns HTTP 400 in that case), the backend raises `ToolsNotSupportedError`. The reply engine catches it and falls back to text-based tool calling for the rest of the session.
 
 ### Streaming
 
-Each backend parses its own stream format internally (Ollama JSONL, OpenAI SSE, Anthropic SSE event blocks). The public `on_token(str)` contract is identical across backends.
+Each backend parses its own stream format internally (Ollama JSONL, OpenAI SSE). The public `on_token(str)` contract is identical across backends.
 
 ### Embeddings
 
 `embed()` is part of the same backend interface so the same provider can serve both chat and embeddings when capable. The `embedding_provider` config key lets users on runtimes without embeddings (e.g. some oMLX builds) route embeddings through Ollama while keeping chat on their preferred runtime. Every embedding call site under `src/claire/` resolves through `get_embedding_backend(cfg)`.
+
+#### Asymmetric task types
+
+Retrieval is asymmetric: an indexed document and the query that searches for it are embedded for their own side of the pair, which measurably improves ranking. `embed()` therefore takes an optional `task_type`, with the caller's intent named by the interface constants `TASK_RETRIEVAL_DOCUMENT` and `TASK_RETRIEVAL_QUERY` in `backend.py` (not by any provider's wire format, because the constants describe the caller's intent rather than one vendor's API). Memory indexing and memory search pass the document and query sides respectively; tool selection does the same, embedding the tool-search query as `TASK_RETRIEVAL_QUERY` and each tool summary as `TASK_RETRIEVAL_DOCUMENT`.
+
+Only providers with a task-type field consume the hint. `OllamaBackend` and `OpenAICompatibleBackend` accept the keyword and ignore it, so passing it can never be the reason a request fails; a backend without an asymmetric-retrieval field simply declares the parameter and discards it.
+
+#### Batching
+
+`embed_batch()` returns one entry per input, in order, with `None` for an input that failed. The `LLMBackend` default implementation issues one `embed()` request per text, which is correct for runtimes with no batch endpoint; only `GeminiEmbeddingBackend` overrides it.
+
+#### Gemini embeddings provider
+
+`GeminiEmbeddingBackend` (`src/claire/llm/gemini.py`) is an **embeddings-only** provider. It is deliberately absent from `get_llm_backend`: `embedding_provider = "gemini"` (alias `"google"`) routes memory-search embeddings to Google while chat stays where it was. The API key comes from `embedding_api_key`, falling back to `GEMINI_API_KEY` then `GOOGLE_API_KEY`.
+
+The key travels in the `x-goog-api-key` header and **never in the URL** — the query-string form (`?key=`) would put the secret into every URL and therefore into logs. Output dimensionality is pinned to the 768 floats the vector store is fixed at (`EMBEDDING_DIMENSION` in [src/claire/utils/embedding_vector.py](../utils/embedding_vector.py)); a response of any other width is discarded rather than stored.
+
+The provider uses Google's **native** `:embedContent` / `:batchEmbedContents` surface rather than the OpenAI-compatible shim, for three reasons that all matter to memory search: the native surface has the `taskType` field that carries the asymmetric hint (the OpenAI embeddings schema has no slot for it), it has `outputDimensionality` to pin the 768-wide vector, and `batchEmbedContents` embeds many memories in one request instead of one round-trip each.
 
 ## Configuration
 
@@ -64,14 +86,14 @@ Provider-aware fields in `Settings` (see [src/claire/config.py](../config.py)):
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `llm_provider` | `"ollama"` | `"ollama"` or `"openai_compatible"`. Unknown values fall back to `"ollama"`. |
+| `llm_provider` | `"openai_compatible"` | `"ollama"` or `"openai_compatible"`. Unknown values fall back to `"ollama"`. |
 | `llm_base_url` | (OpenAI-compatible only) | The OpenAI-compatible server's URL, e.g. `http://localhost:1234/v1` (LM Studio default). Read only when `llm_provider == openai_compatible`; the Ollama path always uses `ollama_base_url`. |
 | `llm_api_key` | `""` | Optional bearer token. Sent only when non-empty. |
 | `llm_chat_model` | (OpenAI-compatible only) | The model name the OpenAI-compatible server exposes. Read only when `llm_provider == openai_compatible` (falling back to `ollama_chat_model` if blank); the Ollama path uses `ollama_chat_model`. |
-| `embedding_provider` | inherits `llm_provider` | `"ollama"` / `"openai_compatible"`. Override for runtimes without embeddings. |
+| `embedding_provider` | inherits `llm_provider` | `"ollama"` / `"openai_compatible"` / `"gemini"` (alias `"google"`). Override for runtimes without embeddings, or to route embeddings to Gemini. The Gemini branch never inherits `llm_api_key`. |
 | `embedding_base_url` | inherits from llm config | Override per-provider URL. |
-| `embedding_api_key` | inherits `llm_api_key` | Override per-provider key. |
-| `embedding_model` | (OpenAI-compatible only) | The OpenAI-compatible embedding model. Read only when the effective embedding provider is `openai_compatible` (falling back to `ollama_embed_model` if blank); the Ollama path uses `ollama_embed_model`. |
+| `embedding_api_key` | inherits `llm_api_key`, except on Gemini | Override per-provider key. On the Gemini path the key is `embedding_api_key` or the `GEMINI_API_KEY` / `GOOGLE_API_KEY` environment variables — never the chat router's `llm_api_key`. |
+| `embedding_model` | per-provider | The embedding model. Read only when the effective embedding provider is `openai_compatible` (falling back to `ollama_embed_model` if blank); the Ollama path uses `ollama_embed_model`; the Gemini path defaults to `gemini-embedding-2` (`gemini-embedding-001` is the text-only alternative). |
 | `low_power_mode` | `false` | When enabled, voice startup skips LLM warmup and Ollama keep-alive windows used by warmup and the intent judge are short. |
 
 The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned).
@@ -120,10 +142,10 @@ The migration in `_migrate_config` runs once when `_config_version < 2`:
 - Tool calls: native `tools` parameter; OpenAI returns `tool_calls[*].function.arguments` as a JSON-encoded string. The backend decodes them to a dict so the reply engine sees a single shape.
 - Response normalisation: `_normalise_response` lifts `choices[0].message` to top-level `message` so callers do not branch on provider. Servers that already return Ollama-shaped responses pass through unchanged.
 - `extra_options` lifts sampling fields (`temperature`, `max_tokens`, `top_p`, `stop`, …) to the payload root and silently drops Ollama-only knobs (`keep_alive`, `num_ctx`, `num_predict`, `think`) that have no equivalent in the OpenAI shape.
-- `warm_up(model)` is a two-phase probe: it first issues ``GET /models`` as a fast reachability check (capped at 25 % of the budget, max 5 s), then sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) to force the runtime to load the model into memory. `warm_up` never raises — every failure path returns `False`, so the listener can warn the user early. Without the inference phase, an OpenAI-compatible server may keep the model in a cold state until the first real user request, incurring latency on the first query. The fallback stance remains: a failed warmup is informational and never blocks operation. `keep_alive` is accepted for signature parity with `OllamaBackend.warm_up` but ignored: OpenAI-compatible servers manage model residency at server load time.
+- `warm_up(model)` is a single inference probe: it sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) and treats that request itself as the reachability check, with no ``GET /models`` gate in front of it. The catalogue gate was removed because a gateway proxying a large catalogue can take longer to list models than the capped budget allowed, so a healthy model was reported as a failed warmup on every call. `warm_up` never raises — every failure path returns `False`, so the listener can warn the user early. The inference also forces the runtime to load the model, so it is not left cold until the first real user request. The fallback stance remains: a failed warmup is informational and never blocks operation. `keep_alive` is accepted for signature parity with `OllamaBackend.warm_up` but ignored: OpenAI-compatible servers manage model residency at server load time.
 - Authentication: `Authorization: Bearer <api_key>` header sent only when `api_key` is non-empty.
 - Error logs do not echo URLs or API keys: HTTP errors print only the status code, generic exceptions print only the class name, connection errors print a fixed string and re-raise so callers can apply their own back-off.
-- `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
+- `check_capabilities(chat_model, embed_model=None, timeout_sec)` returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
 
 ## Module-local LLM wrappers
 
@@ -149,6 +171,7 @@ src/claire/llm/
 ├── backend.py              # LLMBackend ABC + ToolsNotSupportedError
 ├── ollama.py               # OllamaBackend + extract_text_from_response
 ├── openai_compatible.py    # OpenAICompatibleBackend + _normalise_response
+├── gemini.py               # GeminiEmbeddingBackend (embeddings only, native API)
 ├── factory.py              # get_llm_backend(cfg) + get_embedding_backend(cfg)
 └── llm.spec.md             # this file
 ```
@@ -157,4 +180,4 @@ src/claire/llm/
 
 `chat()` recognises response-body read timeouts wrapped as `requests.ConnectionError(urllib3.ReadTimeoutError(...))`. These follow the normal timeout path: a safe message includes the configured timeout, `None` is returned, and intent detection does not enter connection-failure cooldown. Classification uses exception types and explicit causes/arguments, never message matching or raw exception text. Actual connection failures still propagate; URLs, headers and credentials are not printed.
 
-Backends fail soft for transient issues so the reply engine can degrade gracefully: timeouts and HTTP errors return `None` (or `[]` for `list_models`); HTTP 400 with `tools` set raises `ToolsNotSupportedError`; any other unexpected error is logged via `debug_log("...", "llm")` and returns `None`. The one exception is `requests.ConnectionError` (server unreachable), which `chat()` re-raises so callers like the intent judge can apply their own back-off — voice, for example, wants a 30s cooldown after a connection-refused error so it stops hammering an unresponsive Ollama between wake words.
+Backends fail soft for transient issues so the reply engine can degrade gracefully: timeouts and HTTP errors return `None` (or `[]` for `list_models`); an HTTP 400 with `tools` attached raises `ToolsNotSupportedError` only when the response body blames tool support (`errors.indicates_tools_unsupported`), while a bare 400 returns `None` and does **not** downgrade the session to text-based tool calling; any other unexpected error is logged via `debug_log("...", "llm")` and returns `None`. The one exception is `requests.ConnectionError` (server unreachable), which `chat()` re-raises so callers like the intent judge can apply their own back-off — voice, for example, wants a 30s cooldown after a connection-refused error so it stops hammering an unresponsive Ollama between wake words.

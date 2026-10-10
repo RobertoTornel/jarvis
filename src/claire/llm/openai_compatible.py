@@ -55,11 +55,13 @@ def _normalise_response(data: Dict[str, Any]) -> Dict[str, Any]:
     If the server already returns Ollama's shape (some hybrid servers
     expose both endpoints), the response is passed through unchanged.
 
-    Scope: this helper is OpenAI-shape-specific. Other providers
-    (Anthropic, etc.) need their own normaliser inside their own
-    backend module — Anthropic's content-block + ``tool_use`` shape
-    diverges enough that sharing one normaliser would be more
-    confusing than useful. Keep one normaliser per backend.
+    Scope: this helper is OpenAI-shape-specific. Ollama has its own
+    shape and its own normaliser; Gemini is embeddings-only and has no
+    chat normaliser at all. Any future chat backend whose wire shape
+    diverges from OpenAI's — content blocks plus ``tool_use``-style
+    blocks, say — would carry its own normaliser in its own module:
+    sharing one would be more confusing than useful. Keep one
+    normaliser per backend.
     """
     if "message" in data and isinstance(data["message"], dict):
         return data
@@ -372,7 +374,16 @@ class OpenAICompatibleBackend(LLMBackend):
         text: str,
         model: str,
         timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
     ) -> Optional[List[float]]:
+        """Embed ``text`` through the OpenAI-compatible ``/embeddings`` route.
+
+        ``task_type`` is accepted for interface parity and ignored: the
+        OpenAI embeddings schema has no asymmetric-retrieval field, and the
+        compatibility layers in front of it (Gemini, vLLM, LM Studio) either
+        ignore or reject unknown body keys, so sending one would be a silent
+        no-op at best. The Gemini backend uses its native API and does honour
+        it."""
         try:
             resp = requests.post(
                 f"{self._base_url}/embeddings",

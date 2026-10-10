@@ -183,7 +183,10 @@ handed out exactly once, by the next poll, and never again.
 
 ### 3.3 Loopback by default; public only by explicit opt-in, and loudly
 
-* `DEFAULT_HOST == "127.0.0.1"` and `DEFAULT_PORT == 8765`.
+* `DEFAULT_HOST == "127.0.0.1"` and `DEFAULT_PORT == 8788` (`bridge.py:193`,
+  `:203`). This is the *bridge* port and is not the web-panel port: the panel
+  (`python -m claire.panel.server`) serves `http://127.0.0.1:8765/`
+  (`src/claire/panel/server.py:150`), which is why the bridge moved off 8765.
   `$CLAIRE_PHONE_HOST` / `$CLAIRE_PHONE_PORT` override it.
 * `is_loopback_host` accepts `localhost`, `127.0.0.0/8` and `::1` only. A *name
   that resolves* to loopback is not accepted: DNS is not a security decision.
@@ -197,7 +200,7 @@ handed out exactly once, by the next poll, and never again.
   > and the bearer token itself travel as **unencrypted plain HTTP**, readable
   > and replayable by anyone on that network. A tunnel is the right answer: keep
   > the bridge on `127.0.0.1` and forward to it
-  > (`ssh -N -L 8765:127.0.0.1:8765 owner@laptop`), or put it behind WireGuard.
+  > (`ssh -N -L 8788:127.0.0.1:8788 owner@laptop`), or put it behind WireGuard.
 
 * Because there is no TLS here, the tunnel is not a nicety: it is the only
   supported way to reach this bridge from outside the machine.

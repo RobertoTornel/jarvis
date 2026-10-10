@@ -160,7 +160,14 @@ public class CameraActivity extends AppCompatActivity {
             } catch (Exception error) {
                 status.setText(getString(R.string.camera_failed,
                         error.getClass().getSimpleName() + ": " + error.getMessage()));
-                shutter.setEnabled(false);
+                // Stay tappable. Disabling the shutter here made the retry in
+                // capture() unreachable: that path exists to say "the camera is
+                // still opening; tap again in a moment" and call startCamera()
+                // again, and a button the owner cannot press is the "i cant tap
+                // it" symptom this screen exists to remove. showLive() is the
+                // only other place that re-enables it, and a bind failure never
+                // reaches it, so a disabled shutter stranded them for good.
+                shutter.setEnabled(true);
             }
         }, ContextCompat.getMainExecutor(this));
     }

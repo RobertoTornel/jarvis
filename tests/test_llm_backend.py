@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from claire.llm import LLMBackend
+
 # The unit gate deselects any test that is not marked `unit`; a module-level
 # pytestmark makes this whole file visible to it.
 pytestmark = pytest.mark.unit  # the gate is `pytest tests/ -m unit`
@@ -534,6 +536,54 @@ class TestOllamaBackendEmbed:
         backend = OllamaBackend("http://localhost:11434")
 
         assert backend.embed("hello", "nomic-embed-text") is None
+
+
+class TestDefaultEmbedBatch:
+    """``embed_batch`` is additive: the ``LLMBackend`` default loops over
+    ``embed``, so a provider that never implements batching is unaffected
+    (one request per text, same results, right order)."""
+
+    class _MinimalBackend(LLMBackend):
+        """Concrete ``LLMBackend`` that implements only the abstract methods
+        and does not override ``embed_batch`` — the shape of a provider
+        written before batching existed."""
+
+        def __init__(self, vectors):
+            self._vectors = vectors
+            self.calls = []
+
+        def direct(self, chat_model, system_prompt, user_content, **kwargs):
+            return None
+
+        def streaming(self, chat_model, system_prompt, user_content, **kwargs):
+            return None
+
+        def chat(self, chat_model, messages, **kwargs):
+            return None
+
+        def list_models(self, timeout_sec=5.0):
+            return []
+
+        def embed(self, text, model, timeout_sec=15.0, task_type=None):
+            self.calls.append((text, task_type))
+            return self._vectors.get(text)
+
+    def test_default_loops_in_order_and_keeps_failures_as_none(self):
+        backend = self._MinimalBackend({"a": [1.0], "c": [3.0]})
+
+        result = backend.embed_batch(["a", "b", "c"], "m")
+
+        assert result == [[1.0], None, [3.0]]
+        assert [text for text, _ in backend.calls] == ["a", "b", "c"]
+
+    def test_default_forwards_the_task_type_to_each_embed(self):
+        from claire.llm import TASK_RETRIEVAL_DOCUMENT
+
+        backend = self._MinimalBackend({"a": [1.0], "b": [2.0]})
+
+        backend.embed_batch(["a", "b"], "m", task_type=TASK_RETRIEVAL_DOCUMENT)
+
+        assert [tt for _, tt in backend.calls] == [TASK_RETRIEVAL_DOCUMENT] * 2
 
 
 class TestOllamaBackendListModels:

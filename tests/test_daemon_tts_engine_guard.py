@@ -137,12 +137,16 @@ def test_unavailable_engine_reference_never_claims_to_speak():
 # The startup path itself
 # ---------------------------------------------------------------------------
 
-def _run_smoke_startup(monkeypatch, tts_factory, engine_name="piper"):
+def _run_smoke_startup(monkeypatch, tts_factory=None, engine_name="piper", cfg=None):
     """Run ``daemon.main(smoke_test=True)`` with heavy dependencies stubbed.
 
     Mirrors the established harness in ``tests/test_desktop_app.py`` so the real
     startup path runs, but no model, database, key file or audio device is used.
     Returns what the voice listener received and what the poller saw.
+
+    Pass ``tts_factory=None`` to leave the *real* ``create_tts_engine`` in place
+    (the only way to reach a real Fish key-file failure), and ``cfg`` to choose
+    the settings the daemon boots with.
     """
     from claire import daemon
 
@@ -150,7 +154,8 @@ def _run_smoke_startup(monkeypatch, tts_factory, engine_name="piper"):
     mock_db = MagicMock()
 
     monkeypatch.setattr(
-        daemon, "load_settings", lambda: _config(tts_engine=engine_name),
+        daemon, "load_settings",
+        lambda: cfg if cfg is not None else _config(tts_engine=engine_name),
     )
     monkeypatch.setattr(daemon, "Database", MagicMock(return_value=mock_db))
     monkeypatch.setattr(daemon, "initialize_mcp_tools", lambda *a, **k: ({}, {}))
@@ -158,7 +163,8 @@ def _run_smoke_startup(monkeypatch, tts_factory, engine_name="piper"):
     monkeypatch.setattr(
         daemon, "get_location_context", lambda *a, **k: "Location: Test",
     )
-    monkeypatch.setattr(daemon, "create_tts_engine", tts_factory)
+    if tts_factory is not None:
+        monkeypatch.setattr(daemon, "create_tts_engine", tts_factory)
 
     def _voice_listener(db, cfg, tts, memory, **kwargs):
         recorded["listener_tts"] = tts
@@ -205,6 +211,99 @@ def test_daemon_startup_survives_an_unknown_engine(monkeypatch, capsys):
     # The voice listener receives the same inert, non-speaking engine.
     assert recorded["listener_tts"] is polled
     assert recorded["listener_tts"].enabled is False
+
+
+# ---------------------------------------------------------------------------
+# The real Fish failure a stubbed factory can never reproduce
+# ---------------------------------------------------------------------------
+
+FISH_VOICE = "2466933c79e14edebce3ca8224e497e0"
+
+
+def test_start_tts_engine_turns_a_raising_engine_into_disabled_speech(capsys):
+    """``start()`` raising is a disabled-speech outcome, not a daemon crash.
+
+    The Fish engine deliberately raises from ``start()`` rather than report
+    speech it cannot make (rule N10). The daemon owns the decision to keep
+    running, so the daemon must own the catch.
+    """
+    from claire import daemon
+
+    engine = MagicMock()
+    engine.enabled = True
+    engine.start.side_effect = RuntimeError("Fish Audio API key file is unusable")
+
+    assert daemon._start_tts_engine(engine) is False
+
+    output = capsys.readouterr().out
+    assert "Fish Audio API key file is unusable" in output, "the reason must be visible"
+    assert "speech output unavailable" in output.lower()
+    assert "TTS engine started" not in output
+
+
+@pytest.mark.parametrize(
+    "key_state,voice_id",
+    [
+        ("missing", FISH_VOICE),      # no key file at all
+        ("empty", FISH_VOICE),        # key file with no keys in it
+        ("world_readable", FISH_VOICE),  # key file not 0600
+        ("private", ""),              # key file fine, voice id absent
+    ],
+)
+def test_daemon_startup_survives_a_real_fish_start_refusal(
+    monkeypatch, tmp_path, capsys, key_state, voice_id,
+):
+    """The shipped default engine must not kill the daemon on a bad key file.
+
+    This is the failure a stubbed factory can never reach: with ``fish`` the
+    client - and therefore the key file - is read lazily inside ``start()``,
+    after ``_initialize_tts_engine`` has already returned the engine. The
+    daemon used to call ``start()`` unguarded, so the refusal propagated out of
+    ``daemon.main`` and the process died.
+    """
+    from claire import daemon
+
+    key_file = tmp_path / "fish-keys.txt"
+    if key_state == "empty":
+        key_file.write_text("")
+    elif key_state == "world_readable":
+        key_file.write_text("a-key-that-must-be-0600\n")
+        key_file.chmod(0o644)
+    elif key_state == "private":
+        key_file.write_text("a-key-that-must-be-0600\n")
+        key_file.chmod(0o600)
+    # "missing": leave the path absent.
+
+    cfg = _config(
+        tts_engine="fish",
+        fish_voice_id=voice_id,
+        fish_key_file=str(key_file),
+        fish_latency="low",
+        fish_model="s2.1-pro-free",
+    )
+
+    # ``tts_factory=None`` keeps the REAL factory, so a real FishTTS.start()
+    # runs and fails for the real reason. No audio device is touched: the key
+    # check happens before the player is built.
+    recorded = _run_smoke_startup(monkeypatch, tts_factory=None, cfg=cfg)
+    output = capsys.readouterr().out
+    lower = output.lower()
+
+    assert "SMOKE_TEST_INIT_OK" in output, f"the daemon did not survive startup:\n{output}"
+    assert "TTS engine failed to start" in output, "the failure must be loud"
+    assert str(key_file) in output, "the engine's own diagnostic must name the key file"
+    assert "speech output unavailable" in lower
+    assert "TTS engine started" not in output
+
+    polled = recorded["polled_engine"]
+    assert polled is not None, "the poller must never receive None to crash on"
+    assert polled.enabled is False
+    assert polled.is_speaking() is False
+    assert polled.speak("cannot be spoken") is False
+
+    # The listener and the text path get the same inert engine, not the
+    # half-started one that would re-raise on every reply.
+    assert recorded["listener_tts"] is polled
 
 
 def test_daemon_startup_still_starts_a_valid_engine(monkeypatch, capsys):

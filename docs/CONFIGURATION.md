@@ -68,7 +68,9 @@ user-led exchanges so tool results are never orphaned from their parents:
 }
 ```
 
-**Embeddings** (used for memory search) can run on a different backend. If your chat server has no embeddings endpoint, memory falls back to keyword search. To keep full semantic memory, route embeddings to Ollama (the wizard offers this automatically when it detects a server that cannot embed):
+**Embeddings** (used for memory search) can run on a different backend from chat. `embedding_provider` accepts `""` (inherit the chat provider), `"ollama"`, `"openai_compatible"` or `"gemini"`.
+
+Route embeddings to Ollama to keep full semantic memory when your chat server has no embeddings endpoint (the wizard offers this automatically when it detects a server that cannot embed):
 
 ```json
 {
@@ -77,7 +79,28 @@ user-led exchanges so tool results are never orphaned from their parents:
 }
 ```
 
-Leave `embedding_provider` empty to use the same provider as chat. With no working embeddings, memory search degrades gracefully to keyword search.
+Route them to Google's Gemini embedding models with `"gemini"`:
+
+```json
+{
+  "embedding_provider": "gemini",
+  "embedding_model": "gemini-embedding-2"
+}
+```
+
+| Key | Default | Meaning |
+| :--- | :--- | :--- |
+| `embedding_provider` | `""` | `""` = same as `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (alias `"google"`) |
+| `embedding_model` | provider-aware | `ollama_embed_model` on the Ollama/OpenAI-compatible paths; `gemini-embedding-2` on the Gemini path. Set it explicitly to pick `gemini-embedding-001` instead |
+| `embedding_base_url` | provider default | Gemini defaults to `https://generativelanguage.googleapis.com/v1beta` |
+| `embedding_api_key` | `""` | On the Gemini path an empty value is read from `GEMINI_API_KEY`, then `GOOGLE_API_KEY`. The chat key (`llm_api_key` / `OMNIROUTE_API_KEY`) is never sent to Google |
+
+Notes on embeddings:
+
+- **Gemini uses the native API**, not the OpenAI-compatible shim, so the two sides of a retrieval can carry different task types (`RETRIEVAL_DOCUMENT` when a memory is indexed, `RETRIEVAL_QUERY` when it is searched). Indexing many memories at once uses `batchEmbedContents` instead of one request per memory.
+- **The model is a config value, and the two Gemini models are not interchangeable.** `gemini-embedding-2` is the default (newest; the owner's `gemini-embedding-002` does not exist). `gemini-embedding-001` is the text-only alternative. Google documents their embedding spaces as incompatible, so switching between them requires re-embedding existing memories.
+- **The output length is pinned to the index, not configured.** Claire's vector index is 768 floats wide — `vss0(vec(768))` for sqlite-vss and a 768-dimension FAISS index otherwise — and the Gemini client requests exactly that `outputDimensionality`. A vector of any other length is discarded instead of written.
+- Leave `embedding_provider` empty to use the same provider as chat. With no working embeddings — no key, no reachable service, a renamed model — memory search logs the failure and degrades to keyword search.
 
 </details>
 
@@ -371,25 +394,34 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 </details>
 
 <details>
-<summary><strong>Location Detection</strong></summary>
+<summary><strong>Location</strong></summary>
 
-Claire can provide location-aware responses (local time, for example) using a local GeoLite2 database: no cloud geolocation services are used.
+Claire does **not** detect her own location. IP geolocation — UPnP router
+queries, the socket heuristic, the OpenDNS lookup and the local MaxMind
+GeoLite2 database — has been removed. On a host without the GeoLite2 database
+it still ran every network probe first, blocking the reply path for around
+**12 seconds** per turn to produce a value that was usually unknown anyway.
 
-**IP detection chain** (in order of preference):
-1. **Manual IP**: configure `location_ip_address` in settings
-2. **UPnP**: queries your local router (no traffic leaves LAN)
-3. **Socket heuristic**: determines which interface routes externally (no data sent)
-4. **OpenDNS DNS query**: single `myip.opendns.com` lookup to `208.67.222.222` (only external query)
-
-If your ISP uses carrier-grade NAT (CGNAT), Claire automatically resolves your true public IP via the same OpenDNS DNS query. This can be disabled:
+The only remaining source is an explicitly configured city, read from
+`location_city` (default `""`, meaning no city is set):
 
 ```json
 {
-  "location_cgnat_resolve_public_ip": false
+  "location_enabled": true,
+  "location_city": "Lisbon"
 }
 ```
 
-**Setup:** Register for a free [MaxMind GeoLite2](https://www.maxmind.com/en/geolite2/signup) account, download the City database (MMDB format), and save it to `~/.local/share/claire/geoip/GeoLite2-City.mmdb`. The setup wizard will guide you through this.
+With no city set, location-aware answers (for example "what's the weather?")
+ask for a place instead. The local time is still correct — it comes from the
+operating system's timezone, since a city name is not an IANA zone and there
+is no database left to derive one.
+
+`location_enabled` is still honoured as a master toggle (setting it to
+`false` reports `"Location: Disabled"`). The other `location_*` keys
+(`location_auto_detect`, `location_ip_address`,
+`location_cgnat_resolve_public_ip`, `location_cache_minutes`) no longer have
+any effect.
 
 </details>
 

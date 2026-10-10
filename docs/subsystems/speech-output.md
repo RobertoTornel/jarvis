@@ -4,11 +4,8 @@
 Read this when you are changing how a reply becomes audio, adding an engine,
 tuning barge-in, or debugging silence.
 
-**Read the spec with care.** `tts.spec.md` is 32 lines and describes only the
-local engines (Piper, Chatterbox). The default engine is **Fish Audio**, a cloud
-streaming synthesiser, and no spec file mentions it. Until that spec is brought
-up to date, the code in `src/claire/output/` is the only complete account. The
-discrepancies are itemised at the end of this page.
+`tts.spec.md` states the three engines and which synthesis happens locally. The
+default engine is **Fish Audio**, a cloud streaming synthesiser.
 
 ## Responsibility
 
@@ -187,7 +184,7 @@ quiet fails in seconds rather than two minutes; a construction where
 - **PortAudio missing**: the listener reports the import error and how to fix it
   (`listener.py:152`–`:167`); capture, not TTS, is what fails.
 - **An engine that cannot initialise** never starts a worker and never queues
-  speech (`tts.spec.md:7`, realised by `_UnavailableTTS` at `daemon.py:52`).
+  speech (`tts.spec.md:23`, realised by `_UnavailableTTS` at `daemon.py:52`).
 - **Interrupt during synthesis**: `flush` invalidates the generation, so audio
   synthesised for the abandoned utterance is dropped rather than played late.
 
@@ -199,24 +196,19 @@ quiet fails in seconds rather than two minutes; a construction where
 
 ## Documentation drift
 
-- **`tts.spec.md` documents a local-only synthesiser.**
-  `src/claire/output/tts.spec.md:3`–`:5` states "Speech synthesis runs locally.
-  Piper uses a local ONNX voice ... Neither backend sends user text or audio to
-  a cloud synthesis service." The configured default is `tts_engine: "fish"`
-  (`src/claire/config.py:617`), which sends the reply text to
-  `https://api.fish.audio/v1/tts` (`src/claire/output/fish_client.py:10`,
-  `:68`). The spec also never mentions `fish_voice_id`, `fish_key_file`,
-  `fish_latency` or `fish_model`. **There is no spec file for
-  `fish_tts.py` or `fish_client.py` at all**, although they are over 2000 lines
-  together and are the default path.
+- **There is no spec file for `fish_tts.py` or `fish_client.py`.** They are over
+  2000 lines together and are the default path; `tts.spec.md` states the engine
+  landscape and the privacy boundary, but the two Fish modules have no spec of
+  their own.
 - **The factory docstring has the wrong default.**
   `src/claire/output/tts.py:1073` says `"piper" (default)` while the shipped
   default is `"fish"` (`src/claire/config.py:617`). Behaviour is correct; only
   the docstring is stale.
 - **`tts.spec.md` claims both backends load their model "before accepting
-  speech work"** (`tts.spec.md:9`). That is true of Piper and Chatterbox; the
-  Fish engine defers its client construction to its synth loop and can fail a
-  turn after startup when key rotation is exhausted.
+  speech work"** (`tts.spec.md:25`). That is true of Piper and Chatterbox; the
+  Fish engine reads its key file and builds its client in `start()`
+  (`src/claire/output/fish_tts.py:714`–`:729`) and can fail a turn after startup
+  when key rotation is exhausted.
 - **The exact-duration path is Piper-only.** The listener passes
   `duration_callback` to every engine (`listener.py:1547`) while the comment at
   `listener.py:1533` notes it is Piper-only. Fish and Chatterbox ignore it; the

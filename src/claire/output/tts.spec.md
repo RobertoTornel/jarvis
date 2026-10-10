@@ -1,8 +1,24 @@
 # Speech output specification
 
-Speech synthesis runs locally. Piper uses a local ONNX voice and its JSON
-configuration; Chatterbox uses locally loaded model weights. Neither backend
-sends user text or audio to a cloud synthesis service.
+Synthesis runs through one of three engines: `piper`, `chatterbox` or `fish`
+(`SUPPORTED_TTS_ENGINES`, `src/claire/output/tts.py:1021`). The configured
+default is `fish` (`src/claire/config.py:614`, `:943`), so the cloud path below
+is what a fresh install takes.
+
+Piper and Chatterbox synthesise locally. Piper loads a local ONNX voice and its
+JSON configuration; Chatterbox loads local model weights. Neither sends reply
+text, microphone audio or any local file to a synthesis service.
+
+Fish is a cloud engine and a voice-cloning service: `fish_voice_id` names a
+cloned voice held by Fish Audio, not a local model. Each sentence of a reply is
+posted to `https://api.fish.audio/v1/tts`
+(`src/claire/output/fish_client.py:68`), authenticated with one key from
+`fish_key_file`. The request body carries the spoken reply text, the configured
+`fish_voice_id`, the model id and the latency setting (`fish_model`,
+`fish_latency`; `fish_client.py:556`–`:574`). This code uploads no audio and no
+local file — no reference audio, no microphone capture and no conversation
+history are sent (`docs/CLOUD_POLICY.md`). Selecting `piper` or `chatterbox`
+keeps synthesis on the machine.
 
 ## Startup availability
 

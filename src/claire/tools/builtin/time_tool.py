@@ -175,21 +175,13 @@ class TimeTool(Tool):
                     reply_text=f"Current time in {display}: {time_str}",
                 )
 
-            # No location — the user's own local time. Prefer the GeoIP zone
-            # when available; format_time_context falls back to the OS zone.
+            # No location — the user's own local time. There is no GeoIP zone
+            # to refine it any more (IP geolocation was removed), so the
+            # timezone is None and format_time_context uses the OS zone.
             tz_name: Optional[str] = None
             if context.cfg is not None:
                 try:
-                    _, tz_name = get_location_context_with_timezone(
-                        config_ip=getattr(context.cfg, "location_ip_address", None),
-                        auto_detect=getattr(context.cfg, "location_auto_detect", True),
-                        resolve_cgnat_public_ip=getattr(
-                            context.cfg, "location_cgnat_resolve_public_ip", True
-                        ),
-                        location_cache_minutes=getattr(
-                            context.cfg, "location_cache_minutes", 60
-                        ),
-                    )
+                    _, tz_name = get_location_context_with_timezone(cfg=context.cfg)
                 except Exception as e:
                     debug_log(f"getTime: local tz lookup failed: {e}", "tools")
                     tz_name = None

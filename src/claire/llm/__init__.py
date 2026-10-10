@@ -28,7 +28,19 @@ from typing import Any, Callable, Dict, List, Optional
 
 import requests  # noqa: F401  — re-exported for test patching, see module docstring
 
-from .backend import LLMBackend, ToolsNotSupportedError
+from .backend import (
+    LLMBackend,
+    TASK_RETRIEVAL_DOCUMENT,
+    TASK_RETRIEVAL_QUERY,
+    ToolsNotSupportedError,
+)
+from .gemini import (
+    GEMINI_BASE_URL,
+    GEMINI_DEFAULT_EMBED_MODEL,
+    GEMINI_PROVIDER,
+    GEMINI_TEXT_ONLY_EMBED_MODEL,
+    GeminiEmbeddingBackend,
+)
 from .ollama import OllamaBackend, check_version, extract_text_from_response
 from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
 from .factory import get_embedding_backend, get_llm_backend
@@ -36,8 +48,15 @@ from .tiers import Tier, resolve_model
 
 __all__ = [
     "LLMBackend",
+    "TASK_RETRIEVAL_DOCUMENT",
+    "TASK_RETRIEVAL_QUERY",
     "OllamaBackend",
     "OpenAICompatibleBackend",
+    "GeminiEmbeddingBackend",
+    "GEMINI_BASE_URL",
+    "GEMINI_DEFAULT_EMBED_MODEL",
+    "GEMINI_PROVIDER",
+    "GEMINI_TEXT_ONLY_EMBED_MODEL",
     "ServerCapabilities",
     "Tier",
     "ToolsNotSupportedError",

@@ -1,172 +1,201 @@
-import types
-from unittest.mock import patch
+"""Location is configuration only: no IP discovery, no GeoLite2, no blocking.
+
+Replaces the old tests that exercised the removed IP/UPnP/GeoLite2/disk-cache
+stack. The point of these tests is that the reply path cannot block on the
+network: the old ``auto_detect=True`` lookup took ~12 seconds on a host with
+no GeoLite2 database, and that path no longer exists.
+"""
+
+import socket
+import time
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import pytest
 
-from claire.reply.engine import run_reply_engine
+from claire.reply.engine import _live_time_location_string
+from claire.utils import location
 from claire.utils.location import (
+    get_configured_city,
     get_location_context,
-    _get_external_ip_automatically,
+    get_location_context_with_timezone,
+    is_location_available,
 )
 
 pytestmark = pytest.mark.unit
 
 
-class DummyDB:
-    pass
+def _cfg(**over):
+    base = {"location_enabled": True}
+    base.update(over)
+    return SimpleNamespace(**base)
 
 
-class DummyDialogueMemory:
-    def has_recent_messages(self):
-        return False
+class TestConfiguredCityOnly:
+    """The module reports a configured city and nothing else."""
 
-    def get_recent_messages(self):
-        return []
+    def test_unknown_without_city(self):
+        assert get_location_context(_cfg()) == "Location: Unknown"
 
-    def add_message(self, role, content):
-        pass
+    def test_reports_configured_city(self):
+        assert get_location_context(_cfg(location_city="Lisbon")) == "Location: Lisbon"
 
+    def test_blank_city_is_not_a_location(self):
+        assert get_configured_city(_cfg(location_city="   ")) is None
+        assert get_location_context(_cfg(location_city="   ")) == "Location: Unknown"
 
-class DummyTTS:
-    enabled = False
+    def test_disabled_toggle_wins(self):
+        cfg = _cfg(location_enabled=False, location_city="Lisbon")
+        assert get_location_context(cfg) == "Location: Disabled"
+        assert is_location_available(cfg) is False
 
+    def test_timezone_is_always_none(self):
+        _, tz_name = get_location_context_with_timezone(_cfg(location_city="Lisbon"))
+        assert tz_name is None
 
-def _make_cfg(**overrides):
-    # Minimal settings object with required attributes referenced in engine
-    base = {
-        'llm_provider': 'ollama',
-        'llm_base_url': 'http://127.0.0.1:11434',
-        'llm_chat_model': 'gemma4',
-        'embedding_model': 'nomic-embed-text',
-        'ollama_base_url': 'http://127.0.0.1:11434',
-        'ollama_chat_model': 'gemma4',
-        'ollama_embed_model': 'nomic-embed-text',
-        'llm_profile_select_timeout_sec': 0.1,
-        'llm_tools_timeout_sec': 0.1,
-        'llm_embedding_timeout_sec': 0.1,
-        'llm_chat_timeout_sec': 0.1,
-        'agentic_max_turns': 1,
-        'voice_debug': False,
-        'memory_enrichment_max_results': 0,
-        'mcps': {},
-        'location_enabled': True,
-        'location_auto_detect': False,
-        'location_ip_address': None,
-        'location_cgnat_resolve_public_ip': True,
-    }
-    base.update(overrides)
-    return types.SimpleNamespace(**base)
+    def test_legacy_discovery_kwargs_are_ignored(self):
+        """Old call shapes passed the discovery knobs; they must not raise."""
+        context = get_location_context(
+            _cfg(),
+            config_ip="203.0.113.4",
+            auto_detect=True,
+            resolve_cgnat_public_ip=True,
+            location_cache_minutes=60,
+        )
+        assert context == "Location: Unknown"
+
+    def test_mapping_config_is_accepted(self):
+        assert get_location_context({"location_city": "Porto"}) == "Location: Porto"
+        assert get_location_context({}) == "Location: Unknown"
 
 
-def test_get_location_context_disabled_flag():
-    cfg = _make_cfg(location_enabled=False)
-    # Direct call should be 'Location: Unknown' since we bypass engine wrapper
-    direct = get_location_context(config_ip=None, auto_detect=False, resolve_cgnat_public_ip=True)
-    # But engine should inject a context message that explicitly shows disabled
-    # We can't fully run LLM chat here (would require external service), so instead
-    # we call the internal helper indirectly by simulating run_reply_engine with 0 turns.
-    # Set agentic_max_turns=0 to skip loop and ensure no network activity.
-    cfg.agentic_max_turns = 0
-    reply = run_reply_engine(DummyDB(), cfg, DummyTTS(), "test message", DummyDialogueMemory())
-    # Engine returns None because no turns executed, but we assert that our disabled
-    # logic produced 'Location: Disabled' rather than attempting lookup (cannot easily
-    # capture printed system messages without refactor, so just ensure direct value plausible)
-    assert direct in ("Location: Unknown", "Location: Disabled")
+class TestRemovedMachineryIsGone:
+    """The IP/UPnP/GeoLite2/disk-cache stack is deleted, not just unused."""
+
+    def test_all_removed_symbols_are_absent(self):
+        removed = (
+            # entry point and its public wrappers
+            "get_location_info",
+            "get_detailed_location_info",
+            "setup_location_database",
+            # GeoLite2 database handling
+            "_get_database_path",
+            "_download_geolite2_database",
+            "_print_location_setup_instructions",
+            "GEOIP2_AVAILABLE",
+            # IP discovery
+            "_is_private_ip",
+            "_is_cgnat_ip",
+            "_get_local_network_ip",
+            "_get_external_ip_via_upnp",
+            "_get_external_ip_via_socket",
+            "_get_external_ip_automatically",
+            "_resolve_public_ip_via_opendns",
+            "MINIUPNPC_AVAILABLE",
+            # formatting and caches
+            "_format_location_context",
+            "_cache_base_dir",
+            "_load_disk_caches",
+            "_persist_disk_caches",
+            "_location_cache",
+            "_cgnat_resolution_cache",
+            "_upnp_attempted",
+            "_upnp_cached_ip",
+        )
+        still_present = [name for name in removed if hasattr(location, name)]
+        assert still_present == [], f"removed symbols still present: {still_present}"
+
+    def test_no_geolocation_libraries_are_imported(self):
+        assert not hasattr(location, "geoip2")
+        assert not hasattr(location, "miniupnpc")
 
 
-def test_auto_detect_falls_back_to_opendns_when_upnp_and_socket_fail():
-    """OpenDNS DNS query is the final fallback in auto-detection (step 3)."""
-    with patch("claire.utils.location._get_external_ip_via_upnp", return_value=None), \
-         patch("claire.utils.location._get_external_ip_via_socket", return_value=None), \
-         patch("claire.utils.location._resolve_public_ip_via_opendns", return_value="93.184.216.34") as mock_dns:
-        result = _get_external_ip_automatically()
-        mock_dns.assert_called_once()
-        assert result == "93.184.216.34"
+class TestReplyPathCannotBlock:
+    """The live time/location line is pure config access."""
+
+    def test_no_network_io_on_the_reply_path(self, monkeypatch):
+        def _forbidden(*_args, **_kwargs):
+            raise AssertionError("live context attempted network I/O")
+
+        monkeypatch.setattr(socket, "socket", _forbidden)
+        monkeypatch.setattr(socket, "create_connection", _forbidden)
+        monkeypatch.setattr(socket, "getaddrinfo", _forbidden)
+
+        out = _live_time_location_string(_cfg(location_auto_detect=True))
+
+        assert out.startswith("Current local time:")
+        assert "Location: Unknown" in out
+
+    def test_live_context_returns_immediately(self):
+        """The old auto-detect path blocked ~12s with no GeoLite2 database."""
+        cfg = _cfg(
+            location_auto_detect=True,
+            location_ip_address=None,
+            location_cgnat_resolve_public_ip=True,
+            location_cache_minutes=60,
+        )
+        start = time.monotonic()
+        out = _live_time_location_string(cfg)
+        elapsed = time.monotonic() - start
+
+        assert out
+        assert elapsed < 2.0, f"live context took {elapsed:.2f}s; it must not block"
+
+    def test_engine_uses_context_supplied_by_its_caller(self):
+        """The engine attribute stays patchable, so evals can inject a city.
+
+        The evals patch this symbol with a keyword-only mock
+        (``def mock_get_location(**kwargs)``), so the engine must call it with
+        keyword arguments and no positional ones.
+        """
+
+        def mock_get_location(**kwargs):
+            return ("Location: Berlin, Germany", None)
+
+        with patch(
+            "claire.reply.engine.get_location_context_with_timezone",
+            side_effect=mock_get_location,
+        ):
+            out = _live_time_location_string(_cfg())
+
+        assert "Location: Berlin, Germany" in out
+
+    def test_disabled_location_still_reported(self):
+        out = _live_time_location_string(_cfg(location_enabled=False))
+        assert "Location: Disabled" in out
 
 
-def test_auto_detect_skips_opendns_when_upnp_succeeds():
-    """OpenDNS is not called when UPnP already returned a public IP."""
-    with patch("claire.utils.location._get_external_ip_via_upnp", return_value="203.0.113.1"), \
-         patch("claire.utils.location._resolve_public_ip_via_opendns") as mock_dns:
-        result = _get_external_ip_automatically()
-        mock_dns.assert_not_called()
-        assert result == "203.0.113.1"
+class TestTimeToolExplicitPlace:
+    """A named place is geocoded by the tool itself, with no ambient location."""
 
+    def test_named_place_works_with_no_ambient_location(self):
+        from claire.tools.base import ToolContext
+        from claire.tools.builtin.time_tool import TimeTool
 
-def test_auto_detect_skips_opendns_when_socket_succeeds():
-    """OpenDNS is not called when socket heuristic already returned a public IP."""
-    with patch("claire.utils.location._get_external_ip_via_upnp", return_value=None), \
-         patch("claire.utils.location._get_external_ip_via_socket", return_value="198.51.100.5"), \
-         patch("claire.utils.location._resolve_public_ip_via_opendns") as mock_dns:
-        result = _get_external_ip_automatically()
-        mock_dns.assert_not_called()
-        assert result == "198.51.100.5"
+        context = Mock(spec=ToolContext)
+        context.user_print = Mock()
+        context.cfg = _cfg()
+        context.cfg.llm_tools_timeout_sec = 8.0
+        context.redacted_text = ""
 
+        geo_response = Mock()
+        geo_response.status_code = 200
+        geo_response.json.return_value = {
+            "results": [
+                {
+                    "name": "Thessaloniki",
+                    "country": "Greece",
+                    "timezone": "Europe/Athens",
+                }
+            ]
+        }
+        geo_response.raise_for_status = Mock()
 
-def test_auto_detect_returns_none_when_all_methods_fail():
-    """Returns None when UPnP, socket, and OpenDNS all fail."""
-    with patch("claire.utils.location._get_external_ip_via_upnp", return_value=None), \
-         patch("claire.utils.location._get_external_ip_via_socket", return_value=None), \
-         patch("claire.utils.location._resolve_public_ip_via_opendns", return_value=None):
-        result = _get_external_ip_automatically()
-        assert result is None
+        with patch("requests.get", return_value=geo_response), patch(
+            "claire.tools.builtin.time_tool.get_location_context_with_timezone",
+            side_effect=AssertionError("ambient location must not be consulted"),
+        ):
+            result = TimeTool().run({"location": "Thessaloniki"}, context)
 
-
-def test_auto_detect_rejects_private_ip_from_opendns():
-    """Private IPs from OpenDNS are rejected (not returned as valid)."""
-    with patch("claire.utils.location._get_external_ip_via_upnp", return_value=None), \
-         patch("claire.utils.location._get_external_ip_via_socket", return_value=None), \
-         patch("claire.utils.location._resolve_public_ip_via_opendns", return_value="192.168.1.1"):
-        result = _get_external_ip_automatically()
-        assert result is None
-
-
-# --- UPnP discovery must not be paid on every lookup --------------------------
-#
-# UPnP discovery blocks for roughly half a minute when no gateway answers, and
-# the location lookup runs on every reply. Before this memoisation that stall
-# landed on every single question.
-
-
-def _upnp_gateway(seen, answer=None):
-    class Gateway:
-        discoverdelay = 200
-        def discover(self):
-            seen.append(1)
-            return 0 if answer is None else 1
-        def selectigd(self):
-            return None
-        def externalipaddress(self):
-            return answer
-    return Gateway()
-
-
-def test_upnp_discovery_is_attempted_at_most_once(monkeypatch):
-    from claire.utils import location
-
-    seen = []
-    monkeypatch.setattr(location, "MINIUPNPC_AVAILABLE", True)
-    monkeypatch.setattr(location, "miniupnpc", types.SimpleNamespace(
-        UPnP=lambda: _upnp_gateway(seen)))
-    monkeypatch.setattr(location, "_upnp_attempted", False)
-    monkeypatch.setattr(location, "_upnp_cached_ip", None)
-
-    assert location._get_external_ip_via_upnp() is None
-    assert location._get_external_ip_via_upnp() is None
-    assert len(seen) == 1, 'a failed UPnP probe must not be repeated'
-
-
-def test_upnp_success_is_cached(monkeypatch):
-    from claire.utils import location
-
-    seen = []
-    monkeypatch.setattr(location, "MINIUPNPC_AVAILABLE", True)
-    monkeypatch.setattr(location, "miniupnpc", types.SimpleNamespace(
-        UPnP=lambda: _upnp_gateway(seen, "8.8.4.4")))
-    monkeypatch.setattr(location, "_upnp_attempted", False)
-    monkeypatch.setattr(location, "_upnp_cached_ip", None)
-
-    assert location._get_external_ip_via_upnp() == "8.8.4.4"
-    assert location._get_external_ip_via_upnp() == "8.8.4.4"
-    assert len(seen) == 1, 'a successful UPnP probe must be reused'
-
+        assert result.success is True
+        assert "Thessaloniki" in result.reply_text
