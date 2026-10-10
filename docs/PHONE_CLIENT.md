@@ -5,10 +5,11 @@ This note documents the Android client that now lives in
 written (which port, which protocol), and — in section 8 — exactly what was and
 was not verified, including the one thing that is still blocked.
 
-It supersedes two statements in `docs/PHONE_BRIDGE_LIVE_TEST.md`, which is older
-and was correct when written: the bridge no longer listens on **8765** (see
-§3), and "there is no phone app in this repo" is no longer true (§2). That file
-is not edited here because it is another writer's document.
+`docs/PHONE_BRIDGE_LIVE_TEST.md` is the companion record, and complements this
+one: it is the **bridge-only** live test, driven from the handset over `adb
+shell` before this app existed, and it is kept as the record of what was proven
+about the bridge without one. This note is the app's own record — what the
+Android client is, and what was observed on the phone (§8, §8.1).
 
 ## 1. What the app is for
 
