@@ -26,7 +26,8 @@ listening notification.
 `android/` is a standalone Gradle project (`com.claire.companion`, versionCode 4,
 versionName 0.4.0, minSdk 24, targetSdk 35, AGP 8.5.2, Gradle 8.10.2, Java 17
 source level, built with JDK 21). Nineteen app classes plus three tools that run
-on the laptop, and an instrumentation test class (§8.1, §11):
+on the laptop, and two instrumentation test classes — `CameraAndVoiceTest` (7
+tests) and `CompanionUiTest` (4), eleven in all (§8.1, §11):
 
 | Class | What it is |
 | --- | --- |
@@ -310,11 +311,15 @@ speaker identification, which is a different piece of work.
 
 ## 8. What was observed on the phone, and what was not
 
-This section was rewritten on 2026-10-07 for versionCode 4 / versionName 0.4.0.
-The earlier text said "the APK has never run on a phone"; that stopped being true
-when the phone became reachable over wireless `adb` (tailnet, `adb connect
-100.68.123.69:37637`). What follows is only what was seen, with the command that
-showed it, and §8.2 lists everything still unproven.
+The APK has run on the phone, versionCode 4 / versionName 0.4.0, and the phone
+was reachable over wireless `adb` on the tailnet with `adb connect
+100.68.123.69:36077`. Read that address — host and port — off the phone's own
+**Settings → Developer options → Wireless debugging** screen:
+`100.68.123.69:36077` is the pair that was verified working, but the port is
+assigned by the phone, and both it and the IP can change between sessions and
+reboots. If the connection is refused, re-read them from that screen rather than
+assuming the value written here. What follows is only what was seen, with the
+command that showed it, and §8.2 lists everything still unproven.
 
 ### 8.1 Observed
 
@@ -467,14 +472,10 @@ showed it, and §8.2 lists everything still unproven.
   `/reply` is drain-once, so the phone is the only reader.
 * The evidence for a photo is a new file in the bridge's `photo_dir`; for a
   location, the `location` key of `/health`.
-* **This tree is written by more than one person at a time.** As of
-  `2026-10-07 01:27` a second writer was mid-way through streaming Fish Audio TTS
-  in `FishTts.java` and had touched `VoiceService.java`, `ClairePrefs.java` and
-  `ClaireState.java`, so the APK that builds from the working tree is *not* the
-  one section 8 observed on the phone (that was sha256 `f7b5445b…`, 7,017,395
-  bytes; the later rebuild is sha256 `8f90f7dc…`, 7,148,623 bytes, with their
-  unfinished work in it). Rebuild and re-verify after the other writer lands, and
-  do not quote an APK hash without checking which edits it contains.
+* **This tree is written by more than one person at a time.** The APK that
+  builds from the working tree may not be the one section 8 observed on the
+  phone, so rebuild and re-verify, and do not quote an APK hash without checking
+  which edits it contains.
 
 
 ## 9. Security, stated plainly
