@@ -15,7 +15,11 @@ from enum import Enum
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
-from ..llm import LLMBackend
+from ..llm import (
+    LLMBackend,
+    TASK_RETRIEVAL_DOCUMENT,
+    TASK_RETRIEVAL_QUERY,
+)
 
 if TYPE_CHECKING:
     from .base import Tool
@@ -171,8 +175,15 @@ def _select_embedding(
     """Rank tools by cosine similarity between query and tool description embeddings."""
     import numpy as np
 
-    # Embed the query.
-    query_vec = embedding_backend.embed(query, embed_model, timeout_sec=embed_timeout_sec)
+    # Embed the query. Tool selection is asymmetric retrieval, exactly like
+    # memory search: the query is embedded for its own side of the pair and
+    # the tool summaries for the other, which measurably improves ranking on
+    # backends with a task-type field. Backends without one accept and ignore
+    # the kwarg, so this is additive.
+    query_vec = embedding_backend.embed(
+        query, embed_model, timeout_sec=embed_timeout_sec,
+        task_type=TASK_RETRIEVAL_QUERY,
+    )
     if query_vec is None:
         debug_log("Embedding tool selection: failed to embed query, falling back to all tools", "planning")
         return _all_tool_names(builtin_tools, mcp_tools)
@@ -194,7 +205,10 @@ def _select_embedding(
         all_tools[name] = _tool_summary(name, spec.description)
 
     for name, summary in all_tools.items():
-        tool_vec = embedding_backend.embed(summary, embed_model, timeout_sec=embed_timeout_sec)
+        tool_vec = embedding_backend.embed(
+            summary, embed_model, timeout_sec=embed_timeout_sec,
+            task_type=TASK_RETRIEVAL_DOCUMENT,
+        )
         if tool_vec is None:
             continue
         tool_arr = np.array(tool_vec, dtype=np.float32)

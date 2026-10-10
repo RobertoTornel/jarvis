@@ -12,6 +12,10 @@ from claire.tools.selection import (
     _RELATIVE_THRESHOLD,
 )
 
+# The unit gate is `pytest tests/ -m unit`; the module-level mark keeps every
+# test in this file selected even if a per-test decorator is ever missed.
+pytestmark = pytest.mark.unit
+
 
 def _embedding_backend(text_to_vec=None, fail=False):
     """Build a MagicMock embedding backend whose ``embed`` looks up text by
@@ -22,7 +26,7 @@ def _embedding_backend(text_to_vec=None, fail=False):
         backend.embed.return_value = None
         return backend
 
-    def _embed(text, model, timeout_sec=10.0):
+    def _embed(text, model, timeout_sec=10.0, task_type=None):
         if text_to_vec is None:
             return [0.0] * 4
         for key, vec in text_to_vec.items():
@@ -287,7 +291,7 @@ class TestEmbeddingStrategy:
     def test_returns_minimum_tools(self):
         """Should return at least _MIN_SELECTED tools even if similarity is low."""
         call_count = [0]
-        def _embed(text, model, timeout_sec=10.0):
+        def _embed(text, model, timeout_sec=10.0, task_type=None):
             call_count[0] += 1
             if call_count[0] == 1:  # query
                 return [1.0, 0.0, 0.0, 0.0]
@@ -646,3 +650,116 @@ def test_reasoning_router_has_room_for_answer_before_fallback(monkeypatch, provi
         llm_model='synthetic-reasoning-router',
     )
     assert selected == [answer, 'stop']
+
+
+# ---------------------------------------------------------------------------
+# Asymmetric-retrieval task types (tool selection)
+# ---------------------------------------------------------------------------
+
+class _RecordingEmbedBackend:
+    """Embedding backend that records ``(text, task_type)`` per call.
+
+    Signature mirrors the shipped backends: ``task_type`` is a real keyword
+    that a backend without an asymmetric-retrieval field accepts and
+    discards."""
+
+    def __init__(self, vectors=None):
+        self.calls = []
+        self._vectors = vectors or {}
+
+    def embed(self, text, model, timeout_sec=15.0, task_type=None):
+        self.calls.append((text, task_type))
+        for key, vec in self._vectors.items():
+            if key in text.lower():
+                return vec
+        return [0.0] * 4
+
+
+class TestEmbeddingTaskTypes:
+    """Tool selection is asymmetric retrieval: the query is embedded for the
+    query side and each tool summary for the document side, exactly as memory
+    search does. These pin both call sites against that intent."""
+
+    @pytest.mark.unit
+    def test_query_call_site_uses_the_query_task_type(self):
+        from claire.llm import TASK_RETRIEVAL_QUERY
+
+        backend = _RecordingEmbedBackend({"weather": [1.0, 0.0, 0.0, 0.0]})
+        select_tools(
+            "what's the weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=backend,
+            embed_model="nomic-embed-text",
+        )
+        assert backend.calls, "the query must be embedded"
+        query_text, query_task_type = backend.calls[0]
+        assert query_text == "what's the weather"
+        assert query_task_type == TASK_RETRIEVAL_QUERY, (
+            "the tool-search query must be embedded on the query side of the "
+            "retrieval, or the ranking silently loses the asymmetric win"
+        )
+
+    @pytest.mark.unit
+    def test_tool_summary_call_site_uses_the_document_task_type(self):
+        from claire.llm import TASK_RETRIEVAL_DOCUMENT
+
+        backend = _RecordingEmbedBackend({"weather": [1.0, 0.0, 0.0, 0.0]})
+        select_tools(
+            "what's the weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=backend,
+            embed_model="nomic-embed-text",
+        )
+        document_calls = backend.calls[1:]
+        assert document_calls, "the tool summaries must be embedded"
+        assert all(task_type == TASK_RETRIEVAL_DOCUMENT
+                   for _, task_type in document_calls), (
+            "every tool summary must be embedded on the document side of the "
+            "retrieval"
+        )
+        # And they really are the summaries, not the query repeated.
+        assert "what's the weather" not in [text for text, _ in document_calls]
+
+    @pytest.mark.unit
+    def test_backend_that_ignores_task_type_still_selects(self):
+        """A backend with no task-type field must accept the kwarg and be
+        unaffected: swallowing it (including an unknown value) must not raise
+        and must leave ranking intact. This is the Ollama /
+        OpenAI-compatible behaviour."""
+        from claire.llm import TASK_RETRIEVAL_DOCUMENT, TASK_RETRIEVAL_QUERY
+
+        seen = []
+
+        class IgnoringBackend:
+            def embed(self, text, model, timeout_sec=15.0, **kwargs):
+                # Swallows task_type *and* any other unknown hint.
+                seen.append(kwargs.get("task_type"))
+                return [1.0, 0.0, 0.0, 0.0] if "weather" in text.lower() else [0.0] * 4
+
+        result = select_tools(
+            "what's the weather",
+            _builtin(), {},
+            strategy=ToolSelectionStrategy.EMBEDDING,
+            embedding_backend=IgnoringBackend(),
+            embed_model="nomic-embed-text",
+        )
+        assert "getWeather" in result
+        assert seen[0] == TASK_RETRIEVAL_QUERY
+        assert TASK_RETRIEVAL_DOCUMENT in seen
+
+    @pytest.mark.unit
+    def test_shipped_backends_accept_and_ignore_task_type(self):
+        """Pin the interface guarantee the call sites rely on: the shipped
+        non-Gemini embedding backends take ``task_type`` so passing it can
+        never be the reason a request fails."""
+        import inspect
+
+        from claire.llm import OllamaBackend, OpenAICompatibleBackend
+
+        for cls in (OllamaBackend, OpenAICompatibleBackend):
+            params = inspect.signature(cls.embed).parameters
+            assert "task_type" in params, (
+                f"{cls.__name__}.embed must accept and ignore task_type"
+            )
