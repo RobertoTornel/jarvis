@@ -133,19 +133,42 @@ def _initialize_tts_engine(cfg) -> Optional[Any]:
     return tts
 
 
-def _start_tts_engine(tts) -> None:
-    """Start local speech output and report its runtime availability."""
+def _start_tts_engine(tts) -> bool:
+    """Start speech output and report whether it is actually available.
+
+    Returns ``True`` only when speech can really be produced after this call.
+    ``tts.start()`` is allowed to raise: the Fish engine builds its client -
+    and so reads its key file - lazily, and refuses a missing, empty or
+    world-readable key file, or an absent voice id, rather than report speech
+    it cannot make (rule N10). That refusal is converted here into *disabled
+    speech*, never into a dead daemon: the reason is printed and logged, and
+    the caller replaces the engine with an inert stand-in.
+    """
     if tts is None or isinstance(tts, _UnavailableTTS):
         print("  ⚠️ Speech output unavailable (no TTS engine was initialised).", flush=True)
-        return
+        return False
     if not tts.enabled:
         print("  🔇 TTS disabled", flush=True)
-        return
-    tts.start()
+        return False
+    try:
+        tts.start()
+    except Exception as exc:
+        # Refused speech must mean *disabled speech*, never a dead daemon. The
+        # Fish engine builds its client - and so reads its key file - lazily and
+        # refuses a missing, empty or world-readable key file, or an absent
+        # voice id, rather than report speech it cannot make (rule N10). The
+        # daemon owns the decision to keep running, so the daemon owns the catch.
+        print(
+            f"  ⚠️ TTS engine failed to start; speech output unavailable: {exc}",
+            flush=True,
+        )
+        debug_log(f"TTS engine start refused ({type(exc).__name__}): {exc}", "tts")
+        return False
     if tts.enabled:
         print("✅ TTS engine started", flush=True)
-    else:
-        print("  ⚠️ Speech output unavailable. Check the voice model settings and restart Claire.", flush=True)
+        return True
+    print("  ⚠️ Speech output unavailable. Check the voice model settings and restart Claire.", flush=True)
+    return False
 
 
 # Global instances for coordination between modules
@@ -1549,12 +1572,23 @@ def main(smoke_test: bool = False) -> None:
     # Initialize TTS. A failure here (an unknown engine name, a missing voice
     # model, a missing key) disables speech output; it must not take the whole
     # daemon down. ``_initialize_tts_engine`` reports the reason and returns
-    # None, which becomes an explicitly unavailable engine reference.
+    # None, which becomes an explicitly unavailable engine reference - but it
+    # cannot see every failure: the Fish engine builds its client lazily, so a
+    # missing/unreadable key file or an absent voice id raises from start()
+    # below. Either way speech goes unavailable and Claire keeps running.
     tts = _initialize_tts_engine(cfg)
     if tts is None:
         tts = _UnavailableTTS()
+    if not _start_tts_engine(tts) and not isinstance(tts, _UnavailableTTS):
+        try:
+            tts.stop()
+        except Exception as exc:
+            debug_log(f"TTS engine cleanup after failed start failed: {exc}", "tts")
+        # The listener, the face-widget poller and the text path all consume
+        # this reference: an inert stand-in reports "nothing spoken" instead of
+        # re-raising on every reply.
+        tts = _UnavailableTTS()
     _global_tts_engine = tts  # Expose for face widget speaking animation
-    _start_tts_engine(tts)
 
     # Initialize voice listening (only if dependencies available)
     print("🎤 Preparing speech recognition in the background...", flush=True)
