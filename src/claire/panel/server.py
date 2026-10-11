@@ -1082,8 +1082,14 @@ def check_write_origin(
 
     A browser always sends ``Origin`` on a cross-origin form POST, so a page the
     owner is merely *visiting* cannot make their browser change Claire's
-    configuration: that page's Origin is its own, not loopback.  A missing
-    ``Origin`` is refused too — silence is not a same-origin proof.  Returns the
+    configuration: that page's Origin is its own, not loopback.
+
+    A **missing or opaque** (``Origin: null``) origin proves nothing on its own —
+    a cross-site attacker produces exactly the same value — so it is accepted
+    only when ``Sec-Fetch-Site: same-origin`` accompanies it, which a foreign
+    page cannot forge because the browser sets that header from the request's
+    real initiator.  Without it, silence is refused rather than trusted; see the
+    branch below for why the opaque case has to be supported at all.  Returns the
     validated origin (useful for a log line) or raises :class:`PanelOriginError`.
 
     ``route`` names the endpoint in every refusal.  It is a parameter because the

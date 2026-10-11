@@ -180,7 +180,11 @@ letting it be discovered.
 3. **Both write endpoints are forgery-resistant.** `check_write_origin()` runs before the body is
    looked at, for `POST /select` and `POST /chat` alike, and refuses with `PanelOriginError`
    (`403 origin-refused`) unless:
-   - `Origin` is present (silence is not a same-origin proof),
+   - `Origin` is present and not opaque (`null`) — or, when it is missing or
+     opaque, `Sec-Fetch-Site: same-origin` accompanies it, because a browser sets
+     that header from the request's real initiator and a foreign page cannot
+     forge it. A missing or opaque origin *without* that header is refused:
+     silence is not a same-origin proof,
    - its scheme is `http`,
    - its host is loopback,
    - its host equals the `Host` header's host,
