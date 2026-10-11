@@ -63,6 +63,17 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Spoken the moment a voice request is understood, so Claire answers back
+# before the reply engine has finished thinking. Kept short on purpose: it is
+# spoken *instead of* silence, not instead of the answer, and the reply follows
+# as soon as it is ready. Rotated in order so she does not sound like a recording.
+DEFAULT_ACK_PHRASES = [
+    "On it.",
+    "Okay.",
+    "Right away.",
+    "Let me look.",
+]
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -230,6 +241,10 @@ class Settings:
 
     # UI/UX Features
     tune_enabled: bool
+    # Say a short "On it" the moment a voice request is understood, instead of
+    # staying silent until the full reply is ready (see listening.spec.md).
+    ack_enabled: bool
+    ack_phrases: list[str]
     hot_window_enabled: bool
     hot_window_seconds: float
     low_power_mode: bool
@@ -696,6 +711,8 @@ def get_default_config() -> Dict[str, Any]:
 
         # UI/UX Features
         "tune_enabled": True,
+        "ack_enabled": True,
+        "ack_phrases": DEFAULT_ACK_PHRASES,
         "hot_window_enabled": True,
         "hot_window_seconds": 3.0,
         "low_power_mode": False,
@@ -1025,6 +1042,9 @@ def load_settings() -> Settings:
     noise_gate_margin = float(merged.get("noise_gate_margin", 2.0))
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = bool(merged.get("tune_enabled", True))
+    ack_enabled = bool(merged.get("ack_enabled", True))
+    ack_phrases = [p.strip() for p in (merged.get("ack_phrases") or [])
+                   if isinstance(p, str) and p.strip()] or list(DEFAULT_ACK_PHRASES)
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
     hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
     low_power_mode = bool(merged.get("low_power_mode", False))
@@ -1220,6 +1240,8 @@ def load_settings() -> Settings:
 
         # UI/UX Features
         tune_enabled=tune_enabled,
+        ack_enabled=ack_enabled,
+        ack_phrases=ack_phrases,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
         low_power_mode=low_power_mode,

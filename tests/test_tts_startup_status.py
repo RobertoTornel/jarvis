@@ -53,8 +53,9 @@ def test_available_backend_starts_and_delivers_speech(monkeypatch, backend, caps
     monkeypatch.setattr(engine, loader, lambda: True)
     delivered = []
     done = threading.Event()
-    def synthesise(text):
-        delivered.append(text)
+    def synthesise(item):
+        # The worker receives the utterance with its own callbacks attached.
+        delivered.append(item.text)
         done.set()
     monkeypatch.setattr(engine, '_speak_once', synthesise)
     try:

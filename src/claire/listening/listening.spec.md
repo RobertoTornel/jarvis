@@ -420,6 +420,35 @@ If the intent judge later rejects the query (and no hot window override applies)
 
 **Face state is not set during TTS** — the beep is suppressed while TTS is playing to avoid self-triggering.
 
+## Spoken Acknowledgement
+
+The beep and the THINKING face are not answers. The reply engine can take
+seconds, and until it returns Claire says nothing at all, so a request that was
+heard perfectly still feels ignored. `_dispatch_query` therefore speaks one
+short phrase the moment the turn is dispatched — before taking the query lock
+and before `run_reply_engine` — and the reply is queued behind it.
+
+- **Rotation.** `ack_phrases` is cycled in order (`_ack_index`), so consecutive
+  requests do not all open with the same words. Defaults live in
+  `config.DEFAULT_ACK_PHRASES` ("On it.", "Okay.", "Right away.", "Let me look.").
+- **Opt-out.** `ack_enabled: false` restores the silent behaviour exactly.
+- **Skipped, never queued, while she is already speaking.** That means the
+  person talked over a reply; an acknowledgement arriving after the thing it
+  acknowledges is worse than silence. The reply path is unaffected, so a
+  barged-in request is still answered.
+- **The thinking tune stops first.** Tune and voice must not overlap, and the
+  ack replaces the tune as the "I heard you" signal. The tune is not restarted
+  afterwards: it would collide with the reply audio.
+- **The echo detector is told about it** (`track_tts_start(phrase)`), so the
+  phrase is not mistaken for a new utterance in the room.
+- **The ack is not the reply's completion path.** The callbacks that free the
+  hot window belong to the reply utterance (`_SpeechItem`), not to the engine,
+  so a second utterance in flight cannot steal them.
+- **Superseded turns.** The ack is spoken before the reply engine runs, so a
+  turn superseded *during* generation has already said "on it" and keeps its
+  reply suppressed by the normal staleness guard — she was working on it, and
+  the stale answer is still discarded.
+
 ## Low-Confidence Rejection Events
 
 `VoiceListener` accepts an optional keyword-only `on_low_confidence` callback.
@@ -468,7 +497,10 @@ pending feedback.
   "intent_judge_timeout_sec": 6.0,
 
   "hot_window_seconds": 3.0,
-  "echo_tolerance": 0.3
+  "echo_tolerance": 0.3,
+
+  "ack_enabled": true,
+  "ack_phrases": ["On it.", "Okay.", "Right away.", "Let me look."]
 }
 ```
 
@@ -477,6 +509,8 @@ pending feedback.
 | `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Claire. Separate from dialogue memory. |
 | `whisper_min_confidence` (opt-in Whisper path) | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
 | `whisper_no_speech_threshold` (opt-in Whisper path) | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+| `ack_enabled` | true | Speak a short "on it" as soon as a voice turn is dispatched, before the reply engine runs. |
+| `ack_phrases` | `["On it.", "Okay.", "Right away.", "Let me look."]` | Phrases rotated in order for the spoken acknowledgement; an empty list falls back to the defaults. |
 
 Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
 

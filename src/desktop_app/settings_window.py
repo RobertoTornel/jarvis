@@ -340,6 +340,11 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("tune_enabled", "Startup Tune",
       "Play startup sound",
       "features", "bool")
+    f("ack_enabled", "Spoken Acknowledgement",
+      "Say a short \"On it\" as soon as a voice request is understood, instead "
+      "of staying silent until the answer is ready. The phrases themselves "
+      "(ack_phrases) are edited in config.json.",
+      "features", "bool")
 
     # --- Advanced ---
     f("echo_energy_threshold", "Echo Energy Threshold",

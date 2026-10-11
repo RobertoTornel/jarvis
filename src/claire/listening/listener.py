@@ -651,6 +651,10 @@ class VoiceListener(threading.Thread):
         # Thinking tune player
         self._tune_player: Optional = None
 
+        # Rotates the spoken acknowledgement phrases so consecutive requests
+        # do not all open with the same words (see _speak_acknowledgement).
+        self._ack_index = 0
+
     def stop(self) -> None:
         """Stop the voice listener."""
         self._should_stop = True
@@ -682,6 +686,48 @@ class VoiceListener(threading.Thread):
     def _is_thinking_tune_active(self) -> bool:
         """Check if thinking tune is currently active."""
         return self._tune_player is not None and self._tune_player.is_playing()
+
+    def _speak_acknowledgement(self, generation: int) -> None:
+        """Say a short "on it" the moment a voice request is understood.
+
+        The reply engine can take seconds, and until it returns Claire says
+        nothing at all: the tune plays, the face shows THINKING, and the person
+        who just spoke is left wondering whether they were heard. One short
+        phrase, spoken first, fixes that — the reply still follows as soon as
+        it is ready, queued behind it.
+
+        It is *skipped*, not queued, when she is already speaking: that means
+        the person talked over a reply, and an acknowledgement arriving after
+        the thing it acknowledges is worse than silence. The thinking tune is
+        stopped rather than mixed under the voice.
+        """
+        if not getattr(self.cfg, "ack_enabled", True):
+            return
+        if self._should_stop or not self._transcription_is_current(generation):
+            return
+        tts = self.tts
+        if tts is None or not tts.enabled or tts.is_speaking():
+            return
+
+        phrases = getattr(self.cfg, "ack_phrases", None)
+        if not phrases:
+            # Old config objects (and tests) may predate the option.
+            from ..config import DEFAULT_ACK_PHRASES
+            phrases = list(DEFAULT_ACK_PHRASES)
+        index = getattr(self, "_ack_index", 0)
+        phrase = phrases[index % len(phrases)]
+
+        self._stop_thinking_tune()
+        # Stopping the tune can itself invalidate this turn: the teardown is
+        # where a new utterance (or a shutdown) is noticed. Re-check before
+        # speaking, or a dead turn gets an acknowledgement and no answer.
+        if self._should_stop or not self._transcription_is_current(generation):
+            return
+
+        self._ack_index = index + 1
+        self.track_tts_start(phrase)
+        debug_log(f"speaking acknowledgement: {phrase!r}", "voice")
+        tts.speak(phrase)
 
     def _set_face_state_listening(self) -> None:
         """Set the desktop face widget to LISTENING state."""
@@ -1484,6 +1530,11 @@ class VoiceListener(threading.Thread):
             debug_log("face state set to THINKING (dispatch_query)", "voice")
         except Exception as e:
             debug_log(f"failed to set face state to THINKING: {e}", "voice")
+
+        # Answer back before thinking: the reply engine below can take seconds,
+        # and a request that meets silence feels like it was ignored. This
+        # speaks one short phrase now; the reply is queued behind it.
+        self._speak_acknowledgement(generation)
 
         # Import reply engine
         from ..reply.engine import run_reply_engine

@@ -31,19 +31,20 @@ class FakeTTS:
 
     enabled = True
 
-    def __init__(self):
+    def __init__(self, speaking=False):
         self.spoken = []
+        self.speaking = speaking
 
     def speak(self, text, **kwargs):
         self.spoken.append(text)
 
     def is_speaking(self):
-        return False
+        return self.speaking
 
 
-def dispatch_listener(tts=None):
+def dispatch_listener(tts=None, **cfg_overrides):
     obj = VoiceListener.__new__(VoiceListener)
-    obj.cfg = SimpleNamespace(voice_debug=False)
+    obj.cfg = SimpleNamespace(voice_debug=False, **cfg_overrides)
     obj.db = None
     obj.dialogue_memory = None
     obj.tts = tts
@@ -88,16 +89,17 @@ def test_voice_dispatch_speaks_the_reply(monkeypatch):
     monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
 
     tts = FakeTTS()
-    obj = dispatch_listener(tts)
+    obj = dispatch_listener(tts, ack_phrases=["On it."])
     obj._dispatch_query("what's the weather tomorrow")
 
-    assert tts.spoken == ["Sunny tomorrow."]
+    assert tts.spoken == ["On it.", "Sunny tomorrow."]
 
 
 def test_reply_is_discarded_when_a_new_turn_supersedes_it(monkeypatch):
     # The session boundary the guard protects: a new turn clears the audio
     # buffers while this reply is still being generated, so it must not be
-    # spoken into the new turn.
+    # spoken into the new turn. The acknowledgement was already spoken by then,
+    # which is honest — she *was* working on it — but the stale answer is not.
     def superseded_by(*_args, **_kwargs):
         obj._clear_audio_buffers()
         return "Stale answer."
@@ -109,7 +111,7 @@ def test_reply_is_discarded_when_a_new_turn_supersedes_it(monkeypatch):
     obj = dispatch_listener(tts)
     obj._dispatch_query("what's the weather tomorrow")
 
-    assert tts.spoken == []
+    assert "Stale answer." not in tts.spoken
 
 
 def test_dispatch_after_shutdown_does_nothing(monkeypatch):
@@ -123,3 +125,100 @@ def test_dispatch_after_shutdown_does_nothing(monkeypatch):
     obj._dispatch_query("what's the weather tomorrow")
 
     assert called == []
+
+
+def test_acknowledgement_is_spoken_before_the_reply_engine(monkeypatch):
+    """She answers back first, then does the work.
+
+    The order is the whole point: the point of the acknowledgement is that it
+    is heard *while* the reply engine is still thinking, so a test that only
+    checks both were spoken would pass even if the ack came last.
+    """
+    order = []
+
+    def engine(*_args, **_kwargs):
+        order.append("engine")
+        return "Sunny tomorrow."
+
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine", engine)
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    class OrderedTTS(FakeTTS):
+        def speak(self, text, **kwargs):
+            order.append(f"speak:{text}")
+            super().speak(text, **kwargs)
+
+    obj = dispatch_listener(OrderedTTS(), ack_phrases=["On it."])
+    obj._dispatch_query("what's the weather tomorrow")
+
+    assert order == ["speak:On it.", "engine", "speak:Sunny tomorrow."]
+
+
+def test_acknowledgement_stops_the_thinking_tune(monkeypatch):
+    """The tune must not play under the voice saying the acknowledgement."""
+    tune_stops_when_engine_ran = []
+
+    def engine(*_args, **_kwargs):
+        tune_stops_when_engine_ran.append(obj.tune_stops)
+        return "Sunny tomorrow."
+
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine", engine)
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    obj = dispatch_listener(FakeTTS(), ack_phrases=["On it."])
+    obj._dispatch_query("what's the weather tomorrow")
+
+    assert tune_stops_when_engine_ran == [1], "the ack must stop the tune first"
+
+
+def test_acknowledgement_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine",
+                        lambda *a, **k: "Sunny tomorrow.")
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    tts = FakeTTS()
+    obj = dispatch_listener(tts, ack_enabled=False, ack_phrases=["On it."])
+    obj._dispatch_query("what's the weather tomorrow")
+
+    assert tts.spoken == ["Sunny tomorrow."]
+
+
+def test_acknowledgement_is_skipped_while_she_is_already_speaking(monkeypatch):
+    """Talking over a reply must not queue a late "on it" behind it."""
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine",
+                        lambda *a, **k: "Sunny tomorrow.")
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    tts = FakeTTS(speaking=True)
+    obj = dispatch_listener(tts, ack_phrases=["On it."])
+    obj._dispatch_query("wait, what's the weather tomorrow")
+
+    assert tts.spoken == ["Sunny tomorrow."]
+
+
+def test_acknowledgement_phrases_rotate(monkeypatch):
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine",
+                        lambda *a, **k: "Sunny tomorrow.")
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    tts = FakeTTS()
+    obj = dispatch_listener(tts, ack_phrases=["On it.", "Right away."])
+    for _ in range(3):
+        obj._dispatch_query("what's the weather tomorrow")
+
+    assert [t for t in tts.spoken if t != "Sunny tomorrow."] == [
+        "On it.", "Right away.", "On it.",
+    ]
+
+
+def test_acknowledgement_is_not_spoken_after_shutdown(monkeypatch):
+    monkeypatch.setattr("claire.reply.engine.run_reply_engine",
+                        lambda *a, **k: "Sunny tomorrow.")
+    monkeypatch.setattr("claire.daemon.query_lock", nullcontext)
+
+    tts = FakeTTS()
+    obj = dispatch_listener(tts, ack_phrases=["On it."])
+    obj._should_stop = True
+    obj._dispatch_query("what's the weather tomorrow")
+
+    assert tts.spoken == []

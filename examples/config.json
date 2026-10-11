@@ -82,6 +82,13 @@
   "noise_gate_enabled": true,
   "noise_gate_margin": 2.0,
   "tune_enabled": true,
+  "ack_enabled": true,
+  "ack_phrases": [
+    "On it.",
+    "Okay.",
+    "Right away.",
+    "Let me look."
+  ],
   "hot_window_enabled": true,
   "hot_window_seconds": 3.0,
   "low_power_mode": false,

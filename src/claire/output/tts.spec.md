@@ -46,3 +46,25 @@ Locked temporary files are reported without crashing startup or publishing them.
 Progress includes transferred bytes and transfer rate, with a percentage when
 the response supplies a total size. Completion is reported only after publication.
 Download diagnostics use `debug_log` without recording user speech or reply text.
+
+## Per-utterance callbacks
+
+The queued-work engines (`PiperTTS`, `ChatterboxTTS`) carry each utterance as a
+`_SpeechItem` — the text plus *its own* `completion_callback` and
+`duration_callback`. `FishTTS` has always carried them per item; the other two
+used to hold them on the engine as shared attributes, which is only correct
+while at most one utterance is ever in flight.
+
+That assumption no longer holds: Claire speaks a short acknowledgement
+immediately and enqueues the reply behind it
+(`listening.spec.md`, "Spoken Acknowledgement"). With shared attributes the
+acknowledgement's completion invoked the *reply's* callback and then cleared
+it, so the reply finished without ever running the callback that frees the hot
+window. The reply's duration callback was likewise spent on the wrong
+utterance, weakening echo detection.
+
+Contract: `speak()` enqueues one `_SpeechItem`; the worker invokes the callbacks
+of the item it is currently speaking, and only if that item was not
+interrupted. A plain `str` left in the queue (the stop sentinel, or a producer
+that predates the type) is coerced to a callback-less `_SpeechItem`, so
+`""` still terminates the worker as before.
