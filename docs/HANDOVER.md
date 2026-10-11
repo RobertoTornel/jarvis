@@ -49,11 +49,11 @@ file's argument parser (`start.sh:877`-`:895`) and its own `usage()` (`start.sh:
 | `./start.sh status` | What is running right now. |
 | `./start.sh check` (or `--check`) | Preflight and health report only; writes nothing. |
 | `--dry-run`, `-n` | Print every action, execute none. |
-| `--no-panel` / `--no-daemon` | Manage only the other half. |
+| `--no-panel` / `--no-daemon` / `--no-desktop` | Leave that one component out of this start. |
 | `--systemd` / `--direct` | Force the daemon through the systemd user unit, or as a detached process. |
 | `--strict` | Refuse to start unless the self-check is all green. |
 | `--force-install` | `pip install` even while a Claire daemon is live (otherwise the live venv is left alone). |
-| `--install-service` | Render [`deploy/claire.service`](../deploy/claire.service) for this checkout and install it as a systemd **user** unit. |
+| `--install-service` | Render the daemon, panel and tray units plus the tray XDG autostart entry for this checkout, install them, reload systemd and enable them. |
 | `-h`, `--help` | Usage. |
 
 Environment overrides (all optional, documented at `start.sh:30`-`:41`): `CLAIRE_VENV`,
@@ -67,12 +67,14 @@ Two things about startup that are easy to get wrong:
 * **The daemon starts the phone bridge itself** (`_start_phone_bridge`, opt out with
   `CLAIRE_PHONE_BRIDGE=0`). Never start the bridge a second time: two recogniser instances on one
   GPU fault.
-* **`deploy/claire.service` is a template**, not an installable unit. It contains
-  `@CLAIRE_REPO_ROOT@` where the checkout path belongs. Do not copy it verbatim into
-  `~/.config/systemd/user`: the placeholder is not a path and `ExecStart` fails with "No such file
-  or directory". Install it with `./start.sh --install-service`. It is a *user* unit on purpose:
-  Claire needs the login session's microphone, speakers and display, which a system unit started by
-  PID 1 does not have.
+* **`deploy/claire.service`, `deploy/claire-panel.service` and `deploy/claire-desktop.service` are
+  templates**, not installable units, and `deploy/claire-desktop.desktop` is the tray's XDG
+  autostart entry. They contain `@CLAIRE_REPO_ROOT@` where the checkout path belongs. Do not copy
+  one verbatim into `~/.config/systemd/user`: the placeholder is not a path and `ExecStart` fails
+  with "No such file or directory". Install all four with `./start.sh --install-service`. The daemon
+  and the panel are *user* units on purpose: Claire needs the login session's microphone, speakers
+  and display, which a system unit started by PID 1 does not have. The tray unit is deliberately not
+  enabled at `default.target`; it is triggered by the desktop session instead.
 
 ### Configuration
 

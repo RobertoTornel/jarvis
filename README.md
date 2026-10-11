@@ -732,7 +732,7 @@ claire --version        # print the Claire version and exit
 claire --smoke-test     # start the daemon, verify core subsystems, then exit
 ```
 
-### As a systemd user service
+### Starts on startup
 
 `deploy/claire.service` is a **user** unit, not a system unit, and that is
 deliberate: Claire needs the microphone, the speakers and (for the screen
@@ -740,20 +740,55 @@ senses) the graphical session, all of which belong to a human login session. A
 system unit starts before any session exists and has no audio server or display,
 so the failure surfaces as "no microphone" and looks like a Claire bug.
 
-The file is a **template**: it carries `@CLAIRE_REPO_ROOT@` where the checkout
-lives, because a unit file cannot discover its own repository. Install it with a
-command that substitutes the real path (do not copy it verbatim — the
-placeholder is not a path):
+One command wires all three parts to come up by themselves:
 
 ```bash
-./start.sh --install-service        # renders and installs, backs up any existing unit
-systemctl --user enable --now claire
-journalctl --user -u claire -f
+./start.sh --install-service
 ```
 
-Consequence, stated honestly: Claire runs while that user is logged in.
-`loginctl enable-linger` keeps the process alive without a login but the audio
-and display parts are unavailable by definition in that case.
+It renders and installs, backing up anything already there:
+
+| Installed | Starts |
+| --- | --- |
+| `~/.config/systemd/user/claire.service` | at login, and at boot while linger is on |
+| `~/.config/systemd/user/claire-panel.service` | at login, and at boot while linger is on |
+| `~/.config/systemd/user/claire-desktop.service` | with the desktop session |
+| `~/.config/autostart/claire-desktop.desktop` | with the desktop session |
+
+The units are **templates**: they carry `@CLAIRE_REPO_ROOT@` where the checkout
+lives, because a unit file cannot discover its own repository. Do not copy one
+verbatim, the placeholder is not a path. `./start.sh --install-service`
+substitutes the real path, runs `systemctl --user daemon-reload`, enables every
+unit and starts what it can in the current session.
+
+Check what is running and how it is wired:
+
+```bash
+./start.sh status                   # components, plus a "Startup wiring" section
+journalctl --user -u claire -f
+journalctl --user -u claire-panel -f
+journalctl --user -u claire-desktop -f
+```
+
+Turn it off again:
+
+```bash
+./start.sh --no-desktop             # leave the tray app out of this start
+./start.sh stop                     # stop the panel and the daemon
+systemctl --user disable claire claire-panel claire-desktop
+rm ~/.config/autostart/claire-desktop.desktop
+```
+
+The honest split: the daemon and the panel are plain services and start at login
+(or at boot with `loginctl enable-linger`), but they get no audio or display
+without a session. The tray app needs a graphical session, so it is deliberately
+**not** enabled at `default.target`; it is started by the desktop session, via
+its `WantedBy=graphical-session.target` on desktops that activate that target and
+via the autostart entry on the desktops (such as Cinnamon) that do not.
+
+Machine-specific runtime settings belong in `~/.config/claire/claire.env` (mode
+`0600`, outside the repository), never in a shipped unit: see
+[Configuration](docs/CONFIGURATION.md).
 
 ### In Docker
 

@@ -99,6 +99,33 @@ The daemon warms the recogniser at startup with one dummy transcribe so the mode
 | `CLAIRE_PHONE_ALLOW_PUBLIC` | `src/claire/daemon.py:1303` | `1` permits a non-loopback bind from the daemon; anything else keeps the bridge on loopback. |
 | `OMNIROUTE_API_KEY`, `llm_*` | `src/claire/config.py` | Not read by the bridge directly; they reach it only through `load_settings()` when the recogniser is resolved, and through the daemon's LLM stack. The key value is never written to a repository or config file (`src/claire/config.py:48`, `:862`). |
 
+### Where to put them
+
+These are machine-specific runtime settings, so they live in
+`~/.config/claire/claire.env` (mode `0600`, outside the repository, overridable
+with `CLAIRE_ENV_FILE`), never in a shipped unit file. That one file is read
+twice: [`load_runtime_env`](../../src/claire/config.py) calls `load_dotenv` on it for
+every entry point, and the installed units load it with
+`EnvironmentFile=-%h/.config/claire/claire.env`, so a value set there reaches
+both `./start.sh` and the systemd services:
+
+```bash
+# ~/.config/claire/claire.env (chmod 600)
+CLAIRE_PHONE_HOST=0.0.0.0
+CLAIRE_PHONE_PORT=8788
+CLAIRE_PHONE_ALLOW_PUBLIC=1
+CLAIRE_PANEL_HOST=127.0.0.1
+CLAIRE_PANEL_PORT=8765
+```
+
+`CLAIRE_PHONE_HOST`, `CLAIRE_PHONE_PORT` and `CLAIRE_PHONE_ALLOW_PUBLIC` belong
+in `claire.env` rather than in the installed daemon unit: editing the installed
+unit by hand does not survive `./start.sh --install-service`, which re-renders it
+from the template, so the setting would silently go back to its default. Nothing
+secret goes in a unit's `Environment=` line, and the bearer token is not an
+environment variable at all, it is read from the OS keychain by name
+(`PHONE_BRIDGE_TOKEN`).
+
 ## Extension points
 
 - **Vision.** Inject a `describer` into `PhoneBridge` (`src/claire/phone/bridge.py:1169`): `DEFAULT_DESCRIBER` resolves `claire.senses.camera.describe_image`; an object with `describe(image_path, question)`, a plain callable of that shape, or `None` ("no describer is configured", answered `503 vision_not_configured`) are all accepted.

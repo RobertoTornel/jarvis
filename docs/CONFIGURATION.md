@@ -17,6 +17,20 @@ Claire also keeps state in your own data directory, outside both the settings fi
 
 The memory vault is a plain, Obsidian-compatible markdown folder: point Obsidian at it and read Claire's memory as ordinary notes. [OBSIDIAN.md](OBSIDIAN.md) covers the layout and the conventions; [MEMORY.md](MEMORY.md) covers what the router and the notes mean.
 
+Machine-specific runtime settings live in `~/.config/claire/claire.env` (mode `0600`, outside the repository, overridable with `CLAIRE_ENV_FILE`), not in a shipped unit file:
+
+```bash
+# ~/.config/claire/claire.env (chmod 600)
+OMNIROUTE_API_KEY=...            # or keep it in the OS keychain
+CLAIRE_PHONE_HOST=0.0.0.0
+CLAIRE_PHONE_PORT=8788
+CLAIRE_PHONE_ALLOW_PUBLIC=1
+CLAIRE_PANEL_HOST=127.0.0.1
+CLAIRE_PANEL_PORT=8765
+```
+
+One file is read twice: [`load_runtime_env`](../src/claire/config.py) loads it with `load_dotenv` for every entry point, and the systemd units load it with `EnvironmentFile=-%h/.config/claire/claire.env`. Put the phone-bridge and panel values there rather than editing an installed unit by hand: `./start.sh --install-service` re-renders each unit from its template in `deploy/`, so a hand edit does not survive and the setting silently returns to its default. Nothing secret belongs in a unit's `Environment=` line; the phone bridge's bearer token is read from the OS keychain by name instead. [phone-bridge.md](subsystems/phone-bridge.md) lists the bridge keys, and [deployment.md](subsystems/deployment.md) covers the units themselves.
+
 <details>
 <summary><strong>LLM Provider (Ollama or OpenAI-compatible)</strong></summary>
 

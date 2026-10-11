@@ -1078,3 +1078,98 @@ class TestUnauthorisedIsDiagnosedAsACredentialProblem:
         assert check.status == STATUS_PROBLEM
         assert "500" in check.detail
         assert "credential" not in check.detail.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 7. The other two units: the panel is a service, the tray app is a session
+# --------------------------------------------------------------------------- #
+#
+# Splitting the panel and the tray out of claire.service is what makes "Claire
+# starts on startup" true for all three parts: a panel bug no longer takes the
+# voice assistant down, and the tray app - the one GUI - is started by the
+# session instead of being enabled at boot where it would fail for want of a
+# display and then be left permanently failed by StartLimitBurst.
+
+PANEL_UNIT_FILE = DEPLOY_DIR / "claire-panel.service"
+DESKTOP_UNIT_FILE = DEPLOY_DIR / "claire-desktop.service"
+DESKTOP_AUTOSTART_FILE = DEPLOY_DIR / "claire-desktop.desktop"
+
+
+@pytest.fixture(scope="module")
+def panel_unit() -> UnitFile:
+    assert PANEL_UNIT_FILE.is_file(), f"missing deployment unit: {PANEL_UNIT_FILE}"
+    return _parse_unit(PANEL_UNIT_FILE.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def desktop_unit() -> UnitFile:
+    assert DESKTOP_UNIT_FILE.is_file(), f"missing deployment unit: {DESKTOP_UNIT_FILE}"
+    return _parse_unit(DESKTOP_UNIT_FILE.read_text(encoding="utf-8"))
+
+
+def test_panel_and_desktop_units_have_the_required_sections(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    for unit in (panel_unit, desktop_unit):
+        assert set(unit.sections) == {"Unit", "Service", "Install"}
+        assert unit.sections["Unit"], "[Unit] must not be empty"
+        assert unit.sections["Service"], "[Service] must not be empty"
+        assert unit.sections["Install"], "[Install] must not be empty"
+
+
+def test_panel_unit_starts_the_panel_and_restarts_it(panel_unit: UnitFile) -> None:
+    assert panel_unit.one("Service", "ExecStart").endswith("-m claire.panel.server")
+    assert panel_unit.one("Service", "Type") == "simple"
+    assert panel_unit.one("Service", "Restart") == "on-failure"
+    assert int(panel_unit.one("Unit", "StartLimitBurst")) >= 1
+    assert int(panel_unit.one("Unit", "StartLimitIntervalSec")) >= 60
+
+
+def test_desktop_unit_starts_the_tray_app_and_restarts_it(desktop_unit: UnitFile) -> None:
+    assert desktop_unit.one("Service", "ExecStart").endswith("-m desktop_app")
+    assert desktop_unit.one("Service", "Type") == "simple"
+    assert desktop_unit.one("Service", "Restart") == "on-failure"
+    assert int(desktop_unit.one("Unit", "StartLimitBurst")) >= 1
+
+
+def test_only_the_panel_is_enabled_at_default_target(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    """The panel is a headless HTTP server, so being up early is free.
+
+    The tray app needs a display, so enabling it at default.target is the trap
+    this test exists to prevent: with linger that target is reached at boot,
+    before any session, and the failures spend the start-limit burst.
+    """
+    assert panel_unit.one("Install", "WantedBy") == "default.target"
+    assert desktop_unit.one("Install", "WantedBy") == "graphical-session.target"
+    assert desktop_unit.one("Unit", "PartOf") == "graphical-session.target"
+
+
+def test_new_units_use_an_environment_file_not_inline_secrets(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    for unit in (panel_unit, desktop_unit):
+        env_file = unit.one("Service", "EnvironmentFile")
+        assert env_file.rstrip().endswith(".env")
+        assert ".config/claire/" in env_file
+        for value in unit.values("Service", "Environment"):
+            assert not re.search(r"(?i)(API_?KEY|TOKEN|SECRET|PASSWORD)", value), value
+
+
+def test_new_units_carry_no_bind_port_of_their_own(panel_unit: UnitFile) -> None:
+    """The port belongs to the panel's source and its environment, not to a unit
+    that would silently disagree with it after a change."""
+    assert "8765" not in PANEL_UNIT_FILE.read_text(encoding="utf-8")
+    assert "--port" not in panel_unit.one("Service", "ExecStart")
+
+
+def test_autostart_entry_asks_systemd_and_is_portable() -> None:
+    text = DESKTOP_AUTOSTART_FILE.read_text(encoding="utf-8")
+    directives = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("["):
+            continue
+        key, _, value = line.partition("=")
+        directives[key.strip()] = value.strip()
+
+    assert directives["Type"] == "Application"
+    assert directives["Exec"] == "systemctl --user start claire-desktop.service"
+    assert directives["X-GNOME-Autostart-enabled"] == "true"
+    # No checkout path reaches the Exec line: the unit owns the interpreter.
+    assert "@CLAIRE_REPO_ROOT@" not in directives["Exec"]

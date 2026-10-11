@@ -7,7 +7,10 @@ systemd user unit, the one-command `start.sh`, the console entry points, the
 daemon's startup order, the environment it reads, or where its output goes.
 
 The shipped artifacts are themselves authoritative and are quoted below:
-[`deploy/claire.service`](../../deploy/claire.service) and
+[`deploy/claire.service`](../../deploy/claire.service),
+[`deploy/claire-panel.service`](../../deploy/claire-panel.service),
+[`deploy/claire-desktop.service`](../../deploy/claire-desktop.service),
+[`deploy/claire-desktop.desktop`](../../deploy/claire-desktop.desktop) and
 [`start.sh`](../../start.sh). Specs next to the code win over this document;
 where this page and the code disagree, the code decides. Contradictions found
 while writing this page are listed under
@@ -30,11 +33,15 @@ This subsystem owns the path from a user command to a running daemon:
 It does **not** own the listening, reply, memory or MCP internals; it starts
 them. The MCP boot step is documented in [`mcp.md`](mcp.md).
 
-Plainly: **the systemd unit starts the daemon only.** The web panel
-(`python -m claire.panel.server`) and the desktop app
-(`scripts/run_desktop_app.sh`) are separate processes and are not in the unit.
-The phone bridge is started by the daemon itself (`daemon.py:1605`), which is why
-`start.sh` must not start it too.
+Plainly: **each of the three parts has its own unit.** `deploy/claire.service`
+starts the daemon, `deploy/claire-panel.service` starts the web panel
+(`python -m claire.panel.server`), and `deploy/claire-desktop.service` starts the
+tray app, which an XDG autostart entry also triggers on desktops that never
+activate `graphical-session.target`. `./start.sh --install-service` renders and
+enables all four artifacts; the exact directives are specified in
+[`service.spec.md`](../../src/claire/platform/service.spec.md). The phone bridge
+is started by the daemon itself (`daemon.py:1605`), which is why `start.sh` must
+not start it too.
 
 ## Entry points
 
@@ -44,7 +51,7 @@ The phone bridge is started by the daemon itself (`daemon.py:1605`), which is wh
 | `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:77) and what `start.sh` spawns (`-m claire`). |
 | `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py:2515`). |
 | `python -m claire.daemon` | `src/claire/daemon.py:1810`–`:1812` | Reads `--smoke-test` straight from `sys.argv`. |
-| `python -m claire.panel.server` | `src/claire/panel/server.py:4114` (`main`) | The web panel; not part of the unit. |
+| `python -m claire.panel.server` | `src/claire/panel/server.py:4114` (`main`) | The web panel; its own unit, `deploy/claire-panel.service`. |
 | `python -m claire.platform.service --self-check` | `src/claire/platform/service.py:1249` (`main`), `--self-check` at `:1217` | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
 
 `claire.cli` accepts exactly `--smoke-test` (`cli.py:19`–`:23`) and `--version`
@@ -98,35 +105,43 @@ directive (`:71`–`:76`).
 
 `start.sh` is the one-command entry point ("Claire - one command that brings the
 whole system up, and takes it down again", `start.sh:3`). It locates the repo
-from its own path (`start.sh:56`–`:62`), derives every default (`:64`–`:88`), and
+from its own path (`start.sh:64`–`:73`), derives every default (`:78`–`:101`), and
 dispatches one of `start`, `stop`, `restart`, `status`, `check` or
-`install-service` (`:902`–`:910`).
+`install-service` (`:1260`–`:1268`).
 
-What it does on `start` (`command_start`, `start.sh:679`–`:732`), in order:
+What it does on `start` (`command_start`, `start.sh:970`–`:1028`), in order:
 
-1. Resolve the interpreter (`resolve_pybin`, `:196`–`:204`).
-2. Preflight checks (`hard_checks`, `:540`–`:607`), including "is this a Claire
+1. Resolve the interpreter into the parent shell (`ensure_pybin`, `:236`–`:238`),
+   over `resolve_pybin` (`:221`–`:229`) and `find_python` (`:199`–`:216`). The
+   parent-shell step matters: a command substitution runs in a subshell, so a
+   resolution inside one never reaches the port probe that needs it.
+2. Preflight checks (`hard_checks`, `:786`–`:852`), including "is this a Claire
    checkout", venv presence, `requirements.txt`, writability of the config dir,
    and whether the runtime env file exists.
-3. Create `.venv` if missing (`ensure_venv`, `:210`–`:242`) and install
+3. Create `.venv` if missing (`ensure_venv`, `:244`–`:276`) and install
    `requirements.txt` when its hash changed, without touching a venv a live
-   Claire runs from (`ensure_deps`, `:252`–`:291`, hash at `:206`–`:208`,
-   live-venv guard at `:244`–`:250`).
-4. Run Claire's own self-check (`self_check`, `:608`), and stop on failure only
-   with `--strict` (`:700`–`:706`).
-5. Start the daemon (`start_daemon`, `:366`–`:431`): through `systemctl --user
+   Claire runs from (`ensure_deps`, `:286`–`:321`, hash at `:240`–`:242`).
+4. Run Claire's own self-check (`self_check`, `:854`–`:868`), and stop on failure
+   only with `--strict`.
+5. Start the daemon (`start_daemon`, `:463`–`:527`): through `systemctl --user
    start claire` when the unit is installed, otherwise as a detached process
    whose pid file is trusted only after `/proc` confirms the command line
-   (`_spawn`, `:349`–`:364`; pid check, `:108`–`:129`).
-6. Start the web panel (`start_panel`, `:432`–`:474`) on the panel's own
+   (`_spawn`, `:446`–`:461`; pid check, `:131`–`:150`).
+6. Start the web panel (`start_panel`, `:529`–`:603`) on the panel's own
    `DEFAULT_BIND_HOST` / `DEFAULT_PORT` read out of `panel/server.py`
-   (`panel_default`, `:328`–`:331`; defaults are `127.0.0.1` and `8765`,
-   `src/claire/panel/server.py:149`–`:150`). If something already listens on the
-   port it declines to start a second panel (`:447`–`:451`).
+   (`panel_default`, `:422`–`:428`; defaults are `127.0.0.1` and `8765`,
+   `src/claire/panel/server.py:151`–`:152`). If something already listens on the
+   port it declines to start a second panel.
+7. Start the tray app (`start_desktop`, `:608`–`:674`) through
+   `claire-desktop.service` when the unit is installed, otherwise as a detached
+   process. It is the one step that needs a session to draw in, so it is skipped
+   rather than retried when there is none.
 
-`stop` uses `SIGTERM` for direct processes with a 20 s wait, then `SIGKILL`
-(`stop_one`, `start.sh:476`–`:506`), or `systemctl --user stop` when the unit is
-active (`stop_daemon`, `:508`–`:533`).
+`stop` covers all three components: `SIGTERM` for direct processes with a 20 s
+wait, then `SIGKILL` (`stop_one`, `start.sh:676`–`:706`), or `systemctl --user
+stop` when the unit is active (`stop_daemon`, `:708`–`:733`). `stop_component`
+(`:739`–`:761`) is the shared form behind `stop_daemon`, `stop_panel` and
+`stop_desktop`.
 
 ### `deploy/Dockerfile` — text/tool half only
 
@@ -438,16 +453,17 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 
 ## Manual or missing
 
-- **Rendering the unit is mandatory and is scripted, not automatic.** Nothing
-  installs the unit on your behalf; `./start.sh --install-service` must be run
-  once per checkout, and `systemctl --user enable --now claire` separately.
+- **Rendering the units is explicit, not automatic.** Nothing installs them until
+  you ask: `./start.sh --install-service` must be run once per checkout. It also
+  enables all three units, so no separate `systemctl --user enable` is needed.
 - **The unit is Linux-only and session-bound.** Claire runs while the user is
   logged in; `loginctl enable-linger` keeps the process alive without a login but
   the audio and display parts are unavailable in that mode (`claire.service:33`–`
   :36`).
-- **The panel and the desktop app have no unit.** They are started by `start.sh`
-  (`:432`–`:474`) or `scripts/run_desktop_app.sh` respectively, and are not
-  supervised or restarted.
+- **The tray app has no honest place at boot.** Its unit is installed and enabled
+  but scoped to `graphical-session.target`; on a desktop that never activates that
+  target the XDG autostart entry is what starts it, and either way it only comes up
+  once there is a session to draw in.
 - **The Dockerfile ships no `.dockerignore`.** The file tells you to write one
   and lists what to exclude; it is not in the repository (`Dockerfile:32`–`:52`).
 - **Container voice is out of scope by design**, not stubbed: the image installs

@@ -1,0 +1,84 @@
+# Claire - the web control panel, as a systemd USER unit (Linux only).
+#
+# THIS FILE IS A TEMPLATE.  It contains @CLAIRE_REPO_ROOT@ where the checkout
+# lives, because a unit file cannot discover its own repository: hardcoding a
+# path here is exactly the thing that breaks a fresh clone.  Install it with
+#
+#   ./start.sh --install-service
+#
+# which substitutes @CLAIRE_REPO_ROOT@ with the real absolute path of the
+# checkout and reloads systemd.  Do NOT copy this file verbatim into
+# ~/.config/systemd/user: the placeholder is not a path and the unit will fail
+# with "No such file or directory" on ExecStart.
+#
+#   logs:     journalctl --user -u claire-panel -f
+#   status:   systemctl --user status claire-panel
+#   stop:     systemctl --user stop claire-panel
+#
+# WHY THIS IS A SEPARATE UNIT FROM claire.service
+# -----------------------------------------------
+# The panel is a plain stdlib HTTP server: no microphone, no speakers, no
+# display, no model. Splitting it out means a panel bug cannot take the voice
+# assistant down with it, restarting the panel does not cut off a spoken reply,
+# and the panel is up early enough to reach from a phone before anyone has
+# touched the desktop.
+#
+# WHY `WantedBy=default.target` IS RIGHT HERE - AND WRONG FOR claire-desktop
+# ------------------------------------------------------------------------
+# `default.target` is reached as soon as the *user manager* is running, which
+# with `loginctl enable-linger` is at boot, before any login. That is exactly
+# what a pure HTTP server wants, and exactly what anything needing a session
+# bus, an audio server or a display must NOT do: see deploy/claire-desktop.service,
+# where starting this early is the trap that leaves the tray app permanently
+# failed by the time you log in. The panel needs none of those things, so being
+# up early is free.
+#
+# PORT AND BIND ADDRESS
+# ---------------------
+# Neither is written here. Both come from the panel's own source
+# (src/claire/panel/server.py: DEFAULT_BIND_HOST, DEFAULT_PORT), which read
+# CLAIRE_PANEL_HOST / CLAIRE_PANEL_PORT from the environment when they are set.
+# Put overrides in ~/.config/claire/claire.env - a 0600 file owned by the user,
+# which the leading '-' on EnvironmentFile makes optional:
+#
+#   CLAIRE_PANEL_HOST=127.0.0.1
+#   CLAIRE_PANEL_PORT=9000
+#
+# The shipped default binds loopback only. Exposing the panel to your network
+# is an explicit choice, never an accident.
+#
+# KEYS ARE NOT IN THIS FILE
+# -------------------------
+# `claire.env` is the one place keys and overrides live; nothing secret is
+# inline here, so this file stays world-readable without leaking anything.
+
+[Unit]
+Description=Claire - web control panel
+Documentation=file://@CLAIRE_REPO_ROOT@/src/claire/panel/panel.spec.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@CLAIRE_REPO_ROOT@
+Environment=PYTHONPATH=@CLAIRE_REPO_ROOT@/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/claire/claire.env
+ExecStart=@CLAIRE_REPO_ROOT@/.venv/bin/python -m claire.panel.server
+KillSignal=SIGINT
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claire-panel
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.local/state/claire
+
+[Install]
+WantedBy=default.target

@@ -170,6 +170,13 @@ letting it be discovered.
    then logs a loud `WARNING`: the panel is **plain HTTP — no TLS, no authentication**, readable
    by anyone who can reach the interface. `create_server()` runs the guard *before* it binds, so
    a refused host never opens a socket.
+   Both bind values are overridable without a command line: `--host`/`--port` default to
+   `${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` when those are set, which is the only way the
+   systemd unit (`deploy/claire-panel.service`, standard input from `claire.env`) can be pointed
+   somewhere else — a service cannot append flags conditionally. A string default is parsed
+   through `--port`'s type, so a malformed `CLAIRE_PANEL_PORT` fails as one clean line instead of
+   a traceback. The loopback guard applies to the environment just as it does to a flag: the
+   variable is a convenience, never a way around the guard.
 3. **Both write endpoints are forgery-resistant.** `check_write_origin()` runs before the body is
    looked at, for `POST /select` and `POST /chat` alike, and refuses with `PanelOriginError`
    (`403 origin-refused`) unless:
@@ -275,7 +282,7 @@ Two further behaviours worth stating rather than discovering:
 | `create_handler(state)` | A `PanelHandler` subclass bound to `state`; starts nothing. |
 | `create_server(state, host, port, *, allow_remote=False)` | Builds (does not start) the server; guards the host first. |
 | `serve(state, host, port, *, allow_remote=False)` | The only place a socket is opened. |
-| `main(argv)` | CLI: `--host`, `--port`, `--allow-remote-binding`, `--action-log`. Returns an exit code. |
+| `main(argv)` | CLI: `--host`, `--port`, `--allow-remote-binding`, `--action-log`. `--host`/`--port` default from `${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` and `--action-log` is passed through as `None` so `RealPanelState` reads `${CLAIRE_ACTION_LOG}` itself. Returns an exit code. |
 | `guard_bind_host`, `is_loopback_host`, `is_mask_shaped`, `parse_target`, `parse_form`, `check_write_origin` | The guards, individually testable. |
 
 Constants: `ROUTE_CHAT`, `ROUTE_MEMORY`, `ROUTE_MEMORY_SAVE`, `ROUTE_MEMORY_DELETE`,

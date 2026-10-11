@@ -163,6 +163,57 @@ Other facts worth knowing about the unit:
   "finish the turn, close the audio stream, exit", which is what keeps the
   microphone out of a wedged state.
 
+### `deploy/claire-panel.service` — the web panel, on its own
+
+The panel is a separate process, so it gets a separate unit. That is not tidiness:
+
+* a panel bug can no longer take the voice assistant down with it, and
+  restarting the panel no longer cuts off a spoken reply;
+* the panel needs **no** session — no microphone, no speakers, no display — so it
+  is the one component that may legitimately be up before anyone logs in, which
+  is what makes `http://127.0.0.1:<port>/` reachable from a phone early;
+* therefore it is `WantedBy=default.target`, unlike the tray app (below).
+
+It reads `EnvironmentFile=-%h/.config/claire/claire.env` for the same reason the
+daemon does, and it carries **no** port of its own: `--host`/`--port` default to
+`${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` inside `claire.panel.server`, so the
+unit, `start.sh` and a hand-run panel cannot disagree about where the panel
+listens. The loopback-only guard applies to the environment exactly as it does to
+a flag.
+
+### `deploy/claire-desktop.service` + `deploy/claire-desktop.desktop` — the tray app, on the session
+
+`python -m desktop_app` is the only GUI, so it must start with the *desktop
+session*, and this is the trap worth writing down: enabling it at
+`default.target` looks right and is worse than not enabling it. With
+`loginctl enable-linger`, `default.target` is reached at boot with no display;
+PyQt6 aborts; `Restart=on-failure` retries; the `StartLimitBurst=5` window is
+spent in well under a minute; systemd gives up and the unit is left permanently
+failed by the time the user actually logs in. So:
+
+* the unit is `PartOf=graphical-session.target`, `After=graphical-session.target`
+  and `WantedBy=graphical-session.target`, which is correct on GNOME and KDE;
+* **not every desktop activates that target.** On the reference machine
+  (Cinnamon/Muffin) `systemctl --user is-active graphical-session.target` reports
+  `inactive` and the only active targets are `basic`, `default`, `paths`,
+  `sockets`, `timers`, so the ordering above is inert and the tray would simply
+  never start by itself. `deploy/claire-desktop.desktop` is therefore installed
+  into `~/.config/autostart` and asks systemd to start the unit once the session
+  is genuinely up. Both mechanisms ship on purpose: they cover different desktops
+  and are harmless together, because starting an already-active unit is a no-op;
+* the autostart entry's `Exec` is `systemctl --user start claire-desktop.service`,
+  never the interpreter directly, so the tray stays supervised
+  (`Restart=on-failure`) and its output lands in the journal. That also means the
+  entry needs no checkout path, and it shows up in the desktop's own "Startup
+  Applications" panel where the owner can disable it without touching the repo;
+* the app takes a single-instance lock, so autostart, the target and a manual
+  launch cannot produce two trays.
+
+`./start.sh --install-service` renders and installs all four artifacts (three
+units plus the autostart entry), reloads systemd, **enables** all three units and
+then starts them, so "starts on startup" is delivered by one command rather than
+by a paragraph of instructions.
+
 ### `deploy/Dockerfile` — text/tool half only
 
 The image is honest about being half a Claire. A container has no session, so
