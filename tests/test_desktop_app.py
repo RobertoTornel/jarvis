@@ -2148,19 +2148,155 @@ class TestDesktopAppDoesNotDuplicateTheDaemon:
         """The guard must be checked *before* any process is launched."""
         import desktop_app.app as app_mod
 
-        calls = []
-
-        class _FakeTray:
-            def __init__(self):
-                self.log_signals = MagicMock()
-
-            _set_chat_daemon_status = lambda self, value: calls.append(("status", value))
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.status = None
+        tray._set_chat_daemon_status = lambda value: setattr(tray, "status", value)
 
         monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: 4242)
-        tray = _FakeTray()
+        monkeypatch.setattr(app_mod.subprocess, "Popen", MagicMock())
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+
         app_mod.ClaireSystemTray.start_daemon(tray)
 
-        assert ("status", "running") in calls
-        assert not hasattr(tray, "daemon_process"), "nothing may be spawned"
+        assert tray.status == "running"
+        assert getattr(tray, "daemon_process", None) is None, "nothing may be spawned"
         emitted = " ".join(str(c) for c in tray.log_signals.new_log.emit.call_args_list)
         assert "4242" in emitted
+        # Attaching must still show the daemon's own log, which now lives in
+        # the systemd unit's journal rather than in a pipe this app owns.
+        assert tray.journal_process is not None
+
+
+class TestAttachedDaemonLogIsVisible:
+    """Attaching must not blind the log window.
+
+    The daemon's stdout pipe only exists when this app started the daemon. In
+    attach mode its log lives in the journal the systemd unit writes to, so the
+    app follows that instead - otherwise "Claire Logs" would show nothing but
+    the app's own messages while Claire was running.
+    """
+
+    def _attached_tray(self, monkeypatch, popen):
+        """A real tray instance forced down the attach path."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.status = None
+        tray._set_chat_daemon_status = lambda value: setattr(tray, "status", value)
+
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: 4242)
+        monkeypatch.setattr(app_mod.subprocess, "Popen", popen)
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+        app_mod.ClaireSystemTray.start_daemon(tray)
+        return tray, app_mod
+
+    def test_the_journal_command_targets_the_unit_without_prefixes(self):
+        from desktop_app.app import JOURNAL_UNIT, _journal_follow_command
+
+        assert _journal_follow_command() == [
+            "journalctl", "--user", "-u", "claire.service", "-f", "-n", "40", "-o", "cat",
+        ]
+        assert JOURNAL_UNIT == "claire.service"
+
+    def test_attaching_follows_the_journal(self, monkeypatch):
+        """`journalctl -o cat` lines carry no timestamp for the app to strip."""
+        seen = {}
+
+        class _FakeProc:
+            stdout = MagicMock()
+
+        def _popen(command, **kwargs):
+            seen["command"] = command
+            seen["kwargs"] = kwargs
+            return _FakeProc()
+
+        tray, app_mod = self._attached_tray(monkeypatch, _popen)
+
+        assert seen["command"][0] == "journalctl"
+        assert "claire.service" in seen["command"]
+        assert seen["kwargs"].get("stderr") is not None, "stderr must be suppressed"
+        assert tray.journal_process is not None
+        thread_call = app_mod.threading.Thread.call_args
+        target = thread_call.kwargs.get("target")
+        assert target.__func__ is app_mod.ClaireSystemTray._read_daemon_journal
+        assert target.__self__ is tray, "the method must be bound to this tray"
+        assert thread_call.kwargs.get("daemon") is True
+        assert tray.status == "running"
+
+    def test_journal_lines_reach_the_log_viewer(self):
+        import desktop_app.app as app_mod
+
+        lines = ["🎙️  Listening!\n", "\n", "🧠 Using chat model: example\n"]
+
+        class _FakeProc:
+            class stdout:
+                @staticmethod
+                def readline():
+                    return lines.pop(0) if lines else ""
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.journal_process = _FakeProc()
+        tray.log_signals = MagicMock()
+
+        app_mod.ClaireSystemTray._read_daemon_journal(tray)
+
+        emitted = [
+            call.args[0] for call in tray.log_signals.new_log.emit.call_args_list
+        ]
+        assert "🎙️  Listening!\n" in emitted
+        assert "🧠 Using chat model: example\n" in emitted
+
+    def test_a_missing_journalctl_says_so_and_still_runs(self, monkeypatch):
+        """No journalctl must not cost the assistant: report the fallback."""
+
+        def _boom(command, **kwargs):
+            raise FileNotFoundError("journalctl")
+
+        tray, _ = self._attached_tray(monkeypatch, _boom)
+
+        assert tray.journal_process is None
+        assert tray.status == "running"
+        emitted = " ".join(str(c) for c in tray.log_signals.new_log.emit.call_args_list)
+        assert "journalctl --user -u claire.service -f" in emitted
+
+    def test_spawning_a_daemon_stops_following_the_journal(self, monkeypatch):
+        """Otherwise one daemon is reported twice, from two sources."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.daemon_process = None
+        tray.daemon_thread = None
+        tray.is_bundled = False
+        tray.chat_window = None
+        tray._chat_submit_fn = tray._chat_cancel_fn = tray._chat_control_fn = None
+        tray._set_chat_daemon_status = MagicMock()
+        tray.update_icon = MagicMock()
+        for attribute in ("tray_icon", "toggle_action", "status_action", "app"):
+            setattr(tray, attribute, MagicMock())
+
+        following = MagicMock()
+        tray.journal_process = following
+        fake_proc = MagicMock()
+        fake_proc.pid = 99
+        fake_proc.stdin = MagicMock()
+        fake_proc.stdout = MagicMock()
+
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: None)
+        monkeypatch.setattr(app_mod.subprocess, "Popen", lambda *a, **k: fake_proc)
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+
+        app_mod.ClaireSystemTray.start_daemon(tray)
+
+        following.terminate.assert_called_once()
+        assert tray.journal_process is None
+        assert tray.daemon_process is fake_proc
+

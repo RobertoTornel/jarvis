@@ -197,10 +197,24 @@ therefore checks for a daemon that is already running *before* spawning one, via
 
 When one is found the app logs `Claire's daemon is already running (pid N);
 attaching to it instead of starting a second one.` and sets its status to
-running. `stop_daemon()` mirrors this: if the app owns neither a bundled thread
-nor a subprocess it leaves the running daemon alone, says so, and prints the
-honest control (`systemctl --user stop claire`) rather than announcing a stop
-that never happened.
+running.
+
+Attaching must not blind the log window. The daemon's stdout pipe only exists
+when this app started the daemon, while the unit writes its log to the journal,
+so attach mode follows that instead: `_start_daemon_log_tail()` runs
+`journalctl --user -u claire.service -f -n 40 -o cat` and feeds its lines to the
+same `log_signals.new_log` the stdout reader used. `-o cat` deliberately drops
+journald's own timestamp and host prefix, so lines look exactly as they did when
+the app owned the pipe. If `journalctl` is missing the app says so, prints the
+manual command, and carries on - a log window is never worth losing the
+assistant over. `_stop_daemon_log_tail()` ends the follow (called before
+spawning a daemon of the app's own, so one daemon is never reported twice, and
+on exit).
+
+`stop_daemon()` mirrors the ownership rule: if the app owns neither a bundled
+thread nor a subprocess it leaves the running daemon alone, says so, and prints
+the honest control (`systemctl --user stop claire`) rather than announcing a
+stop that never happened.
 
 ### The daemon's environment is a contract
 

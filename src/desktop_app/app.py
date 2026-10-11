@@ -1921,6 +1921,7 @@ class ClaireSystemTray:
 
         # Log reader threads
         self.log_reader_threads = []
+        self.journal_process = None
 
         # Create system tray icon.
         #
@@ -1983,6 +1984,8 @@ class ClaireSystemTray:
         # Stop memory viewer server
         if hasattr(self, 'memory_viewer'):
             self.memory_viewer.stop_server()
+        # Stop following a supervised daemon's journal, if we were doing that
+        self._stop_daemon_log_tail()
         # Safety net: if daemon process exists but is_listening was False, still clean up
         # (This shouldn't happen in normal operation, but handles edge cases)
         if self.daemon_process:
@@ -2495,6 +2498,10 @@ class ClaireSystemTray:
                     f"ℹ️ Claire's daemon is already running (pid {existing}); "
                     "attaching to it instead of starting a second one.\n"
                 )
+                # We do not own its stdout, so follow the journal the unit
+                # writes to - otherwise the log window would show nothing but
+                # this app's own chatter while Claire is running.
+                self._start_daemon_log_tail()
                 self._set_chat_daemon_status("running")
                 return
             if self.is_bundled:
@@ -2512,6 +2519,10 @@ class ClaireSystemTray:
             else:
                 # When not bundled, use subprocess as before
                 python_exe = sys.executable
+
+                # If we were following a supervised daemon's journal, that is
+                # about to become a second, duplicate source of the same lines.
+                self._stop_daemon_log_tail()
 
                 # The daemon's environment is a contract, not an afterthought:
                 # see _daemon_subprocess_env (PYTHONPATH, stdin IPC, and the
@@ -2656,6 +2667,63 @@ class ClaireSystemTray:
             self._daemon_stop_expected = False
             # Reset face to asleep so it doesn't look ready while daemon is down
             self._set_face_asleep()
+
+    def _start_daemon_log_tail(self) -> None:
+        """Show a daemon we did not start, by following its journal.
+
+        In attach mode there is no stdout pipe to read, and the daemon's log
+        lives in the journal the systemd unit writes to. Without this the log
+        window would show only this app's own messages while Claire ran.
+        """
+        if getattr(self, "journal_process", None) is not None:
+            return
+        try:
+            self.journal_process = subprocess.Popen(
+                _journal_follow_command(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as exc:
+            self.journal_process = None
+            self.log_signals.new_log.emit(
+                f"ℹ️ Could not follow the daemon's journal ({exc}).\n"
+                f"   Read it with:   journalctl --user -u {JOURNAL_UNIT} -f\n"
+            )
+            return
+        thread = threading.Thread(target=self._read_daemon_journal, daemon=True)
+        thread.start()
+        self.log_reader_threads.append(thread)
+
+    def _stop_daemon_log_tail(self) -> None:
+        """Stop following the journal (we are about to own a daemon instead)."""
+        process = getattr(self, "journal_process", None)
+        if process is None:
+            return
+        self.journal_process = None
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except Exception as exc:
+            debug_log(f"journal tail did not stop cleanly: {exc}", "desktop")
+
+    def _read_daemon_journal(self) -> None:
+        """Read the followed journal into the log viewer."""
+        process = getattr(self, "journal_process", None)
+        if process is None or not process.stdout:
+            return
+        try:
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    break  # journalctl exited (unit gone, journal rotated)
+                if _should_emit_as_log(line):
+                    self.log_signals.new_log.emit(line)
+        except Exception as exc:
+            debug_log(f"journal reader stopped: {exc}", "desktop")
 
     def _read_daemon_logs(self) -> None:
         """Read logs from daemon subprocess in a background thread."""
@@ -3119,6 +3187,18 @@ def _daemon_subprocess_env() -> dict:
     env["CLAIRE_STDIN_IPC"] = "1"
     env.setdefault("NUMBA_CACHE_DIR", str(_default_numba_cache_dir()))
     return env
+
+
+JOURNAL_UNIT = "claire.service"
+
+
+def _journal_follow_command(unit: str = JOURNAL_UNIT) -> list:
+    """The command that follows the supervised daemon's log.
+
+    `-o cat` drops journald's own timestamp and host prefix, so lines read the
+    same way they did when this app owned the daemon's stdout pipe.
+    """
+    return ["journalctl", "--user", "-u", unit, "-f", "-n", "40", "-o", "cat"]
 
 
 def _systemd_claire_daemon_pid() -> Optional[int]:
