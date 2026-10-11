@@ -48,17 +48,28 @@ not start it too.
 | Command | Lands at | Notes |
 |---|---|---|
 | `claire` (console script) | `pyproject.toml:29` → `claire.cli:main` | Installed by `pip install -e .` or a wheel; in a bare checkout the unit does not use it. |
-| `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:77) and what `start.sh` spawns (`-m claire`). |
+| `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:87) and what `start.sh` spawns (`-m claire`). |
 | `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py`, the `["-m", "claire.main"]` argv). |
 | `python -m claire.daemon` | `src/claire/daemon.py:1810`–`:1812` | Reads `--smoke-test` straight from `sys.argv`. |
 | `python -m claire.panel.server` | `src/claire/panel/server.py:4145` (`main`) | The web panel; its own unit, `deploy/claire-panel.service`. |
 | `python -m claire.platform.service --self-check` | `src/claire/platform/service.py` (`main`; `--self-check` is one of its flags) | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
 
-`claire.cli` accepts exactly `--smoke-test` (`cli.py:19`–`:23`) and `--version`
-(`cli.py:24`–`:28`), then hands off to `daemon.main(smoke_test=...)`
-(`cli.py:49`–`:51`). `--smoke-test` initialises every subsystem, prints
-`SMOKE_TEST_INIT_OK`, tears the subsystems down and returns without entering the
-loop (`daemon.py:1607`–`:1646`).
+`claire.cli` accepts exactly three flags — `--smoke-test` (`cli.py:19`–`:23`),
+`--version` (`cli.py:24`–`:28`) and `--no-tune` (`cli.py:29`–`:37`) — then hands
+off to `daemon.main(smoke_test=..., no_tune=...)` (`cli.py:58`–`:60`).
+`--smoke-test` initialises every subsystem, prints `SMOKE_TEST_INIT_OK`, tears
+the subsystems down and returns without entering the loop
+(`daemon.py:1626`–`:1668`).
+
+`--no-tune` is the one flag that changes a setting, and only for the run: it
+silences the thinking tune — the pad that pulses while Claire thinks, which is
+the only cue sound she makes. The daemon applies it with `dataclasses.replace`
+on a frozen `Settings` (`daemon.py` `_apply_cli_overrides`) rather than mutating
+a config another thread may already hold, and `CLAIRE_TUNE_ENABLED=0` is the same
+switch for the installed service, where nobody types flags — put it in
+`claire.env` and restart. See
+[configuration.md](configuration.md#precedence) for the environment layer and
+the README for the flag list.
 
 ## Key artifacts and code anchors
 
@@ -76,30 +87,59 @@ Exact directives (current template, paired with their symbol):
 
 | Directive | Value | Line |
 |---|---|---|
-| `[Unit] Description=` | `Claire - always-on Linux voice assistant` | `:46` |
-| `Documentation=` | `file://@CLAIRE_REPO_ROOT@/src/claire/platform/service.spec.md` | `:47` |
-| `After=` | `graphical-session.target pipewire.service wireplumber.service network-online.target` | `:50` |
-| `Wants=` / `PartOf=` | `network-online.target` / `graphical-session.target` | `:51`–`:52` |
-| `StartLimitIntervalSec=` / `StartLimitBurst=` | `300` / `5` | `:56`–`:57` |
-| `[Service] Type=` | `simple` | `:60` |
-| `WorkingDirectory=` | `@CLAIRE_REPO_ROOT@` | `:64` |
-| `Environment=PYTHONPATH=` | `@CLAIRE_REPO_ROOT@/src` | `:68` |
-| `Environment=PYTHONUNBUFFERED=` | `1` | `:70` |
-| `EnvironmentFile=` | `-%h/.config/claire/claire.env` (leading `-` = optional) | `:76` |
-| `ExecStart=` | `@CLAIRE_REPO_ROOT@/.venv/bin/python -m claire` | `:77` |
-| `KillSignal=` | `SIGINT` | `:80` |
-| `TimeoutStopSec=` | `20` | `:81` |
-| `Restart=` / `RestartSec=` | `on-failure` / `5s` | `:85`–`:86` |
-| `StandardOutput=` / `StandardError=` / `SyslogIdentifier=` | `journal` / `journal` / `claire` | `:87`–`:89` |
-| Hardening | `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only` | `:93`–`:96` |
-| `ReadWritePaths=` | `%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cache/huggingface %h/.cache/numba` | `:109` |
-| `Environment=NUMBA_CACHE_DIR=` | `%h/.cache/numba` | `:124` |
-| `[Install] WantedBy=` | `default.target` | `:129` |
+| `[Unit] Description=` | `Claire - always-on Linux voice assistant` | `:56` |
+| `Documentation=` | `file://@CLAIRE_REPO_ROOT@/src/claire/platform/service.spec.md` | `:57` |
+| `After=` | `graphical-session.target pipewire.service wireplumber.service network-online.target` | `:60` |
+| `Wants=` / `PartOf=` | `network-online.target` / `graphical-session.target` | `:61`–`:62` |
+| `StartLimitIntervalSec=` / `StartLimitBurst=` | `300` / `5` | `:66`–`:67` |
+| `[Service] Type=` | `simple` | `:70` |
+| `WorkingDirectory=` | `@CLAIRE_REPO_ROOT@` | `:74` |
+| `Environment=PYTHONPATH=` | `@CLAIRE_REPO_ROOT@/src` | `:78` |
+| `Environment=PYTHONUNBUFFERED=` | `1` | `:80` |
+| `EnvironmentFile=` | `-%h/.config/claire/claire.env` (leading `-` = optional) | `:86` |
+| `ExecStart=` | `@CLAIRE_REPO_ROOT@/.venv/bin/python -m claire` | `:87` |
+| `KillSignal=` | `SIGINT` | `:90` |
+| `TimeoutStopSec=` | `20` | `:91` |
+| `Restart=` / `RestartSec=` | `on-failure` / `5s` | `:95`–`:96` |
+| `StandardOutput=` / `StandardError=` / `SyslogIdentifier=` | `journal` / `journal` / `claire` | `:97`–`:99` |
+| Hardening | `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=read-only` | `:103`–`:106` |
+| `ReadWritePaths=` | `%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cache/huggingface %h/.cache/numba` | `:119` |
+| `Environment=NUMBA_CACHE_DIR=` | `%h/.cache/numba` | `:134` |
+| `[Install] WantedBy=` | `default.target` | `:139` |
 
 Keys are **not** in this file: `EnvironmentFile=` points at a 0600 env file and
 there is no inline `Environment=...KEY=...`. The file says so twice, in its own
-"KEYS ARE NOT IN THIS FILE" block (`claire.service:37`–`:43`) and next to the
-directive (`:71`–`:76`).
+"KEYS ARE NOT IN THIS FILE" block (`claire.service:47`–`:53`) and next to the
+directive (`:81`–`:86`).
+
+### Machine-specific policy goes in a drop-in, never in the unit
+
+`./start.sh --install-service` re-renders `claire.service` from
+`deploy/claire.service`, so anything hand-edited into the installed unit is lost
+the next time the installer runs. That has already cost one setting on this
+project: an `After=`/`Wants=omniroute.service` ordering was hand-added to the
+unit and silently disappeared when the unit was re-rendered.
+
+Local policy therefore belongs in `~/.config/systemd/user/claire.service.d/*.conf`,
+which systemd merges over the unit and which the installer never writes to. A
+drop-in that waits for the provider Claire warms up at startup:
+
+```ini
+# ~/.config/systemd/user/claire.service.d/omniroute-ordering.conf
+[Unit]
+After=omniroute.service
+Wants=omniroute.service
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user show claire -p After -p Wants   # confirm the merge
+```
+
+Both directives are weak: `Wants=` starts the provider if it exists and is
+enabled, and neither fails the unit when it does not, so a machine with no
+`omniroute.service` is unaffected. `--install-service` is tested to leave this
+directory alone.
 
 ### `start.sh` — the single startup script
 

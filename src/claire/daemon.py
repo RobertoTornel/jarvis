@@ -12,6 +12,7 @@ import signal
 import threading
 import contextlib
 from collections import deque
+from dataclasses import replace
 
 # Fix OpenBLAS threading crash in bundled apps (must be before numpy imports)
 os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
@@ -38,7 +39,7 @@ if sys.platform == 'win32' and not getattr(sys, 'frozen', False):
 
 from typing import Any, Optional
 
-from .config import load_settings
+from .config import Settings, load_settings
 from .memory.db import Database
 from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memory
 from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
@@ -1406,13 +1407,31 @@ def _start_phone_bridge(listener: Any = None) -> None:
     ).start()
 
 
-def main(smoke_test: bool = False) -> None:
+def _apply_cli_overrides(cfg: Settings, *, no_tune: bool = False) -> Settings:
+    """Return ``cfg`` with this run's command-line choices applied.
+
+    ``Settings`` is frozen, so a flag produces a *new* config rather than
+    mutating a shared one: nothing further down can be surprised by a value
+    changing under it, and a flag cannot leak into a code path that reads the
+    settings object it was handed earlier. A test that wants the pinging
+    thinking tune gone can also set ``CLAIRE_TUNE_ENABLED=0``, which is what
+    the systemd unit's environment file is for.
+    """
+    if no_tune and cfg.tune_enabled:
+        debug_log("--no-tune: the thinking tune is silenced for this run", "voice")
+        return replace(cfg, tune_enabled=False)
+    return cfg
+
+
+def main(smoke_test: bool = False, no_tune: bool = False) -> None:
     """Main daemon entry point.
 
     Args:
         smoke_test: If True, initialise all components, print a success
             marker, and return without entering the main event loop.
             Used by CI smoke tests to verify the build is not broken.
+        no_tune: If True, silence the thinking tune for this run
+            (``python -m claire --no-tune``).
     """
     global _global_dialogue_memory, _global_stop_requested, _global_tts_engine
     global _warm_profile_graph_listener
@@ -1423,7 +1442,7 @@ def main(smoke_test: bool = False) -> None:
 
     _install_signal_handlers()
 
-    cfg = load_settings()
+    cfg = _apply_cli_overrides(load_settings(), no_tune=no_tune)
     db = Database(cfg.db_path, cfg.sqlite_vss_path)
     # Expose cfg + db so the text-chat submission path shares the same store
     # and config as the voice listener (one conversation, one config).

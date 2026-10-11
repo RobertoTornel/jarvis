@@ -716,8 +716,8 @@ PYTHONPATH=src python -m claire --help
 `scripts/run_linux.sh` creates `.venv` when missing, installs
 `requirements.txt`, exports `PYTHONPATH=src` and runs `python -m claire`, which
 hands off to the daemon. The console script `claire` (from `pyproject.toml`) and
-`python -m claire` both land in `claire.cli`, which parses `--version` and
-`--smoke-test` and calls the daemon.
+`python -m claire` both land in `claire.cli`, which parses `--version`,
+`--smoke-test` and `--no-tune` and calls the daemon.
 
 `pip install -r requirements.txt` installs the dependencies but not Claire
 herself, so `src/` must be on `PYTHONPATH` — the run script exports it.
@@ -730,7 +730,23 @@ Available flags:
 ```text
 claire --version        # print the Claire version and exit
 claire --smoke-test     # start the daemon, verify core subsystems, then exit
+claire --no-tune        # start the daemon without the pinging thinking tune
 ```
+
+`--no-tune` silences the pad that pulses while Claire thinks — the one cue sound
+she makes; her voice is unaffected. For the installed service the same switch is
+the environment variable `CLAIRE_TUNE_ENABLED=0`, which belongs in
+`~/.config/claire/claire.env`:
+
+```bash
+echo 'CLAIRE_TUNE_ENABLED=0' >> ~/.config/claire/claire.env
+systemctl --user restart claire
+```
+
+The same pair also decides whether the tune starts at all: `tune_enabled` in
+`~/.config/claire/config.json` (or the "Startup Tune" toggle in the settings
+window) is the stored preference, and an explicit flag or environment variable
+outranks it for the run.
 
 ### Starts on startup
 

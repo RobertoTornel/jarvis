@@ -816,6 +816,32 @@ def runtime_env_file() -> Path:
     return Path.home() / ".config" / "claire" / "claire.env"
 
 
+#: What a boolean environment variable accepts, in either case. Anything else
+#: is treated as unset rather than guessed at: a typo must not silently flip a
+#: setting whose whole purpose is to be trusted while testing.
+_ENV_FLAG_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_FLAG_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Return a boolean setting from ``name``, falling back to ``default``.
+
+    An explicit environment variable outranks the config file, matching
+    :func:`load_runtime_env` (the file never overrides the environment) and
+    every other env-backed setting here. An unset variable, an empty one or one
+    holding something unrecognised leaves the file's value alone.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if token in _ENV_FLAG_TRUE:
+        return True
+    if token in _ENV_FLAG_FALSE:
+        return False
+    return default
+
+
 def load_runtime_env() -> None:
     """Read the runtime env file into ``os.environ``, without overriding it.
 
@@ -1041,7 +1067,9 @@ def load_settings() -> Settings:
     noise_gate_enabled = bool(merged.get("noise_gate_enabled", True))
     noise_gate_margin = float(merged.get("noise_gate_margin", 2.0))
     sample_rate = int(merged.get("sample_rate", 16000))
-    tune_enabled = bool(merged.get("tune_enabled", True))
+    tune_enabled = _env_flag(
+        "CLAIRE_TUNE_ENABLED", default=bool(merged.get("tune_enabled", True))
+    )
     ack_enabled = bool(merged.get("ack_enabled", True))
     ack_phrases = [p.strip() for p in (merged.get("ack_phrases") or [])
                    if isinstance(p, str) and p.strip()] or list(DEFAULT_ACK_PHRASES)
