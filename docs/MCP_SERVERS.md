@@ -91,6 +91,65 @@ first `__`, calls that server, and passes the flattened text of the result back
 to the model as the tool's reply. A result carrying `isError` comes back as a
 tool error with its text as the message.
 
+## Ships with Claire: the `linux-desktop` server
+
+One server does not need to be built or installed: `linux-desktop` lives in
+`src/claire/mcp_servers/linux_desktop.py` and ships inside the `claire`
+package, so it runs on the daemon's own interpreter. It is what lets a spoken
+request become an action on this computer — moving the pointer, clicking,
+typing, pressing keys, focusing or closing windows, launching applications.
+
+Add it from **Settings → MCP Servers → Add from catalogue → 🖱️ Linux Desktop
+Control**, or let the setup wizard add it (it needs no API key). The config it
+writes is:
+
+```json
+{
+  "mcps": {
+    "linux-desktop": {
+      "command": "/absolute/path/to/.venv/bin/python",
+      "args": ["-m", "claire.mcp_servers.linux_desktop"],
+      "env": { "DISPLAY": ":0" }
+    }
+  }
+}
+```
+
+`env` matters here even though the server needs no secrets: the MCP SDK spawns
+servers with a safe environment subset that has no `DISPLAY`, and Xlib cannot
+connect without one. Passing any `env` value makes Claire hand the full daemon
+environment through, and `DISPLAY` is set explicitly as well.
+
+**Requirements.** An X11 session — Xwayland counts, a native Wayland session
+without it does not. Input needs no external binary (XTEST over python-xlib
+does the work), but the window tools need `wmctrl`:
+
+```bash
+sudo apt install wmctrl        # or the equivalent for your distribution
+```
+
+**Tools.** The model sees them prefixed as `linux-desktop__<name>`:
+
+| Tool | What it does |
+|---|---|
+| `get_screen_info` | Screen size, pointer position, focused window |
+| `list_windows` | Open windows with ids, titles and geometry |
+| `focus_window`, `close_window`, `move_resize_window` | Window management by title or id |
+| `click`, `double_click`, `move_mouse`, `scroll` | Pointer actions at screen coordinates |
+| `type_text` | Types literal text, layout-aware |
+| `press_key` | One key or a chord such as `ctrl+shift+t` |
+| `launch_app` | A desktop entry, a program on PATH, a file or a URL |
+| `wait` | Pause up to 10 s so the interface can settle |
+
+Screenshots are deliberately **not** part of this server: the built-in
+`screenshotOCR` tool already captures the screen, and this server only adds
+the ability to act on what it shows.
+
+**Safety.** The server only does something when a tool is called, and the tool
+call comes from a reply in the conversation — there is no background input, no
+shell and no file access. The config entry is the switch: remove it and Claire
+has no hands.
+
 ## Build a server from the template
 
 `templates/mcp_server/` is a runnable starting point: one tool, one resource,

@@ -450,6 +450,7 @@ Connect Claire to external tools via [MCP servers](https://github.com/topics/mcp
 - **Slack/Discord** - Team communication
 - **Databases** - MySQL, PostgreSQL, MongoDB
 - **Composio** - 500+ apps in one integration
+- **Linux Desktop** - Mouse, keyboard, windows and app launching on this machine (built in, no key needed)
 
 See [full MCP setup guide](#mcp-integrations) below.
 
@@ -460,6 +461,33 @@ See [full MCP setup guide](#mcp-integrations) below.
 > **Session persistence:** each MCP server is launched once and its stdio session is kept open across tool calls. Stateful servers (e.g. browser automation, where the server owns a long-running Chrome process) work correctly. If you have a server you'd rather not keep resident, set `"idle_timeout_sec": 300` on its config entry and Claire will free it after that long without activity. If a server's tools legitimately run long (e.g. delegating a task to an external CLI agent), set `"timeout_sec": 600` to raise its 120-second default call timeout.
 
 How the connection works, and how to build your own server from the repository template, is in [MCP_SERVERS.md](MCP_SERVERS.md).
+
+<details>
+<summary><strong>Linux Desktop Control</strong> - Mouse, keyboard, windows and apps (built in)</summary>
+
+Ships inside the `claire` package: nothing to install, no API key. Point it at
+the interpreter of your virtual environment, and keep the `DISPLAY` entry —
+the MCP SDK otherwise spawns the server without one and it cannot reach X.
+
+```json
+{
+  "mcps": {
+    "linux-desktop": {
+      "command": "/home/you/jarvis_cloud/.venv/bin/python",
+      "args": ["-m", "claire.mcp_servers.linux_desktop"],
+      "env": { "DISPLAY": ":0" }
+    }
+  }
+}
+```
+
+Requires an X11/Xwayland session, and `wmctrl` for the window tools
+(`sudo apt install wmctrl`). In Settings you can simply use
+**MCP Servers → Add from catalogue → 🖱️ Linux Desktop Control**.
+
+"Claire, click the play button" / "type this into the form" / "switch to Firefox" / "open the terminal"
+
+</details>
 
 <details>
 <summary><strong>Home Assistant</strong> - Smart home voice control</summary>
