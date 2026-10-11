@@ -1922,9 +1922,16 @@ class ClaireSystemTray:
         # Log reader threads
         self.log_reader_threads = []
 
-        # Create system tray icon
-        from desktop_app.macos_tray import install_macos_tray_event_guard
-        install_macos_tray_event_guard()
+        # Create system tray icon.
+        #
+        # There was an `install_macos_tray_event_guard()` call here, from before
+        # this fork dropped macOS support. The guard itself lived *inside*
+        # desktop_app/macos_tray.py, which the fork deleted, so the unguarded
+        # call survived the deletion and killed the tray app with
+        # ModuleNotFoundError on Linux - it only looked harmless because an
+        # earlier startup dialog used to block before reaching this line.
+        # tests/test_import_integrity.py now pins the invariant that an import
+        # here must name a module that exists.
         self.tray_icon = QSystemTrayIcon()
         self.update_icon()
 
@@ -2472,10 +2479,24 @@ class ClaireSystemTray:
             self.start_daemon()
 
     def start_daemon(self) -> None:
-        """Start the Claire daemon."""
+        """Start the Claire daemon, unless one is already running."""
         self._daemon_stop_expected = False
         self._set_chat_daemon_status("starting")
         try:
+            # Measured on this machine: launching the tray app used to start a
+            # *second* daemon next to the systemd unit's. Both then tried to own
+            # the microphone, the recogniser and the phone bridge, and the one
+            # this app started could not transcribe at all (no numba cache).
+            # Attaching is the correct behaviour for a tray that is a view of a
+            # supervised service.
+            existing = _running_claire_daemon_pid()
+            if existing is not None:
+                self.log_signals.new_log.emit(
+                    f"ℹ️ Claire's daemon is already running (pid {existing}); "
+                    "attaching to it instead of starting a second one.\n"
+                )
+                self._set_chat_daemon_status("running")
+                return
             if self.is_bundled:
                 # When bundled, run daemon in a QThread since Qt components may be used
                 self.daemon_thread = DaemonThread(self.log_signals)
@@ -2492,18 +2513,10 @@ class ClaireSystemTray:
                 # When not bundled, use subprocess as before
                 python_exe = sys.executable
 
-                # Set up environment with PYTHONPATH for source runs
-                env = os.environ.copy()
-                src_path = Path(__file__).parent.parent  # Go up to src/
-                if "PYTHONPATH" in env:
-                    env["PYTHONPATH"] = f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
-                else:
-                    env["PYTHONPATH"] = str(src_path)
-                # Signal the daemon that we own its stdin (chat query-in IPC)
-                # so it starts the stdin monitor. Without this the daemon would
-                # treat a non-TTY stdin as "no monitor" on non-Windows, and a
-                # stray /dev/null wouldn't kill it.
-                env["CLAIRE_STDIN_IPC"] = "1"
+                # The daemon's environment is a contract, not an afterthought:
+                # see _daemon_subprocess_env (PYTHONPATH, stdin IPC, and the
+                # numba cache whose absence silently degrades the recogniser).
+                env = _daemon_subprocess_env()
 
                 # Use creationflags to prevent console window popup on Windows
                 # CREATE_NEW_PROCESS_GROUP is needed for CTRL_BREAK_EVENT to work
@@ -2714,6 +2727,22 @@ class ClaireSystemTray:
         try:
             self._daemon_stop_expected = True
             self.face_window.clear_voice_feedback()
+
+            # A daemon this app did not start is not this app's to stop, and the
+            # tail of this method announces "Claire daemon stopped" - so say what
+            # is actually true instead of claiming a stop that never happened.
+            if not (self.is_bundled and self.daemon_thread) and not self.daemon_process:
+                external = _running_claire_daemon_pid()
+                if external is not None:
+                    self.log_signals.new_log.emit(
+                        f"ℹ️ Claire's daemon (pid {external}) is running under systemd, "
+                        "not started by this app, so it has been left alone.\n"
+                        "   Stop it with:   systemctl --user stop claire\n"
+                    )
+                    self._set_chat_daemon_status("running")
+                    self._daemon_stop_expected = False
+                    return
+
             self._set_chat_daemon_status("stopping")
             if self.is_bundled and self.daemon_thread:
                 # When running in a QThread, use the stop flag for graceful shutdown
@@ -3025,22 +3054,214 @@ def _ollama_runtime_flags(cfg) -> tuple[bool, bool]:
     return ollama_needed, chat_on_ollama
 
 
-def _check_openai_compat_reachable(cfg, timeout_sec: float = 4.0) -> bool:
-    """True when the configured OpenAI-compatible server answers its model
-    listing. Used at startup to warn the user early if their local server
-    isn't running, since (unlike Ollama) Claire cannot start it for them."""
+#: How long the startup probe waits for a one-token test turn to complete.
+#:
+#: Generous on purpose, and cheap: a server that is *down* refuses the
+#: connection immediately, so this is only paid by a server that is up but slow
+#: - a cold model load, or a gateway under load. It must stay well above the
+#: ~2.6 s a warm turn takes on the reference machine.
+LLM_STARTUP_PROBE_TIMEOUT_SECONDS = 10.0
+
+
+def _configured_chat_model(cfg) -> str:
+    """The chat model to probe with, from whichever field the config uses."""
+    for attribute in ("llm_chat_model", "llm_model"):
+        value = str(getattr(cfg, attribute, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+# --------------------------------------------------------------------------- #
+# Daemon lifecycle: this app is a *view* of the daemon, not its only owner
+# --------------------------------------------------------------------------- #
+
+def _default_numba_cache_dir() -> Path:
+    """Where numba may cache, matching the systemd unit's ``%h/.cache/numba``.
+
+    numba compiles helpers into a cache directory next to the source file that
+    defines them unless it is told otherwise. That is fatal under the unit's
+    ``ProtectHome=read-only`` (the venv is read-only) and it surfaces as an
+    unrelated-looking error: librosa raises ``cannot cache function '__o_fold'``,
+    NeMo cannot instantiate its preprocessor, and the authoritative Parakeet
+    recogniser silently degrades. The unit sets this variable; a daemon started
+    from this app was not getting it, so the same failure came back by a
+    different route.
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".cache"
+    cache = base / "numba"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Leave it to numba to report the real problem rather than hiding it.
+        pass
+    return cache
+
+
+def _daemon_subprocess_env() -> dict:
+    """The environment the daemon subprocess needs, as its own contract.
+
+    Kept as a function so it can be tested without launching anything. It
+    mirrors what ``deploy/claire.service`` provides: the source tree on
+    ``PYTHONPATH``, unbuffered output, the stdin-IPC marker the chat box needs,
+    and a writable numba cache.
+    """
+    env = os.environ.copy()
+    src_path = Path(__file__).resolve().parent.parent
+    if env.get("PYTHONPATH"):
+        env["PYTHONPATH"] = f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    else:
+        env["PYTHONPATH"] = str(src_path)
+    # Signal the daemon that we own its stdin (chat query-in IPC) so it starts
+    # the stdin monitor. Without this the daemon would treat a non-TTY stdin as
+    # "no monitor" on non-Windows, and a stray /dev/null wouldn't kill it.
+    env["CLAIRE_STDIN_IPC"] = "1"
+    env.setdefault("NUMBA_CACHE_DIR", str(_default_numba_cache_dir()))
+    return env
+
+
+def _systemd_claire_daemon_pid() -> Optional[int]:
+    """PID of the daemon supervised by ``claire.service``, or ``None``."""
+    try:
+        done = subprocess.run(
+            ["systemctl", "--user", "show", "claire.service",
+             "-p", "ActiveState", "-p", "MainPID"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    values = {}
+    for line in done.stdout.splitlines():
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip()
+    if values.get("ActiveState") != "active":
+        return None
+    try:
+        pid = int(values.get("MainPID", "0") or 0)
+    except ValueError:
+        return None
+    return pid or None
+
+
+def _process_claire_daemon_pid(proc_root: Path = Path("/proc")) -> Optional[int]:
+    """PID of a ``python -m claire`` / ``-m claire.main`` process, or ``None``.
+
+    Exact token matching, so the panel (``-m claire.panel.server``), an MCP
+    server (``-m claire.mcp_servers.…``) and this app itself are not mistaken
+    for the daemon. Linux only: elsewhere there is no ``/proc`` to read, and the
+    platform in question is not supported by this fork.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue  # process vanished, or not ours to read
+        tokens = [part.decode("utf-8", "replace") for part in raw.split(b"\0") if part]
+        for index, token in enumerate(tokens[:-1]):
+            if token == "-m" and tokens[index + 1] in ("claire", "claire.main"):
+                return int(entry.name)
+    return None
+
+
+def _running_claire_daemon_pid() -> Optional[int]:
+    """PID of a Claire daemon that is already running, or ``None``.
+
+    A second daemon is never a harmless duplicate. It fights the first for the
+    microphone, for the GPU-resident recogniser and for the phone bridge port,
+    and on a machine whose audio device admits one client the result is that
+    neither works. The supported Linux topology is the systemd user unit
+    (``claire.service``), so that is checked first, and a process scan covers a
+    daemon started by hand or by an earlier version of this app.
+    """
+    return _systemd_claire_daemon_pid() or _process_claire_daemon_pid()
+
+
+def _probe_llm_endpoint(cfg, timeout_sec: float | None = None) -> tuple[bool, str]:
+    """``(reachable, reason)`` for the configured LLM server.
+
+    Reachability is established by *a turn*, via the backend's own ``warm_up`` -
+    the same "the inference is the probe" reasoning already recorded on that
+    method. Listing models is not a usable probe here, and that was the bug:
+    measured on this machine against the local OmniRoute gateway,
+
+        GET  /v1/models          -> HTTP 503 catalog_build_timeout after ~8 s
+        POST /v1/chat/completions -> HTTP 200 in ~1.1 s
+
+    ...while ``warm_up`` answers ``True`` in ~2.6 s. The old check listed models
+    with a 4 s cap and read the resulting ``[]`` as "no server", so a completely
+    healthy endpoint produced a blocking "start a local server" dialog on every
+    single launch.
+
+    When the turn does not complete, the self-check's own endpoint probe is asked
+    *why*, so the owner is told "the endpoint refused your credential" or "nothing
+    answered" instead of a generic paragraph. That second round trip is paid only
+    on the failure path.
+    """
+    if cfg is None:
+        # No settings were loaded (load_settings() failed earlier). Say that
+        # plainly and return at once: there is nothing to probe, and paying a
+        # network timeout to discover it would stall whatever called us.
+        return False, "no provider configuration was loaded, so there is nothing to check"
+
+    timeout = (
+        float(timeout_sec)
+        if timeout_sec is not None
+        else LLM_STARTUP_PROBE_TIMEOUT_SECONDS
+    )
+
+    model = _configured_chat_model(cfg)
+    if not model:
+        return False, "no chat model is configured, so there is nothing to send a turn to"
+
     try:
         from claire.llm import get_llm_backend
-        return bool(get_llm_backend(cfg).list_models(timeout_sec=timeout_sec))
+
+        if get_llm_backend(cfg).warm_up(model, timeout_sec=timeout):
+            return True, ""
     except Exception:
-        return False
+        # Any failure lands in the diagnostic below, which *names* the cause.
+        pass
+
+    from claire.platform.service import STATUS_READY, SelfCheck, probe_llm_endpoint
+
+    result = probe_llm_endpoint(SelfCheck(settings=cfg, llm_timeout=timeout))
+    detail = str(getattr(result, "detail", "") or "").strip()
+    if result.status == STATUS_READY:
+        # The server answers its catalogue but would not complete a turn: report
+        # that rather than claiming it is down or absent.
+        detail = (
+            f"{detail} - but a one-token test turn did not complete, and a turn "
+            "is what Claire needs"
+        ).lstrip(" -")
+    return False, detail or "a one-token test turn did not complete"
 
 
-def _build_unreachable_message(cfg) -> str:
+def _check_openai_compat_reachable(cfg, timeout_sec: float | None = None) -> bool:
+    """True when the configured server completes a turn.
+
+    Kept as the boolean form for callers that only need yes/no; see
+    :func:`_probe_llm_endpoint` for the reason and for the fix to the false
+    "unreachable" verdict.
+    """
+    return _probe_llm_endpoint(cfg, timeout_sec)[0]
+
+
+def _build_unreachable_message(cfg, detail: str = "") -> str:
     """Build the message text for the unreachable server dialog,
     without Qt dependencies so tests can verify it directly."""
     base = (getattr(cfg, "llm_base_url", "") or "").strip() or "your configured server"
-    return (
+    message = (
         f"⚠️ Claire couldn't reach a ready LLM server at {base}.\n\n"
         "Make sure your local server (for example LM Studio, Ollama, llama.cpp, "
         "vLLM) is running with a model loaded, and Claire will connect "
@@ -3048,15 +3269,20 @@ def _build_unreachable_message(cfg) -> str:
         "You can open the Setup Wizard to change your server, or close and "
         "adjust Settings later via the tray menu \u2192 LLM Provider."
     )
+    if detail:
+        # The probe already knows *which* problem this is, so pass its words
+        # through rather than making the owner guess from the generic paragraph.
+        message += f"\n\nWhat the check found: {detail}"
+    return message
 
 
-def _show_openai_unreachable_dialog(cfg, splash: QWidget) -> None:
+def _show_openai_unreachable_dialog(cfg, splash: QWidget, detail: str = "") -> None:
     """Suspend the startup splash while the warning or setup wizard is open."""
     from PyQt6.QtWidgets import QMessageBox
 
     dialog = QMessageBox()
     dialog.setWindowTitle("Claire")
-    dialog.setText(_build_unreachable_message(cfg))
+    dialog.setText(_build_unreachable_message(cfg, detail))
     dialog.setIcon(QMessageBox.Icon.Warning)
     open_wizard_btn = dialog.addButton("🔧 Open Setup Wizard", QMessageBox.ButtonRole.ActionRole)
     dialog.addButton("Close", QMessageBox.ButtonRole.RejectRole)
@@ -3189,14 +3415,15 @@ class _LLMReachWorker(KeepAliveWorker):
     when releasing the worker is safe).
     """
 
-    check_done = pyqtSignal(bool)
+    check_done = pyqtSignal(bool, str)
 
     def __init__(self, provider_cfg):
         super().__init__()
         self.provider_cfg = provider_cfg
 
     def run(self):
-        self.check_done.emit(_check_openai_compat_reachable(self.provider_cfg))
+        reachable, reason = _probe_llm_endpoint(self.provider_cfg)
+        self.check_done.emit(reachable, reason)
 
 
 class ServerCheckWorker(KeepAliveWorker):
@@ -3410,8 +3637,14 @@ def main() -> int:
             app.processEvents()
 
             _reach = [True]
+            _reach_reason = [""]
+
+            def on_reach_done(ok, reason):
+                _reach[0] = ok
+                _reach_reason[0] = reason
+
             _reach_worker = _LLMReachWorker(_provider_cfg)
-            _reach_worker.check_done.connect(lambda ok: _reach.__setitem__(0, ok))
+            _reach_worker.check_done.connect(on_reach_done)
             _reach_loop = QEventLoop()
             _reach_worker.check_done.connect(_reach_loop.quit)
             _reach_worker.start()
@@ -3419,7 +3652,9 @@ def main() -> int:
 
             if not _reach[0]:
                 print("⚠️ LLM server not reachable at startup", flush=True)
-                _show_openai_unreachable_dialog(_provider_cfg, splash)
+                if _reach_reason[0]:
+                    print(f"   {_reach_reason[0]}", flush=True)
+                _show_openai_unreachable_dialog(_provider_cfg, splash, _reach_reason[0])
 
         # Default ownership: not started by us. Re-assigned below if Claire
         # launches its own Ollama server process.
