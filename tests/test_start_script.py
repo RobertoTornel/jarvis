@@ -254,3 +254,49 @@ def test_install_service_sees_a_panel_that_is_already_listening(tmp_path: Path) 
 
     assert "did not start listening" not in output, output
     assert f"already listening on 127.0.0.1:{port}" in output, output
+
+
+def test_install_service_leaves_a_local_drop_in_alone(tmp_path: Path) -> None:
+    """Local policy lives in claire.service.d and must survive a re-install.
+
+    claire.service is rendered from deploy/claire.service by --install-service,
+    so a hand-edited unit loses its edits. On this machine the ordering that
+    waits for the LLM provider (`After=/Wants=omniroute.service`) was lost
+    exactly that way once, and a drop-in is the supported place for it: the
+    installer writes the unit, never this directory.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_systemctl_stub(bin_dir)
+
+    unit_dir = tmp_path / "units"
+    dropin_dir = unit_dir / "claire.service.d"
+    dropin_dir.mkdir(parents=True)
+    dropin = dropin_dir / "omniroute-ordering.conf"
+    dropin.write_text("[Unit]\nAfter=omniroute.service\nWants=omniroute.service\n")
+
+    env = dict(os.environ)
+    env.update({
+        "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+        "CLAIRE_USER_UNIT_DIR": str(unit_dir),
+        "CLAIRE_AUTOSTART_DIR": str(tmp_path / "autostart"),
+        "CLAIRE_START_WAIT": "5",
+    })
+
+    proc = subprocess.run(
+        [str(START_SH), "--install-service", "--no-daemon", "--no-panel", "--no-desktop"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+
+    assert dropin.exists(), "the installer removed a local drop-in directory"
+    assert "omniroute.service" in dropin.read_text()
+    assert (unit_dir / "claire.service").exists(), "the unit itself must still be installed"
+    assert proc.returncode == 0, proc.stdout + proc.stderr

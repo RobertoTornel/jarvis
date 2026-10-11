@@ -41,6 +41,16 @@
 # copied, backed up or pasted into a bug report). It therefore contains NO
 # inline secret: keys come from EnvironmentFile below, which is 0600 and owned by
 # the user. Never add `Environment=OMNIROUTE_API_KEY=...` here.
+#
+# LOCAL POLICY BELONGS IN A DROP-IN, NOT HERE
+# -------------------------------------------
+# `./start.sh --install-service` re-renders this file from the template, so
+# anything hand-edited into it is lost the next time the installer runs - which
+# is how an `After=`/`Wants=omniroute.service` ordering was lost once already.
+# Machine-specific policy goes in
+#   ~/.config/systemd/user/claire.service.d/*.conf
+# which systemd merges over this unit and the installer never writes to. One
+# real use: ordering Claire after the LLM provider it warms up at startup.
 
 [Unit]
 Description=Claire - always-on Linux voice assistant
