@@ -50,7 +50,15 @@ Examples of what the probes emit:
 | `audio_device` | `sounddevice.query_devices(kind="input")` | `sudo apt-get install -y libportaudio2`, check `pactl list short sources`, and **run under the user unit** — a system unit has no session bus and never sees the microphone |
 | `tesseract` | `claire.senses.screen.diagnose()` | the diagnosis's own `fix_command` (`sudo apt-get install -y tesseract-ocr`) |
 | `browser` | `claire.senses.browser.probe_chromium_binary()` | `playwright install chromium` |
-| `llm_endpoint` | `GET <llm_base_url>/models` (2s budget) | start the model server that owns the endpoint; `curl -sS <url>/models` |
+| `llm_endpoint` | `GET <llm_base_url>/models` (2s budget), then `POST <llm_base_url>/chat/completions` when the list answers 5xx | start the model server that owns the endpoint; `curl -sS <url>/models` |
+
+A **5xx from the model list** does not settle readiness, because it is not the same claim as "this endpoint cannot serve Claire". Measured on this machine: OmniRouter answers `/models` with HTTP 503 `catalog_build_timeout` while it assembles a 9,508-entry catalogue, and answers `/chat/completions` 200 in about a second. So a 5xx is followed by a minimal real turn (`max_tokens: 1`) through `http_post`:
+
+* turn 200 -> READY, saying the model list was unavailable and that this does not stop Claire answering, with `models_list_unavailable: true` in the data;
+* turn non-200, or a transport failure -> PROBLEM, naming **both** statuses so the original observation is never lost;
+* no chat model configured -> no turn is attempted, and the endpoint's own explanation stands rather than being replaced by a guess.
+
+401 and 403 keep their dedicated credential diagnosis (they are an answer about the key, not about availability), and a 404 on `/models` is still a PROBLEM: only 5xx means "temporarily unavailable".
 
 Where a project error already knows its fix (`OcrEngineMissingError.command`,
 `SttModelMissingError.hint`, …) the guard reuses it: `_fix_from_exception` reads

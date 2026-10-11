@@ -401,6 +401,35 @@ def _default_http_get(url: str, headers: Mapping[str, str], timeout: float) -> t
         return int(exc.code), b""
 
 
+def _default_http_post(
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any],
+    timeout: float,
+) -> tuple[int, bytes]:
+    """POST ``payload`` as JSON to ``url``, returning ``(status_code, body)``.
+
+    stdlib only, and the only place this module sends a request body: readiness
+    is finally decided by a real turn when the model *list* is unavailable, and
+    a turn is a POST. Connection-level failures propagate as ``URLError`` /
+    ``OSError`` and are handled by the probe.
+    """
+
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    body = json.dumps(dict(payload)).encode("utf-8")
+    send_headers = {**dict(headers), "Content-Type": "application/json"}
+    request = Request(url, data=body, headers=send_headers, method="POST")
+    try:
+        with urlopen(request, timeout=timeout) as response:  # noqa: S310 (http/https only)
+            status = int(getattr(response, "status", 200) or 200)
+            return status, response.read(65536)
+    except HTTPError as exc:
+        # An error status is an answer, not a transport failure.
+        return int(exc.code), b""
+
+
 def default_env_file() -> Path:
     """The 0600 file the systemd unit loads keys from.
 
@@ -963,6 +992,18 @@ def probe_llm_endpoint(sc: "SelfCheck") -> CheckResult:
             data={**data, "status_code": status_code, "api_key": secret_fingerprint(key)},
         )
 
+    if status_code >= 500:
+        # A 5xx from the *model list* is not the same claim as "the endpoint
+        # cannot serve Claire". Measured on this machine: OmniRouter answers
+        # /models with HTTP 503 `catalog_build_timeout` while it assembles a
+        # 9,508-entry catalogue, and answers /chat/completions 200 in ~1 s. The
+        # self-check used to call that a PROBLEM and tell the owner to check the
+        # URL - a false alarm that returns after every router restart. So the
+        # readiness claim is settled by the thing that matters: a real turn.
+        turn = _probe_chat_turn(sc, base_url, headers, model, safe, status_code)
+        if turn is not None:
+            return turn
+
     return CheckResult(
         name="llm_endpoint",
         status=STATUS_PROBLEM,
@@ -976,6 +1017,82 @@ def probe_llm_endpoint(sc: "SelfCheck") -> CheckResult:
             f"{redact_url(models_url)}"
         ),
         data={**data, "status_code": status_code},
+    )
+
+
+def _probe_chat_turn(
+    sc: "SelfCheck",
+    base_url: str,
+    headers: Mapping[str, str],
+    model: str,
+    safe: str,
+    models_status: int = 0,
+) -> CheckResult | None:
+    """Decide readiness with a minimal turn, or return ``None`` to fall through.
+
+    Returns a READY result when the endpoint completes a turn, and a PROBLEM
+    result when it cannot; ``None`` means the turn could not be attempted at all
+    (no model configured), leaving the caller's explanation in place.
+    """
+
+    if not model:
+        return None
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    }
+    try:
+        status_code, _ = sc.http_post(url, headers, payload, sc.llm_timeout)
+    except Exception as exc:
+        return CheckResult(
+            name="llm_endpoint",
+            status=STATUS_PROBLEM,
+            detail=(
+                f"{safe} answered HTTP {models_status} for /models and did not "
+                f"answer a chat turn either ({type(exc).__name__}: {exc})."
+            ),
+            fix=(
+                "Start or repair the model server that owns this URL, then "
+                f"verify: curl -sS {redact_url(url)}"
+            ),
+            data={"url": safe, "model": model, "turn_url": redact_url(url)},
+        )
+    if status_code == 200:
+        return CheckResult(
+            name="llm_endpoint",
+            status=STATUS_READY,
+            detail=(
+                f"{safe} completed a chat turn with model={model}; its model list "
+                "was unavailable at the time (a large or cold catalogue), which "
+                "does not stop Claire answering."
+            ),
+            data={
+                "url": safe,
+                "model": model,
+                "turn_status_code": status_code,
+                "models_list_unavailable": True,
+            },
+        )
+    return CheckResult(
+        name="llm_endpoint",
+        status=STATUS_PROBLEM,
+        detail=(
+            f"{safe} answered HTTP {models_status} for /models and HTTP "
+            f"{status_code} to a chat turn with model={model}, so Claire could "
+            "not answer through it."
+        ),
+        fix=(
+            f"Check the model name and the credential for {safe} in "
+            f"{config_path()}, and inspect the server log."
+        ),
+        data={
+            "url": safe,
+            "model": model,
+            "turn_status_code": status_code,
+            "models_list_unavailable": True,
+        },
     )
 
 
@@ -1027,6 +1144,9 @@ class SelfCheck:
     * ``settings`` / ``settings_loader`` - the settings object probes read.
     * ``probes`` - override any probe by name (a fake, or one that raises).
     * ``http_get`` - a ``(url, headers, timeout) -> (status, body)`` callable.
+    * ``http_post`` - a ``(url, headers, payload, timeout) -> (status, body)``
+      callable, used only to settle readiness with a real turn when the model
+      list is unavailable.
     * ``now`` - clock, so ``generated_at`` is deterministic under test.
     """
 
@@ -1037,6 +1157,10 @@ class SelfCheck:
         settings_loader: Callable[[], Any] | None = None,
         probes: Mapping[str, Probe] | None = None,
         http_get: Callable[[str, Mapping[str, str], float], tuple[int, bytes]] | None = None,
+        http_post: (
+            Callable[[str, Mapping[str, str], Mapping[str, Any], float], tuple[int, bytes]]
+            | None
+        ) = None,
         now: Callable[[], str] | None = None,
         llm_timeout: float = DEFAULT_LLM_TIMEOUT_SECONDS,
         order: Sequence[str] | None = None,
@@ -1047,6 +1171,7 @@ class SelfCheck:
         if probes:
             self._probes.update(probes)
         self.http_get = http_get or _default_http_get
+        self.http_post = http_post or _default_http_post
         self._now = now or _utc_now
         self.llm_timeout = float(llm_timeout)
         self._order = tuple(order) if order else CHECK_ORDER

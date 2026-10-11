@@ -1030,6 +1030,9 @@ class TestUnauthorisedIsDiagnosedAsACredentialProblem:
             SelfCheck(
                 settings=_fake_settings(**settings),
                 http_get=lambda url, headers, timeout: (status_code, b""),
+                # A 5xx sends the probe on to a real turn; answer that here so
+                # these tests stay hermetic (and never touch the network).
+                http_post=lambda url, headers, payload, timeout: (500, b""),
                 now=lambda: "T",
             )
             .run(order=("llm_endpoint",))
@@ -1173,3 +1176,120 @@ def test_autostart_entry_asks_systemd_and_is_portable() -> None:
     assert directives["X-GNOME-Autostart-enabled"] == "true"
     # No checkout path reaches the Exec line: the unit owns the interpreter.
     assert "@CLAIRE_REPO_ROOT@" not in directives["Exec"]
+
+
+# ---------------------------------------------------------------------------
+# A 5xx from the model list is settled by a real turn
+# ---------------------------------------------------------------------------
+
+def _five_hundred_models(url, headers, timeout):
+    """What OmniRouter answers while it builds a 9,508-entry catalogue."""
+    return 503, json.dumps({"error": {"message": "catalog_build_timeout"}}).encode()
+
+
+def test_a_503_catalogue_with_a_working_turn_is_ready() -> None:
+    """Measured on this machine: /models answers 503 catalog_build_timeout
+    while /chat/completions answers 200 in ~1 s. Calling that a PROBLEM sent
+    the owner to check a URL that was perfectly correct."""
+    turn_calls = []
+
+    def chat(url, headers, payload, timeout):
+        turn_calls.append((url, payload))
+        return 200, json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_READY, check.detail
+    assert check.data["models_list_unavailable"] is True
+    assert "chat turn" in check.detail
+    assert turn_calls and turn_calls[0][0].endswith("/chat/completions")
+    assert turn_calls[0][1]["max_tokens"] == 1, "the probe must stay minimal"
+
+
+def test_a_503_catalogue_and_a_failing_turn_is_a_problem() -> None:
+    def chat(url, headers, payload, timeout):
+        return 400, b'{"error": {"message": "model not found"}}'
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "400" in check.detail and "chat turn" in check.detail
+
+
+def test_a_transport_failure_on_the_turn_is_a_problem_not_a_crash() -> None:
+    def chat(url, headers, payload, timeout):
+        raise URLError("connection refused")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "chat turn" in check.detail
+
+
+def test_a_503_is_not_settled_by_a_turn_when_no_model_is_configured() -> None:
+    """Without a model there is nothing to prove readiness with, so the
+    endpoint's own explanation stands rather than being replaced by a guess."""
+    def chat(url, headers, payload, timeout):  # pragma: no cover - must not run
+        raise AssertionError("no turn can be sent without a model")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(llm_chat_model=""),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "503" in check.detail
+
+
+def test_a_404_model_list_is_still_a_problem_without_a_turn_probe() -> None:
+    """Only 5xx means "the list is temporarily unavailable"; a 404 is the
+    endpoint saying it has no such route, and must not be papered over."""
+    def chat(url, headers, payload, timeout):  # pragma: no cover - must not run
+        raise AssertionError("a 404 must not trigger a turn probe")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=lambda url, headers, timeout: (404, b""),
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "404" in check.detail
