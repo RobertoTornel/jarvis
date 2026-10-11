@@ -28,27 +28,28 @@ voice path, the text-chat path and the panel.
 ## Entry point and flow
 
 `run_reply_engine(db, cfg, tts, text, dialogue_memory, language=None, quiet=False)`
-at `src/claire/reply/engine.py:780` returns the reply text or `None`. The voice
+at `src/claire/reply/engine.py:776` returns the reply text or `None`. The voice
 path calls it with `tts=None` because the listener speaks the returned text
-itself (`src/claire/listening/listener.py:1503`, then `:1547`); the text-chat
+itself (the `run_reply_engine` call in `_dispatch_query`, then the
+`tts.speak(reply, ...)` call, both in `src/claire/listening/listener.py`); the text-chat
 path passes `quiet=True` so replies do not land in the daemon's stdout.
 
 Verified order inside `run_reply_engine`:
 
 | Step | Where | Notes |
 |---|---|---|
-| Redact the query | `engine.py:808` (`utils/redact.py:36` `redact`) | Every reply turn is redacted before it reaches a prompt or a log. |
-| Recent dialogue + context budget | `engine.py:835` (configure), `:843`–`:850` (recent turns with tools), `:858`–`:862` `bound_conversation_history`; `memory/conversation.py:684`–`:685` | Budget defaults are `DEFAULT_CONTEXT_MAX_TOKENS = 8000` and `DEFAULT_CONTEXT_MAX_MESSAGES = 40`; the budget is configured per turn at `engine.py:835`. Dialogue memory keeps messages by time, so the token/message ceiling is what stops a busy conversation shipping an unbounded prompt. |
-| Tool routing | `engine.py:1021` -> `tools/selection.py:385` `select_tools` | Strategy from `tool_selection_strategy` (default `"llm"`), with keyword (`selection.py:126`), embedding (`:163`) and LLM (`:240`) implementations and an always-include list (`:103`). The routed set is cached per query (`engine.py:1013` read, `:1053` store). |
-| Planning | `engine.py:1138` -> `reply/planner.py:424` `plan_query` | The planner produces an ordered action plan; `plan_query` fails **open** on timeout (`planner_timeout_sec`, default `3.0`), because it is on the critical path. A step that already names a tool and all of its declared arguments is executed directly without a chat turn: `deterministic_only=True` for large models (`engine.py:2002`), the whole step path for small ones, so the direct path can never add an LLM call. Plan helpers: `_parse_plan` (`:264`), `is_search_memory_step` (`:313`), `plan_requires_memory` (`:336`), `tool_steps_of` (`:350`), `plan_has_unresolved_tool_steps` (`:405`), `format_plan_block` (`:513`), `progress_nudge` (`:528`), `resolve_next_tool_call` (`:755`). |
-| Memory recall | `engine.py:1312` -> `enrichment.py:27` `extract_search_params_for_memory`; `engine.py:1450` -> `enrichment.py:346` `digest_memory_for_query` | Which stores are searched is `memory_enrichment_source` (default `"all"`: diary + graph). The extractor is started speculatively alongside the router (`engine.py:988`) and its result is reused only when the turn has no planner topic hint (`engine.py:1304`). |
-| Compound query split | `engine.py:1564` -> `reply/compound_query.py` `split_compound_query` | A multi-part question is decomposed so each part can drive a tool step. |
-| System prompt | `engine.py:1589` `_build_initial_system_message`; `system_prompt.py:53` template; `reply/prompts/system.py` (`ASR_NOTE`, `INFERENCE_GUIDANCE`); `reply/prompts/model_variants.py` | One prompt template, varied by model size. The memory router block is loaded from the vault (`system_prompt.py:165` `resolve_default_router_path`, `:172` `load_router_from_vault`) under a byte budget (`:135`, default 6000). |
-| Agentic loop | `engine.py:1925` `max_turns = cfg.agentic_max_turns`; `while turn < max_turns:` at `engine.py:1945` | Default `agentic_max_turns` is `8`. Each iteration sends the messages array through `chat_with_messages` (`engine.py:25`) and either calls tools or produces the final text. |
-| Tool execution | `engine.py:2065` (plan step) and `:2353` (native tool call) -> `tools/registry.py:313` `run_tool_with_retries` | Built-ins are dispatched by name; an external MCP tool is named `server__tool` and routed to `MCPClient.invoke_tool` (`registry.py:338`). See the [MCP spoke](mcp.md). |
-| Result digest | `enrichment.py:613` `digest_tool_result_for_query`; `engine.py:2615` -> `enrichment.py:853` `digest_loop_for_max_turns` | One LLM call compresses tool output; `llm_digest_timeout_sec` (default `8.0`) bounds it. A failure returns the raw text rather than losing the result. |
-| Tool carry-over | `engine.py:846` (`tool_carryover_max_turns`, default `2`), `:1716` `_maybe_record_tool_carryover` | A follow-up that depends on the previous turn's tool result can reuse it for a bounded number of turns. |
-| Memory update | `engine.py:2653`/`:2655` and `:2687`/`:2695` (`add_message`), `record_tool_turn` at `:1728` | The user and assistant turns are written to dialogue memory; diary and graph enrichment is asynchronous and owned by the memory subsystem. |
+| Redact the query | `engine.py:804` (`utils/redact.py:36` `redact`) | Every reply turn is redacted before it reaches a prompt or a log. |
+| Recent dialogue + context budget | `engine.py:831` (configure), `:840`–`:846` (recent turns with tools), `:853`–`:856` `bound_conversation_history`; `memory/conversation.py:712`–`:713` | Budget defaults are `DEFAULT_CONTEXT_MAX_TOKENS = 8000` and `DEFAULT_CONTEXT_MAX_MESSAGES = 40`; the budget is configured per turn at `engine.py:831`. Dialogue memory keeps messages by time, so the token/message ceiling is what stops a busy conversation shipping an unbounded prompt. |
+| Tool routing | `engine.py:1017` -> `tools/selection.py:399` `select_tools` | Strategy from `tool_selection_strategy` (default `"llm"`), with keyword (`selection.py:130` `_select_keyword`), embedding (`:167` `_select_embedding`) and LLM (`:254` `_select_llm`) implementations and an always-include list (`:37` `_ALWAYS_INCLUDED`). The routed set is cached per query (`engine.py:1009` read, `:1049` store). |
+| Planning | `engine.py:1134` -> `reply/planner.py:424` `plan_query` | The planner produces an ordered action plan; `plan_query` fails **open** on timeout (`planner_timeout_sec`, default `3.0`), because it is on the critical path. A step that already names a tool and all of its declared arguments is executed directly without a chat turn: `deterministic_only=True` for large models (`engine.py:1998`), the whole step path for small ones, so the direct path can never add an LLM call. Plan helpers: `_parse_plan` (`:264`), `is_search_memory_step` (`:313`), `plan_requires_memory` (`:336`), `tool_steps_of` (`:350`), `plan_has_unresolved_tool_steps` (`:405`), `format_plan_block` (`:513`), `progress_nudge` (`:528`), `resolve_next_tool_call` (`:755`). |
+| Memory recall | `engine.py:1308` -> `enrichment.py:27` `extract_search_params_for_memory`; `engine.py:1446` -> `enrichment.py:346` `digest_memory_for_query` | Which stores are searched is `memory_enrichment_source` (default `"all"`: diary + graph). The extractor is started speculatively alongside the router (`engine.py:984`) and its result is reused only when the turn has no planner topic hint (`engine.py:1300`). |
+| Compound query split | `engine.py:1560` -> `reply/compound_query.py` `split_compound_query` | A multi-part question is decomposed so each part can drive a tool step. |
+| System prompt | `engine.py:1585` `_build_initial_system_message`; `system_prompt.py:53` template; `reply/prompts/system.py` (`ASR_NOTE`, `INFERENCE_GUIDANCE`); `reply/prompts/model_variants.py` | One prompt template, varied by model size. The memory router block is loaded from the vault (`system_prompt.py:165` `resolve_default_router_path`, `:172` `load_router_from_vault`) under a byte budget (`:135`, default 6000). |
+| Agentic loop | `engine.py:1921` `max_turns = cfg.agentic_max_turns`; `while turn < max_turns:` at `engine.py:1941` | Default `agentic_max_turns` is `8`. Each iteration sends the messages array through `chat_with_messages` (`engine.py:25`) and either calls tools or produces the final text. |
+| Tool execution | `engine.py:2061` (plan step) and `:2349` (native tool call) -> `tools/registry.py:313` `run_tool_with_retries` | Built-ins are dispatched by name; an external MCP tool is named `server__tool` and routed to `MCPClient.invoke_tool` (`registry.py:338`). See the [MCP spoke](mcp.md). |
+| Result digest | `enrichment.py:613` `digest_tool_result_for_query`; `engine.py:2611` -> `enrichment.py:853` `digest_loop_for_max_turns` | One LLM call compresses tool output; `llm_digest_timeout_sec` (default `8.0`) bounds it. A failure returns the raw text rather than losing the result. |
+| Tool carry-over | `engine.py:842` (`tool_carryover_max_turns`, default `2`), `:1712` `_maybe_record_tool_carryover` | A follow-up that depends on the previous turn's tool result can reuse it for a bounded number of turns. |
+| Memory update | `engine.py:2649`/`:2651` and `:2683`/`:2691` (`add_message`), `record_tool_turn` at `:1724` | The user and assistant turns are written to dialogue memory; diary and graph enrichment is asynchronous and owned by the memory subsystem. |
 
 ## Model output that is not a clean tool call
 
@@ -66,7 +67,7 @@ a spoken error:
   step that uses an undeclared argument key defers to the model only when it
   names none of the tool's declared arguments.
 - `_is_malformed_json_response` / `_extract_text_from_json_response`
-  (`engine.py:1865`, `:1868`) handle a reply wrapped in JSON.
+  (`engine.py:1861`, `:1864`) handle a reply wrapped in JSON.
 - `_text_tool_call_guidance` (`engine.py:175`) teaches the accepted format in the
   prompt for models that are not native tool callers.
 
@@ -106,8 +107,8 @@ a spoken error:
 
 - **Provider unreachable or key missing**: the call site raises through
   `claire.llm` (`llm/factory.py`, `llm/errors.py`); the listener catches a reply
-  exception, prints it, and speaks a short error (`listener.py:1507`–`:1514`)
-  instead of staying silent.
+  exception, prints it, and speaks a short error (the `except` branch of
+  `_dispatch_query` in `listener.py`) instead of staying silent.
 - **Planner timeout**: `plan_query` returns no plan and the loop proceeds
   unplanned; the planner never blocks a reply.
 - **Digest timeout**: the raw tool result is used.
@@ -117,10 +118,11 @@ a spoken error:
   path (`digest_loop_for_max_turns`) is what turns the mid-loop state into a
   final answer.
 - **Concurrency**: the voice path holds `daemon.query_lock()` around
-  `run_reply_engine` (`listener.py:1498`) so a voice query and a text-chat query
-  cannot run against the same dialogue memory at once. Voice blocks rather than
-  being dropped, then re-checks that its capture generation is still current
-  (`listener.py:1499`).
+  `run_reply_engine` (inside `_dispatch_query` in `listener.py`) so a voice query
+  and a text-chat query cannot run against the same dialogue memory at once.
+  Voice blocks rather than being dropped, then re-checks that its capture
+  generation is still current by calling `_transcription_is_current(generation)`
+  (also in `_dispatch_query`).
 
 ## Tests
 
@@ -139,11 +141,11 @@ a spoken error:
   `reply.spec.md:9` lists "the pluggable backend abstraction (`LLMBackend` ABC +
   `OllamaBackend` impl, factory at `get_llm_backend(settings)`)", but does not
   say which provider ships as the default. The shipped default is
-  `"llm_provider": "openai_compatible"` (`src/claire/config.py:570`) pointing at
+  `"llm_provider": "openai_compatible"` (`src/claire/config.py:575`) pointing at
   OmniRouter (`config.py:47`), with the key read from `OMNIROUTE_API_KEY`
-  (`config.py:48`, `:567`). Ollama remains a supported provider, and
+  (`config.py:48`, `:581`). Ollama remains a supported provider, and
   `_resolve_provider` still falls back to it for an unknown value
-  (`src/claire/llm/factory.py:28`–`:33`).
+  (`src/claire/llm/factory.py:65`–`:70`).
 - **`reply.spec.md` calls `src/claire/system_prompt.py` the single unified
   `SYSTEM_PROMPT`** (`reply.spec.md:8`). The module still exists
   (`src/claire/system_prompt.py:53` holds the template) but the prompt is
@@ -152,13 +154,13 @@ a spoken error:
 - **Two ceiling figures differ between the config defaults and the reply
   engine's `getattr` fallbacks.** The config defaults are
   `llm_tools_timeout_sec = 15.0` and `llm_embedding_timeout_sec = 5.0`
-  (`src/claire/config.py:601`, `:610`), while the engine's `getattr` fallbacks
+  (`src/claire/config.py:608`, `:617`), while the engine's `getattr` fallbacks
   are `8.0` for the tool router and tool execution
-  (`src/claire/reply/engine.py:1028`) and `10.0` for the embedding probe
-  (`engine.py:1031`, `:1347`). The memory extractor is no longer on that list:
-  it has its own key, `llm_extractor_timeout_sec` (`config.py:126`, default
-  `8.0` at `:606`), and falls back to `llm_tools_timeout_sec` only for a
-  hand-built cfg that lacks the new field (`engine.py:966`–`:969`). Because
+  (`src/claire/reply/engine.py:1024`) and `10.0` for the embedding probe
+  (`engine.py:1027`, `:1343`). The memory extractor is no longer on that list:
+  it has its own key, `llm_extractor_timeout_sec` (`config.py:142`, default
+  `8.0` at `:613`), and falls back to `llm_tools_timeout_sec` only for a
+  hand-built cfg that lacks the new field (`engine.py:962`–`:965`). Because
   `Settings` always carries the attributes, the config figures are what run and
   the fallbacks are only reachable with a hand-built settings object.
   `tests/test_reply_path_timeouts.py` pins the fail-fast property of the whole

@@ -49,10 +49,10 @@ not start it too.
 |---|---|---|
 | `claire` (console script) | `pyproject.toml:29` → `claire.cli:main` | Installed by `pip install -e .` or a wheel; in a bare checkout the unit does not use it. |
 | `python -m claire` | `src/claire/__main__.py:3` → `claire.cli:main` | What the unit's `ExecStart=` runs (unit:77) and what `start.sh` spawns (`-m claire`). |
-| `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py:2515`). |
+| `python -m claire.main` | `src/claire/main.py:9` → `claire.daemon:main` | Legacy/desktop path; the desktop app spawns it (`src/desktop_app/app.py`, the `["-m", "claire.main"]` argv). |
 | `python -m claire.daemon` | `src/claire/daemon.py:1810`–`:1812` | Reads `--smoke-test` straight from `sys.argv`. |
-| `python -m claire.panel.server` | `src/claire/panel/server.py:4114` (`main`) | The web panel; its own unit, `deploy/claire-panel.service`. |
-| `python -m claire.platform.service --self-check` | `src/claire/platform/service.py:1249` (`main`), `--self-check` at `:1217` | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
+| `python -m claire.panel.server` | `src/claire/panel/server.py:4145` (`main`) | The web panel; its own unit, `deploy/claire-panel.service`. |
+| `python -m claire.platform.service --self-check` | `src/claire/platform/service.py` (`main`; `--self-check` is one of its flags) | Health report used by `start.sh check`, the unit's `Documentation=` target, and the Dockerfile `HEALTHCHECK`. |
 
 `claire.cli` accepts exactly `--smoke-test` (`cli.py:19`–`:23`) and `--version`
 (`cli.py:24`–`:28`), then hands off to `daemon.main(smoke_test=...)`
@@ -66,10 +66,10 @@ loop (`daemon.py:1607`–`:1646`).
 
 The file is a template: it contains `@CLAIRE_REPO_ROOT@` where the checkout path
 belongs and refuses to be used unrendered (`claire.service:3`–`:12`). The
-renderer is `start.sh --install-service` (`start.sh:769`–`:829`), whose
+renderer is `start.sh --install-service` (`start.sh:1101`–`:1172`), whose
 `render_unit` helper substitutes the placeholder in pure bash so a `&`, `/` or
-`\` in the checkout path stays literal (`start.sh:762`–`:767`), then reloads
-systemd (`start.sh:821`–`:822`). The unit file spells out why it is a user unit
+`\` in the checkout path stays literal (`start.sh:1052`–`:1062`), then reloads
+systemd (`start.sh:1138`). The unit file spells out why it is a user unit
 and not a system unit (`claire.service:18`–`:34`).
 
 Exact directives (current template, paired with their symbol):
@@ -105,42 +105,42 @@ directive (`:71`–`:76`).
 
 `start.sh` is the one-command entry point ("Claire - one command that brings the
 whole system up, and takes it down again", `start.sh:3`). It locates the repo
-from its own path (`start.sh:64`–`:73`), derives every default (`:78`–`:101`), and
+from its own path (`start.sh:64`–`:73`), derives every default (`:78`–`:111`), and
 dispatches one of `start`, `stop`, `restart`, `status`, `check` or
 `install-service` (`:1260`–`:1268`).
 
-What it does on `start` (`command_start`, `start.sh:970`–`:1028`), in order:
+What it does on `start` (`command_start`, `start.sh:970`–`:1029`), in order:
 
-1. Resolve the interpreter into the parent shell (`ensure_pybin`, `:236`–`:238`),
-   over `resolve_pybin` (`:221`–`:229`) and `find_python` (`:199`–`:216`). The
+1. Resolve the interpreter into the parent shell (`ensure_pybin`, `:236`–`:239`),
+   over `resolve_pybin` (`:221`–`:235`) and `find_python` (`:199`–`:220`). The
    parent-shell step matters: a command substitution runs in a subshell, so a
    resolution inside one never reaches the port probe that needs it.
-2. Preflight checks (`hard_checks`, `:786`–`:852`), including "is this a Claire
+2. Preflight checks (`hard_checks`, `:786`–`:853`), including "is this a Claire
    checkout", venv presence, `requirements.txt`, writability of the config dir,
    and whether the runtime env file exists.
-3. Create `.venv` if missing (`ensure_venv`, `:244`–`:276`) and install
+3. Create `.venv` if missing (`ensure_venv`, `:244`–`:277`) and install
    `requirements.txt` when its hash changed, without touching a venv a live
-   Claire runs from (`ensure_deps`, `:286`–`:321`, hash at `:240`–`:242`).
-4. Run Claire's own self-check (`self_check`, `:854`–`:868`), and stop on failure
+   Claire runs from (`ensure_deps`, `:286`–`:325`, hash at `:240`–`:243`).
+4. Run Claire's own self-check (`self_check`, `:854`–`:869`), and stop on failure
    only with `--strict`.
-5. Start the daemon (`start_daemon`, `:463`–`:527`): through `systemctl --user
+5. Start the daemon (`start_daemon`, `:463`–`:528`): through `systemctl --user
    start claire` when the unit is installed, otherwise as a detached process
    whose pid file is trusted only after `/proc` confirms the command line
-   (`_spawn`, `:446`–`:461`; pid check, `:131`–`:150`).
-6. Start the web panel (`start_panel`, `:529`–`:603`) on the panel's own
+   (`_spawn`, `:446`–`:462`; pid check, `:131`–`:154`).
+6. Start the web panel (`start_panel`, `:529`–`:607`) on the panel's own
    `DEFAULT_BIND_HOST` / `DEFAULT_PORT` read out of `panel/server.py`
-   (`panel_default`, `:422`–`:428`; defaults are `127.0.0.1` and `8765`,
+   (`panel_default`, `:422`–`:429`; defaults are `127.0.0.1` and `8765`,
    `src/claire/panel/server.py:151`–`:152`). If something already listens on the
    port it declines to start a second panel.
-7. Start the tray app (`start_desktop`, `:608`–`:674`) through
+7. Start the tray app (`start_desktop`, `:608`–`:675`) through
    `claire-desktop.service` when the unit is installed, otherwise as a detached
    process. It is the one step that needs a session to draw in, so it is skipped
    rather than retried when there is none.
 
 `stop` covers all three components: `SIGTERM` for direct processes with a 20 s
-wait, then `SIGKILL` (`stop_one`, `start.sh:676`–`:706`), or `systemctl --user
-stop` when the unit is active (`stop_daemon`, `:708`–`:733`). `stop_component`
-(`:739`–`:761`) is the shared form behind `stop_daemon`, `stop_panel` and
+wait, then `SIGKILL` (`stop_one`, `start.sh:676`–`:707`), or `systemctl --user
+stop` when the unit is active (`stop_daemon`, `:708`–`:738`). `stop_component`
+(`:739`–`:762`) is the shared form behind `stop_daemon`, `stop_panel` and
 `stop_desktop`.
 
 ### `deploy/Dockerfile` — text/tool half only
@@ -243,7 +243,7 @@ the sdist file list (legacy default first, then `MANIFEST.in`) to assert the
 1. `start.sh` resolves the venv, ensures dependencies, and runs the self-check.
 2. It spawns `python -m claire` detached with `PYTHONPATH=<repo>/src` and
    `PYTHONUNBUFFERED=1`, appending stdout and stderr to
-   `$LOG_DIR/daemon.log` (`_spawn`, `start.sh:349`–`:364`).
+   `$LOG_DIR/daemon.log` (`_spawn`, `start.sh:446`–`:462`).
 3. `python -m claire` → `__main__.py:3` → `cli.main` → `daemon.main`
    (`cli.py:49`–`:51`).
 4. In `daemon.main` (`daemon.py:1409`): reset the stop flag (`:1421`), install
@@ -287,28 +287,28 @@ unit's `SIGINT` and `start.sh`'s `SIGTERM` both reach the same cleanup path.
 
 | What | Path | Override |
 |---|---|---|
-| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH` (`config.py:825`–`:826`), `XDG_CONFIG_HOME` (`:333`) |
-| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:784`–`:793`, `service.py:404`) |
-| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:546`, `_default_db_path` at `:72`) |
+| Config | `~/.config/claire/config.json` (0600 on save) | `CLAIRE_CONFIG_PATH` (`config.py:842`–`:843`), `XDG_CONFIG_HOME` (`default_config_path()`, `config.py:347`–`:351`) |
+| Runtime env file (0600) | `~/.config/claire/claire.env` | `CLAIRE_ENV_FILE` (`config.py:810`, `runtime_env_file()` at `:801`–`:816`; `default_env_file()` in service.py) |
+| Memory database | `~/.local/share/claire/claire.db` | `db_path` default (`config.py:561`, `_default_db_path` at `:83`) |
 
 `load_settings()` merges `config.json` over `get_default_config()`
-(`config.py:841`–`:842`). Config keys that change deployment behaviour
-include `db_path` (default from `config.py:546`), `voice_debug` (`:846`, env
+(`config.py:857`–`:859`). Config keys that change deployment behaviour
+include `db_path` (default from `config.py:561`), `voice_debug` (`:863`, env
 `CLAIRE_VOICE_DEBUG`), `llm_base_url` (defaults to
-`http://127.0.0.1:20129/v1`, `config.py:47`/`:885`), `llm_chat_model`
-(`config.py:898`–`:904`), `tts_engine` (default `"fish"`, `:615`), `stt_engine`
-(default `"parakeet"`, `:673`), `wake_word` (default `"claire"`, `:649`) and
-`mcps` (`:771`).
+`http://127.0.0.1:20129/v1`, `config.py:47`/`:896`–`:902`), `llm_chat_model`
+(`config.py:908`–`:915`), `tts_engine` (default `"fish"`, `:630`), `stt_engine`
+(default `"parakeet"`, `:688`), `wake_word` (default `"claire"`, `:664`) and
+`mcps` (`:788`).
 
 ### Environment variables the code reads
 
-- `CLAIRE_CONFIG_PATH` — config file location (`config.py:825`).
-- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:784`–`:793`).
-- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:846`).
+- `CLAIRE_CONFIG_PATH` — config file location (`config.py:842`).
+- `CLAIRE_ENV_FILE` — runtime env file location (`config.py:801`–`:816`, read at `:810`).
+- `CLAIRE_VOICE_DEBUG` — enables `debug_log` (`config.py:863`).
 - `CLAIRE_PHONE_BRIDGE` — `0`/`false`/`no` disables the phone bridge
   (`daemon.py:1318`).
 - `OMNIROUTE_API_KEY` — the LLM key, read from the environment; never stored in
-  `config.json` (`config.py:47`–`:48`, `:890`).
+  `config.json` (`config.py:47`–`:48`, `:907`).
 - `CLAIRE_KEY_STORE`, `CLAIRE_VAULT_DIR`, `CLAIRE_BACKUP_ROOT`,
   `CLAIRE_SCHEDULE_PATH`, `CLAIRE_WHISPER_BACKEND` — feature-specific path and
   backend overrides read elsewhere in `config.py`.
@@ -321,8 +321,8 @@ include `db_path` (default from `config.py:546`), `voice_debug` (`:846`, env
 `CLAIRE_SERVICE_NAME`, `CLAIRE_DAEMON_MODE` (`auto|systemd|direct`),
 `CLAIRE_PANEL_HOST`, `CLAIRE_PANEL_PORT`, `CLAIRE_PREFLIGHT_TIMEOUT`,
 `CLAIRE_START_WAIT`, `CLAIRE_FORCE_INSTALL`, `CLAIRE_USER_UNIT_DIR`, and
-`XDG_STATE_HOME`/`XDG_CONFIG_HOME` (`start.sh:30`–`:41`, `:67`–`:83`, validated
-at `:897`–`:900`).
+`XDG_STATE_HOME`/`XDG_CONFIG_HOME` (`start.sh:35`–`:52`, `:78`–`:111`, queued
+at `:1245`–`:1257`).
 
 ### Environment the unit and image set
 
@@ -337,10 +337,10 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
   `StandardError=journal`, `SyslogIdentifier=claire` (`claire.service:87`–`:89`);
   read with `journalctl --user -u claire -f` (unit comment, `:14`).
 - **Direct mode (`start.sh`):** `$LOG_DIR/daemon.log` and `$LOG_DIR/panel.log`,
-  default `~/.local/state/claire/logs` (`start.sh:73`–`:78`, `:418`, `:463`,
-  `:472`).
+  default `~/.local/state/claire/logs` (`start.sh:89`–`:91`; written at `:515`,
+  `:592`, `:664`).
 - **In-process debug:** `debug_log` prints to stderr and is a no-op unless
-  `voice_debug` is on (`debug.py:25`–`:36`, `config.py:870`). There is no log
+  `voice_debug` is on (`debug.py:25`–`:36`, `config.py:863`). There is no log
   file written by the daemon itself and no rotation to configure.
 
 ## Extension points
@@ -348,18 +348,18 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 - **Change the daemon command or its environment.** Edit `ExecStart=` /
   `Environment=` in `deploy/claire.service` and re-run
   `./start.sh --install-service`; it backs up the installed unit and reloads
-  systemd (`start.sh:810`–`:822`).
+  systemd (`start.sh:1066`–`:1138`).
 - **Add a new supervised component.** Add a `command_*` function plus a case arm
-  in `start.sh` (`:902`–`:910`), spawn it with `_spawn` (`:349`) into
+  in `start.sh` (`:1260`–`:1268`), spawn it with `_spawn` (`:446`) into
   `$STATE_DIR/run/*.pid` and `$LOG_DIR/*.log`, and teach `command_status`
-  (`:649`) about it. Starting a component from inside the daemon is the existing
+  (`:895`) about it. Starting a component from inside the daemon is the existing
   alternative — that is how the phone bridge is wired (`daemon.py:1605`).
 - **Add a config key.** Add the default in `get_default_config()` and a field on
   `Settings` in `config.py`, then read it where needed; `load_settings()` merges
   it automatically.
 - **Add a health check.** Probes live in `src/claire/platform/service.py`
-  (registry and `SelfCheck` around `:1021`) and are surfaced through
-  `--self-check` (`:1217`). The unit's `Documentation=` points at the spec that
+  (the probe registry and the `SelfCheck` class) and are surfaced through
+  `--self-check`. The unit's `Documentation=` points at the spec that
   governs them.
 - **Container variant.** `deploy/Dockerfile` is intentionally a subset; adding
   voice would require an audio server and `/dev/snd` and contradicts the image's
@@ -369,18 +369,18 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 
 | Situation | What the code actually does |
 |---|---|
-| No virtualenv / wrong Python | `ensure_venv` creates `.venv` with a 3.11+ interpreter, or fails with the exact `rm -rf` / `apt install` fix and exits `3` (`start.sh:210`–`:242`, exit codes at `:85`–`:88`). |
-| `requirements.txt` missing | `hard_checks` reports it as a preflight problem and `start` stops before spawning anything (`start.sh:570`, `:684`–`:689`). |
-| A live Claire runs from the venv | `ensure_deps` refuses to modify that venv unless `--force-install` / `CLAIRE_FORCE_INSTALL=1` (`start.sh:244`–`:250`, `:274`). |
-| Preflight problem (config dir not writable, no Python) | `start` prints the items and returns exit code `3` without starting (`start.sh:684`–`:689`). |
-| Self-check not green | Claire still starts unless `--strict` was given (`start.sh:698`–`:706`); each line names its own fix. |
+| No virtualenv / wrong Python | `ensure_venv` creates `.venv` with a 3.11+ interpreter, or fails with the exact `rm -rf` / `apt install` fix and exits `3` (`start.sh:244`–`:277`, exit codes at `:108`–`:111`). |
+| `requirements.txt` missing | `hard_checks` reports it as a preflight problem and `start` stops before spawning anything (`start.sh:815`–`:816`, `:976`–`:979`). |
+| A live Claire runs from the venv | `ensure_deps` refuses to modify that venv unless `--force-install` / `CLAIRE_FORCE_INSTALL=1` (`start.sh:305`–`:308`). |
+| Preflight problem (config dir not writable, no Python) | `start` prints the items and returns exit code `3` without starting (`start.sh:976`–`:979`). |
+| Self-check not green | Claire still starts unless `--strict` was given (`start.sh:989`–`:996`); each line names its own fix. |
 | TTS unavailable at boot | `_initialize_tts_engine` returns `None` on an unknown engine, a missing voice model or a missing key; the daemon substitutes `_UnavailableTTS` and keeps running (`daemon.py:1579`–`:1583`, `_UnavailableTTS` at `:52`, `_initialize_tts_engine` at `:87`). |
-| Voice recogniser fails to load | The listener runs in its own thread; the daemon still boots and prints the failure thread's guidance (`daemon.py:1596`–`:1600`; the PortAudio error text is at `listener.py:163`–`:167`). |
+| Voice recogniser fails to load | The listener runs in its own thread; the daemon still boots and prints the failure thread's guidance (`daemon.py:1596`–`:1600`; the PortAudio error text is in `src/claire/listening/listener.py`, in the `except` arm that prints "PortAudio initialisation failed"). |
 | MCP server fails to start | Discovery catches per server, prints the error beside the server name, and continues (`daemon.py:1467`–`:1479`); the whole preflight is wrapped again so nothing aborts boot. |
-| Port in use (panel) | `create_server` binds without catching `OSError` (`src/claire/panel/server.py:4076`–`:4086`), so a taken port makes the panel exit non-zero with a traceback in `panel.log`. `start.sh` normally prevents this: it checks the port first and declines to start a second panel (`:447`–`:451`), and if the spawn still fails it waits `CLAIRE_START_WAIT` (default 60 s), tails the log and returns exit code `4` (`:466`–`:473`). |
-| Daemon exits immediately (direct mode) | `start_daemon` tails the last 25 lines of `daemon.log` and returns exit code `4` (`start.sh:426`–`:430`). |
-| Daemon never becomes active under systemd | After `CLAIRE_START_WAIT` (60 s) it prints `systemctl --user status` output and fails (`start.sh:404`–`:409`). |
-| Unit copied without rendering | `ExecStart=` contains the literal `@CLAIRE_REPO_ROOT@`, so systemd fails to exec it; the unit says so explicitly (`claire.service:10`–`:12`) and `--install-service` refuses to install an unrendered template (`start.sh:780`–`:784`). |
+| Port in use (panel) | `create_server` binds without catching `OSError` (`src/claire/panel/server.py:4099`–`:4108`), so a taken port makes the panel exit non-zero with a traceback in `panel.log`. `start.sh` normally prevents this: it checks the port first and declines to start a second panel (`start.sh:548`–`:552`), and if the spawn still fails it waits `CLAIRE_START_WAIT` (default 60 s), tails the log and returns exit code `4` (`start.sh:595`–`:602`). |
+| Daemon exits immediately (direct mode) | `start_daemon` tails the last 25 lines of `daemon.log` and returns exit code `4` (`start.sh:525`–`:526`, mapped to `EXIT_STARTUP` at `:1002`). |
+| Daemon never becomes active under systemd | After `CLAIRE_START_WAIT` (60 s) it prints `systemctl --user status` output and fails (`start.sh:505`–`:506`). |
+| Unit copied without rendering | `ExecStart=` contains the literal `@CLAIRE_REPO_ROOT@`, so systemd fails to exec it; the unit says so explicitly (`claire.service:10`–`:12`) and `--install-service` refuses to install an unrendered template (`start.sh:1072`–`:1075`). |
 | Crash loop | `Restart=on-failure` with `RestartSec=5s` and `StartLimitIntervalSec=300` / `StartLimitBurst=5` rate-limits it and reports the exhausted burst in the journal (`claire.service:56`–`:57`, `:85`–`:86`). |
 | Missing runtime env file | `EnvironmentFile=` has a leading `-`, so the unit still starts (`claire.service:76`); the self-check and the provider call name the missing key afterwards (`claire.service:71`–`:75`). |
 
@@ -389,16 +389,16 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
 - [`tests/test_platform_service.py`](../../tests/test_platform_service.py) —
   parses `deploy/claire.service` as a user unit and asserts the sections, that
   `ExecStart=` runs `-m claire` with the daemon restart/backoff contract
-  (`:861` onward, unit fixtures at `:45`–`:47`, `:115`), that
+  (`:876` onward, unit fixtures at `:45`–`:47`, `:115`), that
   `EnvironmentFile=` is used instead of inline secrets (`:900`), and checks the
   Dockerfile.
 - [`tests/test_start_script.py`](../../tests/test_start_script.py) — the
   one-command path must stay machine-independent: `start.sh` exists and is
-  executable (`:45`), parses under `bash -n` (`:50`), neither file contains a
-  hardcoded home directory (`:60`), the panel port lives in the panel source
-  (`:70`), the phone bridge is not started twice (`:78`), the documented
-  interface exists (`:87`), the unit carries `@CLAIRE_REPO_ROOT@` and renders for
-  any checkout (`:91`, `:99`), and the README points at `./start.sh` (`:111`).
+  executable (`:51`), parses under `bash -n` (`:56`), neither file contains a
+  hardcoded home directory (`:71`), the panel port lives in the panel source
+  (`:80`), the phone bridge is not started twice (`:88`), the documented
+  interface exists (`:97`), the unit carries `@CLAIRE_REPO_ROOT@` and renders for
+  any checkout (`:101`, `:109`), and the README points at `./start.sh` (`:121`).
 - [`tests/test_daemon_tts_wiring.py`](../../tests/test_daemon_tts_wiring.py),
   [`tests/test_daemon_tts_engine_guard.py`](../../tests/test_daemon_tts_engine_guard.py)
   and [`tests/test_tts_startup_status.py`](../../tests/test_tts_startup_status.py)
@@ -425,27 +425,28 @@ and `CLAIRE_ENV_FILE` in the image (`Dockerfile:73`–`:82`).
    degraded, with nothing in the banner to say so"
    (`claire.service:121`–`:123`). The code says the opposite: Whisper is opt-in
    only and "is never a fallback" for Parakeet
-   (`src/claire/listening/listener.py:170`–`:176`, `_configures_whisper` at
-   `:2053`–`:2055`), and `daemon.main` prints the recogniser banner with no
-   Whisper fallback advertised because "advertising a Whisper fallback would be
-   a lie printed at every boot" (`src/claire/daemon.py:1437`–`:1449`). The
+   (`src/claire/listening/listener.py`, the `_configures_whisper` guard and the
+   "Whisper is **opt-in only**" comment above it), and `daemon.main` prints the
+   recogniser banner with no Whisper fallback advertised because "advertising a
+   Whisper fallback would be a lie printed at every boot"
+   (`src/claire/daemon.py:1437`–`:1449`). The
    hardening (a writable numba cache) is still correct; only the
    fallback narrative is stale.
 2. **Not a contradiction, but worth knowing:** the unit's `KillSignal=` comment
    says "SIGINT, not SIGTERM" (`claire.service:78`–`:79`), while the daemon
    installs the same clean-shutdown handler for `SIGINT`, `SIGTERM` and
    `SIGBREAK` (`daemon.py:811`–`:812`); `start.sh` stops direct-mode processes
-   with `SIGTERM` (`start.sh:489`). Both signals reach the same cleanup path.
+   with `SIGTERM` (`start.sh:689`). Both signals reach the same cleanup path.
 3. **The service spec does not record the template or its installer.**
    `src/claire/platform/service.spec.md` documents the unit's facts
-   (`Restart=`/`RestartSec=` at `:151`–`:153`, the key-file rule at `:154`–`:164`)
+   (`Restart=`/`RestartSec=` at `:159`–`:161`, the key-file rule at `:162`–`:167`)
    but never says the file is a template or that `./start.sh --install-service`
    renders it. Nothing in the spec is wrong; the install step is simply absent
    from it.
 4. **No drift in the README's deployment section, and none in the unit's
    template note.** `README.md` describes the template and points at
-   `./start.sh --install-service` (`README.md:706`–`:726`), matching
-   `claire.service:3`–`:12` and `start.sh:769`–`:829`. The unit's
+   `./start.sh --install-service` (`README.md:743`–`:762`), matching
+   `claire.service:3`–`:12` and `start.sh:1101`–`:1172`. The unit's
    `WorkingDirectory=` rationale now explains the placeholder correctly
    (`claire.service:61`–`:63`) and the "KEYS ARE NOT IN THIS FILE" block
    (`:37`–`:43`) agrees with `AGENTS.md:5` and `:8`; both were stale earlier in

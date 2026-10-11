@@ -54,6 +54,11 @@ E       ValueError: kaboom
 2 failed, 20 deselected in 0.15s
 ```
 
+Note that the `scripts/acceptance_check.py:1392` in that traceback does not
+match any revision of the script on disk — in the current one `_run_one` is at
+line 1477, and it was at 1465 when the scoreboard was added — so read that number
+as part of the record rather than as a pointer into the current file.
+
 That traceback is the bug the guard exists for: the owner, whose problem is
 already that something is broken, gets a stack trace out of the tool that was
 supposed to tell them what is wrong. After adding the guard:
@@ -73,8 +78,15 @@ These are recorded in `STATUS.md` and encoded here. The script reports them as
 | `wake_word` (acoustic) | `UNMEASURED` | **No microphone audio has ever been captured on this machine.** The matcher's own text-only cost (~8 µs) is the matcher's cost, not acoustic wake latency, and is not presented as one. The in-room false-wake rate is likewise unmeasured; the harness's `0.35` "false-positive rate" is a synthetic negative set and is not a rate. |
 | `tts_synthesis` (Fish) | `UNMEASURED` | The Fish key file is present (count and mode are reported; values are never read), but **the account has no API credit**: the last live call returned HTTP 402 "Insufficient API credit" (the key authenticated — a rejected credential would be 401). A live synthesis spends credit, so this check does not make one. |
 | `outreach_live` | `UNMEASURED` | `dry_run` is the ladder's default and **no message has ever been delivered for real from this install**. The acceptance run never sends. |
-| `ocr` | `BLOCKED` | No `tesseract` binary. `pytesseract` is importable but is only a wrapper. Fix: `sudo apt-get install -y tesseract-ocr`. |
-| `camera` | `BLOCKED` | Nothing matching `/dev/video*` exists, so there is no camera to capture from. Fix: plug in a USB webcam, or send a photo from the phone. |
+
+Four capabilities that were `BLOCKED` in the recorded run below are `READY` on
+this machine now — `ocr` (`tesseract` is installed), `camera` (two `/dev/video*`
+devices exist), `stt_model` (`stt_model_path` points at a Parakeet `.nemo`) and
+`key_store` (a key store file exists). Of that run's six `BLOCKED` rows only
+`backups` and `llm_endpoint` still are, and `llm_endpoint`'s reason has changed
+from "no credential configured" to a request timeout now that one is stored.
+That is why this table names three capabilities rather than five: the script
+reports the machine, not the run.
 
 Barge-in latency and first-audio latency are **not** capabilities of their own in
 this table — they need Fish playback, so they share the `tts_synthesis` reason.
@@ -186,11 +198,15 @@ rows were different, because the owner was reconfiguring it while the check ran:
 That is the point of the tool: re-run it after changing an install rather than
 trusting a result from before the change. Nothing here is cached across runs.
 
-That summary is the honest state of this install: the memory, scheduling,
-senses-that-exist, browser, ladder and platform plumbing all work; no credential
-has been stored, no turn recogniser is configured, the local model server is not
-running, there is no OCR engine and no camera, and one backup slot does not
-verify.
+That summary was the honest state of this install at the time of that run: the
+memory, scheduling, senses-that-exist, browser, ladder and platform plumbing all
+worked; no LLM credential was configured, `stt_model_path` was empty, the model
+server was reachable only to refuse a request (`401`), there was no OCR engine
+and no camera, and no backup slot verified. Read it as a snapshot, not a standing
+claim — an install moves between runs, and this one has: the owner has since
+stored an `OMNIROUTE_API_KEY` in the 0600 runtime env file and pointed
+`stt_model_path` at a Parakeet `.nemo`, so the `llm_endpoint` and `stt_model`
+rows above no longer describe it.
 
 ## Tests
 
@@ -219,6 +235,7 @@ deselects an unmarked file, and a guard test enforces the marker) locks in:
    module import fails loudly if either is missing.
 2. Write `probe_<name>(ctx) -> ProbeResult` using `ProbeResult.ready/blocked/
    unmeasured`, register it in `DEFAULT_PROBES`, and give every non-READY verdict
-   a runnable fix (commands in this report are spelled with `PYTHONPATH=src`
-   because this checkout installs no console script).
+   a runnable fix (commands in this report are spelled with `PYTHONPATH=src`,
+   so they run from a checkout whether or not it has been installed into the
+   venv).
 3. Add a unit test that injects a fake for it — never a real device.

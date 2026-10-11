@@ -14,8 +14,9 @@ gateway, secrets never enter a repository file, and no action is ever claimed th
 performed.
 
 The hardening work through `1305415` is committed and pushed on both `claire-rewrite` and `main` of the
-`personal` remote ([`RobertoTornel/jarvis`](https://github.com/RobertoTornel/jarvis.git)); `main` is
-`0db56d9`, a merge whose tree is byte-for-byte identical to `1305415`.
+`personal` remote ([`RobertoTornel/jarvis`](https://github.com/RobertoTornel/jarvis.git)); that work is
+in the merge `0db56d9`, whose tree is byte-for-byte identical to `1305415`, and `main` has since
+advanced to `b60788a`.
 
 ---
 
@@ -32,14 +33,14 @@ Three surfaces:
 | Surface | Process | Default address |
 |---|---|---|
 | Daemon | `python -m claire` ([`src/claire/daemon.py`](../src/claire/daemon.py)), systemd user unit `claire` | none |
-| Web panel | `python -m claire.panel.server`, standalone stdlib server | `127.0.0.1:8765` ([`server.py:149`](../src/claire/panel/server.py)) |
+| Web panel | `python -m claire.panel.server`, standalone stdlib server | `127.0.0.1:8765` ([`server.py:152`](../src/claire/panel/server.py#L152)) |
 | Phone bridge | started *by the daemon*, not by `start.sh` | `127.0.0.1:8788` by default ([`bridge.py:203`](../src/claire/phone/bridge.py)), bound here to `100.104.1.69:8788` |
 
 ### `./start.sh` is the single entry point
 
 [`start.sh`](../start.sh) resolves every path from its own location and reads every default out of
 the project's own code, so nothing in it is machine-specific. Its real interface, read from the
-file's argument parser (`start.sh:877`-`:895`) and its own `usage()` (`start.sh:831`):
+file's argument parser (`start.sh:1223`-`:1240`) and its own `usage()` (`start.sh:1173`):
 
 | Invocation | Effect |
 |---|---|
@@ -56,7 +57,7 @@ file's argument parser (`start.sh:877`-`:895`) and its own `usage()` (`start.sh:
 | `--install-service` | Render the daemon, panel and tray units plus the tray XDG autostart entry for this checkout, install them, reload systemd and enable them. |
 | `-h`, `--help` | Usage. |
 
-Environment overrides (all optional, documented at `start.sh:30`-`:41`): `CLAIRE_VENV`,
+Environment overrides (all optional, documented at `start.sh:35`-`:52`): `CLAIRE_VENV`,
 `CLAIRE_PYTHON`, `CLAIRE_STATE_DIR`, `CLAIRE_LOG_DIR`, `CLAIRE_SERVICE_NAME`, `CLAIRE_DAEMON_MODE`
 (`auto|systemd|direct`), `CLAIRE_PANEL_HOST`, `CLAIRE_PANEL_PORT`, `CLAIRE_PREFLIGHT_TIMEOUT`,
 `CLAIRE_START_WAIT`, `CLAIRE_FORCE_INSTALL`. Exit codes: `0` ok, `2` usage, `3` preflight failed,
@@ -78,8 +79,9 @@ Two things about startup that are easy to get wrong:
 
 ### Configuration
 
-* Live config: `~/.config/claire/config.json`, mode `0600`. The installed file currently holds 16
-  keys. Anything not present falls back to the defaults in [`src/claire/config.py`](../src/claire/config.py).
+* Live config: `~/.config/claire/config.json`, mode `0600`. The installed file currently holds 20
+  keys (it held 16 when this document was written; later waves added and retired fields). Anything
+  not present falls back to the defaults in [`src/claire/config.py`](../src/claire/config.py).
 * [`examples/config.json`](../examples/config.json) is **generated**, never hand-edited. It is
   produced from `get_default_config()` (via `export_example_config()`) by
   [`scripts/generate_config_examples.py`](../scripts/generate_config_examples.py) and pinned by
@@ -215,7 +217,7 @@ it.
 |---|---|---|
 | One weather question, end to end | **129 s -> 8.7 s** | A driven harness. No committed artifact; **the measurement predates the tool's removal**, by `82605e5`, so it is evidence for the reply path of that era, not something reproducible today. |
 | Plan-driven direct-exec | median **6.06 s -> 4.36 s**, chat turns **2 -> 1** | Interleaved A/B against a pristine worktree, **n=6**, recorded in the `e6e682b` commit body. Measured on the since-removed weather tool, so it is evidence for the *mechanism* (a plan step is executed without paying a chat turn), not for that query. The same run shows the time query correctly deferring (`5.57 -> 5.91 s`, turns 2 -> 2, contention noise). |
-| Speculative memory-extractor prefetch | chain median **5.97 s -> 2.90 s** | Adjacent arms of a deterministic target case, **n=3**; fire rate about **25 % of real memory turns**, so the expected saving is about **0.75 s per memory turn**. The mechanism lives in [`src/claire/reply/memory_prefetch.py`](../src/claire/reply/memory_prefetch.py) (`MemoryExtractorPrefetch`), wired into `run_reply_engine`, with the epoch guard at `DialogueMemory.hot_cache_epoch` ([`conversation.py:1278`](../src/claire/memory/conversation.py)). |
+| Speculative memory-extractor prefetch | chain median **5.97 s -> 2.90 s** | Adjacent arms of a deterministic target case, **n=3**; fire rate about **25 % of real memory turns**, so the expected saving is about **0.75 s per memory turn**. The mechanism lives in [`src/claire/reply/memory_prefetch.py`](../src/claire/reply/memory_prefetch.py) (`MemoryExtractorPrefetch`), wired into `run_reply_engine`, with the epoch guard at `DialogueMemory.hot_cache_epoch` ([`conversation.py:1306`](../src/claire/memory/conversation.py#L1306)). |
 | Location resolution | **30.1 s -> 0.001 s** | `f615e66`: an untimed UPnP probe blocked about **33 s** on this host; a DNS query resolves the same public IP in about 0.01 s; `get_location_info(auto_detect=False)` returns in 0.00 s. |
 | A stalled memory extractor | **30.04 s -> 15.02 s** | `9e5714f` and [`docs/llm_contexts.md`](llm_contexts.md): a black-holed endpoint took exactly two ceilings and returned `{}` either way, so a timeout is no longer retried. The extractor's own ceiling is now `llm_extractor_timeout_sec` (default `8.0`). |
 | Reply-path LLM ceilings | **180/300/60 s -> 45/15/5 s** | `9e5714f` config diff: `llm_chat_timeout_sec`, `llm_tools_timeout_sec`, `llm_embedding_timeout_sec`. A healthy turn spends 2-4 s per chat round-trip and 2-3 s on the router, so the ceilings bound the worst case while leaving several times the observed median. |
@@ -256,7 +258,8 @@ Other documentation worth knowing:
   [`docs/PANEL_CONVERSATION.md`](PANEL_CONVERSATION.md) are the task-shaped companions.
 * [`EVALS.md`](../EVALS.md) and [`evals/`](../evals) hold the evaluation suite, which runs outside
   the unit gate.
-* [`STATUS.md`](../STATUS.md) is stale: it still says "Last updated: Wave 0". [`HANDOFF.md`](../HANDOFF.md)
+* [`STATUS.md`](../STATUS.md) is the wave-by-wave build log — the later sections carry the current
+  state, the older wave entries are historical. [`HANDOFF.md`](../HANDOFF.md)
   is an earlier overnight handoff, partly superseded by this document. Neither has been removed.
 
 **The rule that outranks the prose:** a `*.spec.md` file sitting next to code is the authoritative
@@ -403,9 +406,10 @@ configure that route or to accept keyword search as the state.
 ### 6.7 Graceful shutdown is still not graceful
 
 SIGTERM has historically hung past 90 s until systemd SIGKILLed the process mid-write. It is
-intermittent, so it is not reproducible on demand. [`daemon.py:788`](../src/claire/daemon.py) maps
+intermittent, so it is not reproducible on demand. `_install_signal_handlers()` in
+[`daemon.py`](../src/claire/daemon.py) maps
 `SIGINT`, `SIGTERM` and `SIGBREAK` to the same handler, and
-[`docs/subsystems/deployment.md`](subsystems/deployment.md) line 127 documents `start.sh stop`
+[`docs/subsystems/deployment.md`](subsystems/deployment.md) lines 140-141 document `start.sh stop`
 using SIGTERM with a 20 s wait then SIGKILL. The risk that matters is the mid-write kill, not the
 delay. Treat as unverified and worth a dedicated investigation.
 
@@ -501,7 +505,7 @@ their sources and specs are gone. The hard rule stands — describe, do not dele
 * `README.md` and the prose docs have been cleared of references to the removed tool; do not
   re-report those.
 * Five earlier handoff/status documents remain on disk and are stale or partly superseded:
-  [`STATUS.md`](../STATUS.md) (Wave 0), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and
+  [`STATUS.md`](../STATUS.md) (wave-by-wave log), [`HANDOFF.md`](../HANDOFF.md) (overnight, dated), and
   three outside the repository in `/home/mana/Documents/Jarvis/` (`handoff_tmrw.md`,
   `OWNER_ACTIONS_2026-10-07.md`, `omniroute-latency-forensics.md`). Of these,
   `omniroute-latency-forensics.md` is the most detailed latency evidence available for the shared

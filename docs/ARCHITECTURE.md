@@ -27,8 +27,10 @@ with two load-bearing rules that shape the architecture:
 - **Every LLM call goes through one local gateway.** Chat, tool routing,
   planning, digests, the intent judge and vision all dispatch through
   `src/claire/llm/`, which points at OmniRouter, an OpenAI-compatible endpoint
-  at `http://127.0.0.1:20129/v1` by default. The key comes from the
-  `OMNIROUTE_API_KEY` environment variable, never from a repository file.
+  at `http://127.0.0.1:20129/v1` by default. The key comes from the runtime
+  config's `llm_api_key` field (`~/.config/claire/config.json`, mode `0600`,
+  outside the repository) or, when that is empty, from the `OMNIROUTE_API_KEY`
+  environment variable — never from a repository file.
 - **Speech recognition, memory, the diary, the knowledge graph and tool
   execution stay on the machine.** Speech synthesis is the cloud exception:
   the default engine is Fish Audio streaming TTS with a cloned voice, and
@@ -37,7 +39,7 @@ with two load-bearing rules that shape the architecture:
 One process owns the assistant: `python -m claire` (or the `claire` console
 script) starts the daemon in `src/claire/daemon.py`, which brings up the
 database, TTS, the listener, the phone bridge and the background workers in that
-order (`daemon.py:1563` onwards). The PyQt6 desktop app under `src/desktop_app/`
+order (`main()` in `daemon.py`, starting with the `Database` construction). The PyQt6 desktop app under `src/desktop_app/`
 is a separate process that depends on `claire`, never the other way round, and
 the web panel is its own loopback process too (`python -m claire.panel.server`,
 default `127.0.0.1:8765`).
@@ -53,36 +55,36 @@ This is the verified path. Every arrow names a real module or function.
 
 ```
 microphone
-  PortAudio callback            listening/listener.py:2382  _on_audio
-  framing + WebRTC VAD          listening/listener.py:3227  _consume_audio_frames
-                                listening/listener.py:1602  _is_speech_frame
-  speech gates                  listening/listener.py:1654  _speech_gate_reason
-  utterance finalised           listening/listener.py:3340  _finalize_utterance
-  authoritative STT             listening/listener.py:2203  _run_transcription_worker
-                                listening/listener.py:2057  _decode_utterance
-                                listening/stt/parakeet.py    (Parakeet v2)
-  turn assembled                listening/turn.py            TurnAssembler
-                                listening/transcript.py      TurnTranscript (authoritative text)
-  gates, in order               listening/listener.py:721   _process_transcript
+  PortAudio callback            listening/listener.py          _on_audio
+  framing + WebRTC VAD          listening/listener.py          _consume_audio_frames
+                                listening/listener.py          _is_speech_frame
+  speech gates                  listening/listener.py          _speech_gate_reason
+  utterance finalised           listening/listener.py          _finalize_utterance
+  authoritative STT             listening/listener.py          _run_transcription_worker
+                                listening/listener.py          _decode_utterance
+                                listening/stt/parakeet.py      (Parakeet v2)
+  turn assembled                listening/turn.py              TurnAssembler
+                                listening/transcript.py        TurnTranscript (authoritative text)
+  gates, in order               listening/listener.py          _process_transcript
                                   stop command               listening/wake_detection.py:201
-                                  acoustic echo gate         listening/listener.py:898
+                                  acoustic echo gate         listening/echo_detection.py  EchoDetector.should_reject_as_echo
                                   text echo + salvage        listening/echo_detection.py
                                   intent judge               listening/intent_judge.py:397
                                   wake word                  listening/wake_detection.py:140
-                                listening/listener.py:1455  _dispatch_query
-  reply loop                    reply/engine.py:780         run_reply_engine
+                                listening/listener.py          _dispatch_query
+  reply loop                    reply/engine.py:776            run_reply_engine
                                   model dispatch             llm/
-                                  tool routing               tools/selection.py:385
+                                  tool routing               tools/selection.py:399
                                   planning                   reply/planner.py:424
                                   memory recall              reply/enrichment.py, memory/
-                                  agentic turns              reply/engine.py:1945
-                                  tool execution             tools/registry.py:315
+                                  agentic turns              reply/engine.py:1941
+                                  tool execution             tools/registry.py:313
                                   MCP tools                  tools/external/mcp_runtime.py
-  speech                        output/fish_tts.py:785      FishTTS.speak
+  speech                        output/fish_tts.py:785         FishTTS.speak
                                   cloud synth                output/fish_client.py:428
                                   streaming playback         output/fish_tts.py:1056
 speaker
-  hot window opens              listening/listener.py:1528  completion callback
+  hot window opens              listening/listener.py          _on_tts_complete
 ```
 
 In prose: capture is framed into 10/20/30 ms frames and classified by WebRTC
@@ -170,6 +172,9 @@ Line anchors in the hub and the spokes name a symbol or a function alongside the
 line, because the line is only a snapshot of the working tree: the symbol is the
 stable part, the number is a pointer. Files under `src/` change, so treat any
 `file:line` here as "start looking around there", and prefer the named symbol.
+Rows that name only a symbol — most of `listening/listener.py` in the diagram
+above — are deliberate: the file is edited often enough that a bare number would
+go stale, so the symbol is the anchor.
 
 Three other documents are long-form guides rather than specs, and are worth
 knowing about: `docs/CONFIGURATION.md` (every key, by hand), `docs/llm_contexts.md`
