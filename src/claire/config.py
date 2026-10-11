@@ -1146,7 +1146,17 @@ def load_settings() -> Settings:
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
-    stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower()
+    # Every spelling the STT factory and the specs accept is canonicalised here
+    # rather than narrowed to one of them. Regression: this kept only
+    # ("parakeet", "faster_whisper"), so `faster-whisper` and `whisper` - both
+    # accepted by create_stt_engine() and both named in listening.spec.md - were
+    # silently rewritten to parakeet, and a user who configured Whisper got
+    # Parakeet listening to them with no signal at all. An unrecognised token
+    # still falls back to the safe default, which is the documented contract for
+    # string enums here (see docs/subsystems/configuration.md).
+    stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower().replace("-", "_")
+    if stt_engine == "whisper":
+        stt_engine = "faster_whisper"
     if stt_engine not in ("parakeet", "faster_whisper"):
         stt_engine = "parakeet"
     stt_model_path = str(merged.get("stt_model_path", "") or "").strip()
