@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -654,3 +656,92 @@ def test_greedy_decode_keeps_every_token_when_blanks_absent(tmp_path, monkeypatc
     result = parakeet.create_parakeet_engine(str(directory)).transcribe(_audio(0.3), SAMPLE_RATE)
 
     assert result.text == "hello there friend"
+
+
+# ---------------------------------------------------------------------------
+# One engine, two callers: the decode must be serialised
+# ---------------------------------------------------------------------------
+#
+# NeMo's transcription path is not re-entrant: it restores module gradients from
+# a snapshot the next call clears, so overlapping calls race. Reproduced on this
+# machine against the real model - 3 of 18 concurrent transcribes failed with
+#   ValueError: Cannot unfreeze partially without first freezing the module
+#   with `freeze()`
+# which the voice loop surfaced as "Voice transcript degraded". The voice loop
+# and the phone walkie-talkie route share this engine on purpose, so the race is
+# reachable whenever a phone upload lands while the microphone is decoding.
+
+class _OverlapDetectingEngine(parakeet._ParakeetEngineBase):
+    """A fake decode that fails if two callers are ever inside it at once."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        super().__init__("fake.nemo")
+        self.inside = 0
+        self.max_inside = 0
+        self.calls = 0
+        self.guard = threading.Lock()
+
+    def _transcribe_samples(self, samples):  # type: ignore[override]
+        with self.guard:
+            self.inside += 1
+            self.calls += 1
+            self.max_inside = max(self.max_inside, self.inside)
+        time.sleep(0.02)  # a decode takes ~1 s; this only needs to overlap
+        with self.guard:
+            self.inside -= 1
+        return "ok"
+
+
+def test_concurrent_transcribes_do_not_overlap() -> None:
+    engine = _OverlapDetectingEngine()
+    audio = np.zeros(16000, dtype=np.float32)
+
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def caller() -> None:
+        for _ in range(3):
+            try:
+                results.append(engine.transcribe(audio, 16000).text)
+            except BaseException as exc:  # noqa: BLE001 - reported below
+                errors.append(exc)
+
+    threads = [threading.Thread(target=caller) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    assert engine.max_inside == 1, (
+        "two decodes ran on one engine at once, which is the race that made "
+        "Claire report a degraded transcript"
+    )
+    assert len(results) == 9
+
+
+def test_a_failing_decode_still_releases_the_lock() -> None:
+    class _Failing(parakeet._ParakeetEngineBase):
+        name = "failing"
+
+        def __init__(self) -> None:
+            super().__init__("failing.nemo")
+            self.calls = 0
+
+        def _transcribe_samples(self, samples):  # type: ignore[override]
+            self.calls += 1
+            raise RuntimeError("decode exploded")
+
+    engine = _Failing()
+    audio = np.zeros(16000, dtype=np.float32)
+
+    for _ in range(2):
+        # The base shell lets a decode's own error through: the concrete engines
+        # raise SttDecodeError from _transcribe_samples, and wrapping it twice
+        # would only hide which layer spoke.
+        with pytest.raises(RuntimeError, match="decode exploded"):
+            engine.transcribe(audio, 16000)
+
+    assert engine.calls == 2, "the second call must not deadlock on the lock"

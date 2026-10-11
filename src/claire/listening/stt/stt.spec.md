@@ -13,6 +13,21 @@ well:
 | used for | wake-word matching, pre-wake context | intent, tool calls, reply, diary, graph |
 | may it write memory? | **never** | yes |
 
+**One authoritative engine, and only one decode at a time.** The Parakeet engine
+is shared with the phone walkie-talkie route on purpose, so a phone upload and
+the microphone can reach it concurrently. NeMo's transcription path is not
+re-entrant: it freezes modules and restores their gradients from a snapshot that
+the *next* call clears (`nemo/core/classes/module.py`), so two overlapping calls
+race and the loser dies with `ValueError: Cannot unfreeze partially without
+first freezing the module with 'freeze()'`. Measured on this machine against the
+real checkpoint: 3 of 18 transcribes run concurrently through one loaded model
+failed that way, and the voice loop reported it as `Voice transcript degraded`.
+Every engine therefore takes `_decode_lock` around its decode
+(`_ParakeetEngineBase.transcribe`), which makes the second caller wait instead of
+corrupting the first. A decode is CPU-bound and takes a second or two, so
+nothing is lost by serialising it. The lock covers only the decode: validation
+and resampling stay outside it, and a failing decode still releases it.
+
 The reference project deleted its second-pass recogniser over precisely the
 defect this split invites: its 120-second context buffer was built from
 streaming text while the turn itself carried corrected text, so the same
