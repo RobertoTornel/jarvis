@@ -162,6 +162,29 @@ class LLMBackend(ABC):
         always pass it — passing it must never be the reason a backend
         fails."""
 
+    def embed_with_reason(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
+    ) -> tuple[Optional[List[float]], str]:
+        """``embed``, plus the runtime's own explanation when it fails.
+
+        Returns ``(vector, "")`` on success and ``(None, reason)`` otherwise.
+        ``embed`` alone collapses every failure into a bare ``None``, which made
+        a 404 "model not found, try pulling it first" indistinguishable from a
+        402 "insufficient credits" or a missing feature - so the startup probe
+        could only advise "check model availability and embedding settings".
+
+        The default states only what it can know. Backends that can read a
+        status line or a server message override this so the reason is specific.
+        """
+        vector = self.embed(text, model, timeout_sec=timeout_sec, task_type=task_type)
+        if vector is not None:
+            return vector, ""
+        return None, "the runtime returned no vector"
+
     @abstractmethod
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         """List the model names the runtime currently has loaded /

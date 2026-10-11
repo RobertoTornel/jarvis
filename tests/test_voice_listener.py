@@ -1720,7 +1720,9 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.return_value = [0.1, 0.2, 0.3]
+            # embed_with_reason is the contract: it answers (vector, why not) so a
+            # failure can be reported in the provider's own words.
+            mock_embed_backend.embed_with_reason.return_value = ([0.1, 0.2, 0.3], "")
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1729,7 +1731,10 @@ class TestLlmWarmup:
 
         assert len(threads) == 3
         assert chat_warm.call_args.args[1] == "llama3.1"
-        assert mock_embed_backend.embed.call_args.args == ("ping", "nomic-embed-text")
+        assert mock_embed_backend.embed_with_reason.call_args.args == (
+            "ping",
+            "nomic-embed-text",
+        )
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", True)
 
     def test_skips_embed_warmup_when_empty(self):
@@ -1753,7 +1758,7 @@ class TestLlmWarmup:
         assert "embed" not in listener._llm_warmup_results
 
     def test_embed_warmup_records_failure(self):
-        """None from embed() surfaces in the results dict as False."""
+        """No vector surfaces in the results dict as False."""
         listener = _make_listener_for_warmup(
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
@@ -1765,7 +1770,10 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.return_value = None
+            mock_embed_backend.embed_with_reason.return_value = (
+                None,
+                'HTTP 404: model "nomic-embed-text" not found, try pulling it first',
+            )
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1773,6 +1781,7 @@ class TestLlmWarmup:
                 t.join(timeout=2.0)
 
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
+        assert "not found, try pulling it first" in listener._llm_warmup_reasons["embed"]
 
     def test_embed_warmup_stores_failure_on_backend_init_exception(self):
         """An exception in get_embedding_backend is caught and stored as False."""
@@ -1795,7 +1804,7 @@ class TestLlmWarmup:
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
 
     def test_embed_warmup_stores_failure_on_embed_exception(self):
-        """An exception in embed() is caught and stored as False."""
+        """An exception in the probe is caught and stored as False."""
         listener = _make_listener_for_warmup(
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
@@ -1807,7 +1816,7 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.side_effect = ConnectionError("server down")
+            mock_embed_backend.embed_with_reason.side_effect = ConnectionError("server down")
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1815,6 +1824,7 @@ class TestLlmWarmup:
                 t.join(timeout=2.0)
 
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
+        assert listener._llm_warmup_reasons["embed"] == "ConnectionError: server down"
 
     def test_low_power_mode_skips_llm_warmup(self):
         """Low-power sessions do not pre-load LLMs at listener startup."""

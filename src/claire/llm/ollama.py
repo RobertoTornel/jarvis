@@ -348,20 +348,47 @@ class OllamaBackend(LLMBackend):
 
         ``task_type`` is accepted for interface parity and ignored: Ollama's
         embeddings endpoint has no asymmetric-retrieval field."""
+        return self.embed_with_reason(text, model, timeout_sec, task_type)[0]
+
+    def embed_with_reason(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
+    ) -> tuple[Optional[List[float]], str]:
+        """Embed, keeping Ollama's own explanation for a failure.
+
+        Ollama says plainly what is wrong - ``model "nomic-embed-text" not
+        found, try pulling it first`` is a runnable instruction - and that
+        sentence is worth more than the bare ``None`` it used to become.
+        """
         try:
             resp = requests.post(
                 f"{self._base_url}/api/embeddings",
                 json={"model": model, "prompt": text},
                 timeout=timeout_sec,
             )
+        except Exception as exc:
+            # Never the exception's text: a request URL can carry a key.
+            return None, f"{type(exc).__name__} while calling /api/embeddings"
+        # See the OpenAI-compatible backend: an integer status is the real path,
+        # and a status-less fake must still be parsed.
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int) and status != 200:
+            message = " ".join(str(getattr(resp, "text", "") or "").split())[:200]
+            return None, f"HTTP {status}" + (f": {message}" if message else "")
+        try:
             resp.raise_for_status()
-            data = resp.json()
-            vec = data.get("embedding")
-            if isinstance(vec, list):
-                return [float(x) for x in vec]
         except Exception:
-            return None
-        return None
+            return None, "the request was rejected" 
+        try:
+            vec = resp.json().get("embedding")
+            if isinstance(vec, list):
+                return [float(x) for x in vec], ""
+        except Exception:
+            return None, "the reply was not readable as an embedding response"
+        return None, "the reply carried no embedding"
 
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         """List installed Ollama models via ``GET /api/tags``."""

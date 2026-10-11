@@ -38,6 +38,7 @@ from .intent_judge import (
 from ..debug import debug_log
 from ..llm import get_embedding_backend
 from ..utils.location import get_configured_city, is_location_available
+from ..utils.redact import redact as redact_secrets
 
 if TYPE_CHECKING:
     from ..memory.db import Database
@@ -59,6 +60,16 @@ if TYPE_CHECKING:
 #     ms in a real room) cannot be mistaken for the human's follow-up. The old
 #     0.3 s ``echo_tolerance`` alone was demonstrably too short.
 POST_TTS_TAIL_GUARD_SECONDS = 0.6
+
+# The startup embedding probe allows for a model that is not resident yet: the
+# first call pages it in from disk and can take tens of seconds, while warm
+# calls take ~20 ms. The probe runs in the background, so nothing waits on it,
+# and a failure after this allowance is a real one rather than a slow start.
+COLD_EMBED_PROBE_TIMEOUT_SECONDS = 30.0
+
+#: A banner is one line: a runtime's error body is quoted up to this many
+#: characters and no further.
+_EMBED_REASON_MAX = 200
 
 # At most one hot-window follow-up per explicit wake word. This is the loop
 # breaker: even if a garbled echo slips past the acoustic gate, Claire's reply
@@ -2795,7 +2806,10 @@ class VoiceListener(threading.Thread):
             if ok:
                 print(f"     📐 Embedding probe passed: '{name}'", flush=True)
             else:
-                print(f"     ⚠️ Embedding probe failed: '{name}'. Check model availability and embedding settings.", flush=True)
+                reason = getattr(self, '_llm_warmup_reasons', {}).get('embed', '')
+                detail = f" - {reason}" if reason else ""
+                print(f"     ⚠️ Embedding probe failed: '{name}'{detail}", flush=True)
+                print("     ℹ️ Memory search falls back to keyword ranking until this works.", flush=True)
 
     def _start_llm_warmup(self) -> list[threading.Thread]:
         """Pre-load chat and intent judge models via the active backend.
@@ -2813,6 +2827,9 @@ class VoiceListener(threading.Thread):
         role-specific requests and their deadlines are not exercised.
         """
         self._llm_warmup_results: dict[str, tuple[str, bool]] = {}
+        # Why a failed probe failed, in the runtime's own words (see
+        # _report_llm_warmup); an empty entry means the backend had nothing to add.
+        self._llm_warmup_reasons: dict[str, str] = {}
 
         if _is_low_power_mode_enabled(self.cfg):
             print("     🌱 Low power mode: LLM warmup skipped", flush=True)
@@ -2880,6 +2897,7 @@ class VoiceListener(threading.Thread):
         # even when both settings happen to name the same model.
         if embed_model:
             def _warm_embed() -> None:
+                reason = ""
                 try:
                     backend = get_embedding_backend(self.cfg)
                     # Use embed() rather than warm_up() because embedding-only
@@ -2887,15 +2905,37 @@ class VoiceListener(threading.Thread):
                     # on the chat endpoint — warm_up() sends a chat completion
                     # which would fail for those models. A single-token embedding
                     # request forces the runtime to load the model the same way.
-                    # Use the embed method's own default timeout (15s) rather than
-                    # the full chat_timeout (60s) since this probe is sub-second.
-                    embed_timeout = min(chat_timeout, 15.0)
-                    result = backend.embed("ping", embed_model, timeout_sec=embed_timeout)
+                    # The cold-load allowance is deliberate: a model that is not
+                    # yet resident can take tens of seconds to page in on first
+                    # use, and this probe runs in the background at startup where
+                    # nothing is waiting on it. Once warm, calls are ~20 ms, so a
+                    # failure here is real rather than a slow start.
+                    embed_timeout = max(
+                        float(getattr(self.cfg, "llm_embedding_timeout_sec", 5.0)),
+                        min(chat_timeout, COLD_EMBED_PROBE_TIMEOUT_SECONDS),
+                    )
+                    result, reason = backend.embed_with_reason(
+                        "ping", embed_model, timeout_sec=embed_timeout
+                    )
                     ok = result is not None
                 except Exception as exc:
-                    debug_log(f"embed warmup failed: {exc}", "voice")
+                    # The exception is often the whole diagnosis (a refused
+                    # connection when the provider is not running), so it is
+                    # carried into the banner rather than reduced to "no reason
+                    # given". Redacted first: a provider that puts its key in the
+                    # query string would otherwise print it into the journal.
+                    reason = redact_secrets(
+                        f"{type(exc).__name__}: {exc}", max_len=_EMBED_REASON_MAX
+                    )
+                    debug_log(f"embed warmup failed: {reason}", "voice")
                     ok = False
                 self._llm_warmup_results["embed"] = (embed_model, ok)
+                if not ok:
+                    # Carry the runtime's own words into the banner: "model not
+                    # found, try pulling it first" and "insufficient credits"
+                    # used to look identical, and the generic advice sent the
+                    # reader looking in the wrong place.
+                    self._llm_warmup_reasons["embed"] = reason or "no reason given"
 
             threads.append(threading.Thread(target=_warm_embed, daemon=True, name="warmup-embed"))
 

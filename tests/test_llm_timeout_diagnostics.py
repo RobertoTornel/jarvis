@@ -134,3 +134,65 @@ def test_actual_response_body_timeout_is_classified(backend_type, capsys):
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_a_failed_embedding_probe_repeats_the_runtimes_reason(capsys):
+    """A generic "check embedding settings" sent the reader to the wrong place.
+
+    The three failures seen in practice - a model the runtime lacks, a provider
+    that cannot embed, an account without credits - need different actions, so
+    the banner carries the runtime's own sentence and says what the consequence
+    is.
+    """
+    from types import SimpleNamespace
+
+    from claire.listening.listener import VoiceListener
+
+    listener = VoiceListener.__new__(VoiceListener)
+    listener.cfg = SimpleNamespace(intent_judge_timeout_sec=6.0)
+    listener._llm_warmup_results = {"embed": ("nomic-embed-text", False)}
+    listener._llm_warmup_reasons = {
+        "embed": 'HTTP 404: model "nomic-embed-text" not found, try pulling it first'
+    }
+
+    listener._report_llm_warmup()
+
+    output = capsys.readouterr().out
+    assert "Embedding probe failed" in output
+    assert "try pulling it first" in output, output
+    assert "keyword ranking" in output, output
+    assert "Check model availability" not in output, "the vague advice is gone"
+
+
+def test_a_passing_embedding_probe_is_reported_without_a_reason(capsys):
+    from types import SimpleNamespace
+
+    from claire.listening.listener import VoiceListener
+
+    listener = VoiceListener.__new__(VoiceListener)
+    listener.cfg = SimpleNamespace(intent_judge_timeout_sec=6.0)
+    listener._llm_warmup_results = {"embed": ("nomic-embed-text", True)}
+    listener._llm_warmup_reasons = {}
+
+    listener._report_llm_warmup()
+
+    output = capsys.readouterr().out
+    assert "Embedding probe passed" in output
+    assert "keyword ranking" not in output, "a passing probe must not warn"
+
+
+def test_a_failed_probe_without_a_reason_does_not_invent_one(capsys):
+    """A backend that cannot explain a failure must not have one made up for it."""
+    from types import SimpleNamespace
+
+    from claire.listening.listener import VoiceListener
+
+    listener = VoiceListener.__new__(VoiceListener)
+    listener.cfg = SimpleNamespace(intent_judge_timeout_sec=6.0)
+    listener._llm_warmup_results = {"embed": ("some-model", False)}
+
+    listener._report_llm_warmup()
+
+    output = capsys.readouterr().out
+    assert "Embedding probe failed" in output
+    assert " - " not in output.split("Embedding probe failed")[1].split("\n")[0], output
