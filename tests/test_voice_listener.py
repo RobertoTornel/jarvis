@@ -2144,3 +2144,64 @@ def cached_whisper_files(monkeypatch):
     """Model-loading tests use synthetic local files and never access the Hub."""
     monkeypatch.setattr("claire.listening.model_download.prepare_faster_whisper_model",
                         lambda name: name)
+
+
+class TestAVadThatCannotStartIsNotSilent:
+    """A VAD that fails to initialise changes where utterances end.
+
+    The failure used to be swallowed by a bare `except Exception: self._vad =
+    None`, so Claire kept listening with energy-based endpointing and the only
+    symptom was transcripts that clipped or ran on - with nothing in the journal
+    to connect the two. Falling back is right; doing it silently is not.
+    """
+
+    def _listener_with_vad(self, vad_stub):
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    with patch("claire.listening.listener.webrtcvad", vad_stub):
+                        from claire.listening.listener import VoiceListener
+
+                        mock_cfg = MagicMock()
+                        mock_cfg.sample_rate = 16000
+                        mock_cfg.vad_enabled = True
+                        mock_cfg.vad_aggressiveness = 2
+                        mock_cfg.echo_tolerance = 0.3
+                        mock_cfg.echo_energy_threshold = 2.0
+                        mock_cfg.hot_window_seconds = 3.0
+                        mock_cfg.voice_collect_seconds = 2.0
+                        mock_cfg.voice_max_collect_seconds = 60.0
+                        mock_cfg.tune_enabled = False
+
+                        return VoiceListener(
+                            MagicMock(), mock_cfg, MagicMock(), MagicMock()
+                        )
+
+    def test_it_falls_back_and_says_so(self, capsys):
+        class _BrokenVad:
+            @staticmethod
+            def Vad(aggressiveness):  # noqa: N802 - mirrors webrtcvad's API
+                raise ValueError("Failed to initialize VAD")
+
+        listener = self._listener_with_vad(_BrokenVad)
+
+        assert listener._vad is None, "the listener must still come up"
+        printed = capsys.readouterr().out
+        assert "Voice activity detection unavailable" in printed
+        assert "ValueError" in printed
+        assert "energy-based endpointing" in printed
+
+    def test_a_working_vad_is_still_used_and_says_nothing(self, capsys):
+        started = []
+
+        class _GoodVad:
+            @staticmethod
+            def Vad(aggressiveness):  # noqa: N802
+                started.append(aggressiveness)
+                return object()
+
+        listener = self._listener_with_vad(_GoodVad)
+
+        assert listener._vad is not None
+        assert started == [2]
+        assert "Voice activity detection unavailable" not in capsys.readouterr().out

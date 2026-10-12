@@ -623,8 +623,22 @@ class VoiceListener(threading.Thread):
         if webrtcvad is not None and bool(getattr(self.cfg, "vad_enabled", True)):
             try:
                 self._vad = webrtcvad.Vad(int(getattr(self.cfg, "vad_aggressiveness", 2)))
-            except Exception:
+            except Exception as exc:
+                # Not fatal - the loop falls back to energy framing - but not
+                # silent either. Without the VAD, where an utterance *ends* is
+                # decided differently, which shows up only as oddly clipped or
+                # run-on transcripts with nothing in the log to explain them.
                 self._vad = None
+                debug_log(
+                    f"webrtcvad initialisation failed ({type(exc).__name__}: {exc}); "
+                    "using energy-based endpointing",
+                    "voice",
+                )
+                print(
+                    "  ⚠️  Voice activity detection unavailable "
+                    f"({type(exc).__name__}); using energy-based endpointing.",
+                    flush=True,
+                )
 
         # Initialise modular components
         self.echo_detector = EchoDetector(
