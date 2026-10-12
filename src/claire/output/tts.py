@@ -1087,7 +1087,10 @@ def create_tts_engine(
     """Factory function to create the appropriate TTS engine.
 
     Supported engines (see :data:`SUPPORTED_TTS_ENGINES`):
-    - "piper" (default): Neural TTS with auto-download, exact duration tracking
+    - "piper": Neural TTS with auto-download, exact duration tracking. This is
+      the *signature* default; a fresh install runs "fish", because that is what
+      the shipped config declares and the daemon always passes
+      ``cfg.tts_engine``.
     - "chatterbox": AI voice with emotion control (requires PyTorch)
     - "fish": Fish Audio streaming TTS (needs a key file and a voice id)
 
