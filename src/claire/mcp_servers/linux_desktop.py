@@ -702,6 +702,81 @@ def _require_window(title: str) -> Dict[str, Any]:
     return match_window(_window_rows(), title)
 
 
+# Focus changes are asynchronous: the WM applies our raise request whenever
+# it next gets around to it, and ``_NET_ACTIVE_WINDOW`` lags behind that
+# request. Settle briefly and re-read a few times (same reasoning as
+# ``_REBIND_SETTLE_SECONDS`` above) before deciding focus did not land.
+_FOCUS_SETTLE_SECONDS = 0.2
+_FOCUS_ATTEMPTS = 3
+
+
+def _focused_window() -> Optional[Dict[str, Any]]:
+    """The focused window as ``{"id", "title"}``, or None if there is none."""
+
+    def read(display: Any) -> Optional[Dict[str, Any]]:
+        active = _active_window_id(display)
+        if not active:
+            return None
+        return {
+            "id": f"0x{active:08x}",
+            "title": _window_title(display, active),
+        }
+
+    return _X.run(read)
+
+
+def _window_label(window: Optional[Dict[str, Any]]) -> str:
+    """How a destination window reads inside a result string."""
+    if window and window.get("title"):
+        return repr(str(window["title"]))
+    if window and window.get("id"):
+        return str(window["id"])
+    return "an unidentified window"
+
+
+def _focus_window_for_input(window: Dict[str, Any]) -> None:
+    """Raise ``window`` and confirm the focus actually landed on it.
+
+    Returns only when the window really is focused (input may proceed);
+    otherwise raises ``WindowError`` naming both the window we tried to
+    focus and the window that is focused instead. Nothing is typed or
+    pressed while the target does not hold focus, and the refusal is a
+    raised error — a returned body would be recorded as a successful tool
+    call, and a success this is not.
+    """
+    _wmctrl(["-i", "-a", window["id"]])
+    wanted = str(window["id"]).lower()
+    focused: Optional[Dict[str, Any]] = None
+    for attempt in range(_FOCUS_ATTEMPTS):
+        if attempt:
+            time.sleep(_FOCUS_SETTLE_SECONDS)
+        focused = _focused_window()
+        if focused and str(focused.get("id", "")).lower() == wanted:
+            return
+    raise WindowError(
+        f"refusing to send input: {window['title']!r} ({window['id']}) did not "
+        f"take focus — {_window_label(focused)} is focused instead; "
+        "nothing was sent"
+    )
+
+
+def _destination_for_input(window: Optional[str]) -> Dict[str, Any]:
+    """Where keystrokes are about to go: the destination window's dict.
+
+    With ``window`` given, the window is resolved first (a name that matches
+    nothing or several windows raises with the candidate list) and then
+    raised, focus confirmed — a raise that does not land raises too, so no
+    input can follow a destination that was never reached. With ``window``
+    omitted the currently focused window is the destination, reported so the
+    transcript never leaves it silent.
+    """
+    if window is None:
+        return _focused_window() or {"id": None, "title": None}
+    target = _require_window(window)
+    _focus_window_for_input(target)
+    return target
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -879,12 +954,27 @@ def scroll(x: int, y: int, amount: int = 3, direction: str = "up") -> str:
 
 
 @mcp.tool()
-def type_text(text: str) -> str:
-    """Type `text` into whatever window has focus, exactly as written.
+def type_text(text: str, window: Optional[str] = None) -> str:
+    """Type `text` into the window you name, or into the focused window.
 
-    Newlines become Return and tabs become Tab. Up to 4096 characters at a
-    time; characters the keyboard layout cannot produce are typed through a
-    temporary keymap binding, so they still arrive correctly.
+    Args:
+        text: What to type, exactly as written. Newlines become Return and
+            tabs become Tab. Up to 4096 characters at a time; characters the
+            keyboard layout cannot produce are typed through a temporary
+            keymap binding, so they still arrive correctly.
+        window: The window that must receive the text — a title substring or
+            a window id from list_windows. Pass it whenever the text has a
+            destination: the window is raised and focused *first* and the
+            focus is confirmed before any character is typed, so the text can
+            never land in whatever happened to be focused. A focus that does
+            not land raises an error naming both windows with nothing typed,
+            and a name that matches no window or several windows raises with
+            the candidate list. Omit it only when the already-focused window
+            is the right destination.
+
+    The result always names the window that received the text (its `window`
+    dict has the id and title), so the transcript never leaves the
+    destination silent.
     """
     if not isinstance(text, str) or not text.strip():
         return json.dumps({"ok": True, "typed": 0, "detail": "nothing to type"})
@@ -893,30 +983,61 @@ def type_text(text: str) -> str:
             f"text is {len(text)} characters long; the limit is {MAX_TEXT_CHARS} — "
             "send it in smaller pieces"
         )
+    destination = _destination_for_input(window)
     normalised = text.replace("\r\n", "\n").replace("\r", "\n")
     typed = _X.run(lambda display: _type_text(display, normalised))
     debug_log(f"typed {typed} characters", "mcp")
     return json.dumps(
-        {"ok": True, "typed": typed, "detail": f"typed {typed} characters"}
+        {
+            "ok": True,
+            "typed": typed,
+            "detail": (
+                f"typed {typed} characters into {_window_label(destination)}"
+            ),
+            "window": destination,
+        }
     )
 
 
 @mcp.tool()
-def press_key(key: str) -> str:
+def press_key(key: str, window: Optional[str] = None) -> str:
     """Press one key or a chord: "Return", "Tab", "ctrl+c", "ctrl+shift+t".
 
     Modifiers are held while the final key is pressed and released after it.
     Write a literal plus sign as "plus". Aliases such as enter, esc, space,
     pageup/pagedown and the arrow names all work.
+
+    Args:
+        key: The key or `+`-separated chord to press.
+        window: The window that must receive the key — a title substring or
+            a window id from list_windows. Pass it whenever the key has a
+            destination: the window is raised and focused *first* and the
+            focus is confirmed before the key is pressed, so Return can never
+            be sent to whatever happened to be focused. A focus that does not
+            land raises an error naming both windows with nothing pressed,
+            and a name that matches no window or several windows raises with
+            the candidate list. Omit it only when the already-focused window
+            is the right destination.
+
+    The result always names the window that received the key (its `window`
+    dict has the id and title), so the transcript never leaves the
+    destination silent.
     """
     tokens = parse_combo(key)
     # Resolve every token before touching the display: an unknown key must
     # fail without half-pressing a chord.
     for token in tokens:
         keysym_for(token)
+    destination = _destination_for_input(window)
     _X.run(lambda display: _press_tokens(display, tokens))
     debug_log(f"pressed {key}", "mcp")
-    return json.dumps({"ok": True, "detail": f"pressed {key}"})
+    return json.dumps(
+        {
+            "ok": True,
+            "detail": f"pressed {key} in {_window_label(destination)}",
+            "window": destination,
+        }
+    )
 
 
 @mcp.tool()
