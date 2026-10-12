@@ -64,7 +64,7 @@ logic (dates as `YYYY-MM-DD`, times as minutes from local midnight).
 | `days` | integer | For `list`: how many days ahead (default 7). |
 | `repeat` | string enum | `daily` or `weekly`. |
 | `until` | string | `YYYY-MM-DD` end date; required when `repeat` is given. |
-| `reminder_minutes` | integer | For `add`: minutes before the event to remind, so `due` can surface it later. |
+| `reminder_minutes` | integer | For `add`: minutes before the event to remind, spoken when due. Set it for reminder requests (the owner's own words are read from the tool context); `0` means at the time the event starts; leave it out for a plain calendar entry with no reminder. |
 
 Action aliases accepted: `create`/`book`/`schedule` for add, `agenda`/
 `upcoming`/`whats_on` for list, `reschedule`/`shift` for move, `delete`/

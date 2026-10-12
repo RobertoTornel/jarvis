@@ -220,8 +220,23 @@ def make_context():
     return context
 
 
-def run_tool(tool, args):
-    return tool.run(args, make_context())
+def spoken_context(prompt, redacted=None):
+    """A real ToolContext carrying the owner's own words, as the voice path
+    hands them to a tool (``original_prompt``; ``redacted_text`` is the
+    redacted copy of the same utterance)."""
+    return ToolContext(
+        db=None,
+        cfg=None,
+        system_prompt="",
+        original_prompt=prompt,
+        redacted_text=prompt if redacted is None else redacted,
+        max_retries=0,
+        user_print=lambda _message: None,
+    )
+
+
+def run_tool(tool, args, context=None):
+    return tool.run(args, make_context() if context is None else context)
 
 
 def event(title, day, start, duration=DEFAULT_DURATION_MINUTES, **extra):
@@ -477,6 +492,106 @@ class TestAddHappyPath:
         assert backend.events[0]["repeat"] == "weekly"
         assert backend.events[0]["until"] == (TODAY + timedelta(days=30)).isoformat()
         assert "repeats weekly" in result.reply_text
+
+
+# --- Reminder creation from the owner's words --------------------------------
+
+class TestAddReminderFromTheOwnersWords:
+    """A voice reminder booked with no offset is silently dead: the calendar
+    treats ``reminder_minutes=None`` as "no reminder", so the model forgetting
+    the field used to lose the owner's "remind me at 6" without a word. The
+    owner's own words are on the tool context, and they decide."""
+
+    def test_plain_calendar_entry_keeps_no_offset(self):
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool,
+            {"action": "add", "title": "Dentist", "when": "thursday", "time": "16:00"},
+            context=spoken_context("book the dentist on thursday at 16:00"),
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] is None
+        assert "remind" not in result.reply_text.lower()
+
+    def test_plain_entry_outside_the_voice_path_keeps_no_offset(self):
+        # Default test context carries no owner utterance at all.
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool, {"action": "add", "title": "Dentist", "when": "thursday", "time": "16:00"}
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] is None
+
+    def test_reminder_request_without_an_offset_fires_at_the_start(self):
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool,
+            {"action": "add", "title": "Call mum", "when": "thursday", "time": "18:00"},
+            context=spoken_context("remind me at 6 to call mum"),
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] == 0
+        assert "when it starts" in result.reply_text
+        assert "0 minutes" not in result.reply_text
+
+    def test_reminder_wording_on_redacted_text_also_fires_at_the_start(self):
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool,
+            {"action": "add", "title": "Water plants", "when": "thursday", "time": "17:00"},
+            context=spoken_context("", redacted="reminder: water the plants at 5"),
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] == 0
+        assert "when it starts" in result.reply_text
+
+    def test_an_explicit_offset_from_the_model_is_kept_verbatim(self):
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool,
+            {
+                "action": "add",
+                "title": "Call mum",
+                "when": "thursday",
+                "time": "18:00",
+                "reminder_minutes": 10,
+            },
+            context=spoken_context("remind me in good time to call mum"),
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] == 10
+        assert "10 minutes before" in result.reply_text
+
+    def test_an_explicit_zero_also_reads_naturally(self):
+        backend = FakeBackend()
+        tool = make_tool(backend)
+        result = run_tool(
+            tool,
+            {
+                "action": "add",
+                "title": "Call mum",
+                "when": "thursday",
+                "time": "18:00",
+                "reminder_minutes": 0,
+            },
+        )
+        assert result.success is True, result.error_message
+        assert backend.add_calls[0]["reminder_minutes"] == 0
+        assert "when it starts" in result.reply_text
+        assert "0 minutes" not in result.reply_text
+
+    def test_schema_tells_the_model_when_to_set_the_offset(self):
+        text = ScheduleTool().inputSchema["properties"]["reminder_minutes"][
+            "description"
+        ].lower()
+        assert "remind" in text
+        assert "0" in text
+        assert "starts" in text
 
 
 class TestListHappyPath:

@@ -1118,6 +1118,43 @@ class TestReminders:
         with pytest.raises(cal.InvalidEventError):
             cal.describe_reminder({"title": "Haircut"})
 
+    # -- reminder_minutes == 0: "remind me AT 6" ------------------------------
+    def build_zero(self):
+        schedule = cal.empty_schedule()
+        cal.add_event(
+            schedule,
+            {
+                "title": "Call mum",
+                "date": THURSDAY,
+                "start": "18:00",
+                "end": "18:30",
+                "reminder_minutes": 0,
+            },
+        )
+        return schedule
+
+    def test_zero_offset_fires_during_the_start_minute(self):
+        due = cal.due_reminders(self.build_zero(), "2026-09-24 18:00")
+        assert len(due) == 1
+        assert due[0]["title"] == "Call mum"
+        assert due[0]["minutes_until_start"] == 0
+
+    def test_zero_offset_is_not_due_before_the_start_minute(self):
+        assert cal.due_reminders(self.build_zero(), "2026-09-24 17:59") == []
+
+    def test_zero_offset_is_not_due_after_the_start_minute_has_passed(self):
+        assert cal.due_reminders(self.build_zero(), "2026-09-24 18:01") == []
+
+    def test_zero_offset_sentence_says_starting_now(self):
+        due = cal.due_reminders(self.build_zero(), "2026-09-24 18:00")
+        assert cal.describe_reminder(due[0], "2026-09-24 18:00").endswith("starting now.")
+
+    def test_non_zero_offset_window_is_unchanged_by_the_zero_rule(self):
+        # The 15-minute event is no longer due at all once the start minute is
+        # reached: zero gains a window, non-zero loses none.
+        assert cal.due_reminders(self.build(), "2026-09-24 16:00") == []
+        assert len(cal.due_reminders(self.build(), "2026-09-24 15:45")) == 1
+
 
 # ---------------------------------------------------------------------------
 # validate_schedule

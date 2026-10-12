@@ -45,6 +45,7 @@ from claire.schedule.calendar import (
     validate_schedule,
     weekday_of,
 )
+from claire.schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
 
 __all__ = [
     "SCHEDULE_VERSION",
@@ -84,4 +85,6 @@ __all__ = [
     "describe_reminder",
     "mark_reminder_fired",
     "validate_schedule",
+    "ReminderAnnouncer",
+    "REMINDER_POLL_INTERVAL_SEC",
 ]

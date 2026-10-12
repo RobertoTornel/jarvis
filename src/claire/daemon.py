@@ -45,6 +45,7 @@ from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memo
 from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
 from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
+from .schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
 from .listening.listener import VoiceListener
 from .listening.wake_detection import is_wake_word_detected
 from .utils.location import get_location_context
@@ -260,6 +261,80 @@ def _dispatch_voice_feedback() -> None:
             debug_log(f"voice feedback callback failed ({type(exc).__name__})", "voice")
     elif os.environ.get("CLAIRE_STDIN_IPC") == "1":
         _emit_ipc_event(VOICE_IPC_PREFIX, "low_confidence", None, "voice")
+
+
+# ---------------------------------------------------------------------------
+# Reminder announcer
+#
+# The schedule rules (due_reminders/describe_reminder/mark_reminder_fired)
+# existed and were tested while nothing in this daemon ever called them, so
+# "remind me at 6 to call mum" was booked and silently never spoken.  The
+# announcer lives in claire.schedule.announcer; this is the wiring: the shared
+# TTS engine supplies both the speaking and the busy check, and start/stop are
+# small functions so a test can drive them with a fake engine instead of
+# booting the daemon.
+# ---------------------------------------------------------------------------
+
+_reminder_announcer: Optional[Any] = None
+
+
+def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
+    """A not-yet-started announcer whose speak/busy calls go through *engine*.
+
+    Split out from :func:`_start_reminder_announcer` so a test can exercise the
+    engine adapter deterministically, without a background thread racing it.
+    """
+    def speak(text: str) -> bool:
+        """Report success honestly: the engine queues and returns None, so
+        "spoken" means "the engine was enabled and did not refuse"."""
+        try:
+            if getattr(engine, "enabled", True) is False:
+                return False
+            engine.speak(text)
+        except Exception as exc:  # noqa: BLE001 - a raising engine is a failed speak
+            debug_log(f"reminder speech failed ({type(exc).__name__})", "schedule")
+            return False
+        return True
+
+    def busy() -> bool:
+        try:
+            return bool(engine.is_speaking())
+        except Exception:  # noqa: BLE001 - a broken engine is not "speaking"
+            return False
+
+    return ReminderAnnouncer(speak, busy, poll_interval=REMINDER_POLL_INTERVAL_SEC)
+
+
+def _start_reminder_announcer(engine: Optional[Any] = None) -> None:
+    """Start the schedule-reminder announcer on the shared TTS engine.
+
+    Args:
+        engine: TTS engine to speak on.  Defaults to :func:`get_tts_engine`
+            (the engine ``main()`` installed); passing one explicitly is what
+            lets a test wire a fake engine without booting the daemon.
+    """
+    global _reminder_announcer
+    if _reminder_announcer is not None:
+        return
+    tts = engine if engine is not None else get_tts_engine()
+    if tts is None:
+        debug_log("reminder announcer not started: no TTS engine", "schedule")
+        return
+    announcer = _build_reminder_announcer(tts)
+    announcer.start()
+    _reminder_announcer = announcer
+    # The whole bug hid in silence: name the interval out loud at startup.
+    print(f"⏰ Reminder announcer polling every {REMINDER_POLL_INTERVAL_SEC}s", flush=True)
+    debug_log("reminder announcer started", "schedule")
+
+
+def _stop_reminder_announcer() -> None:
+    """Stop the announcer, waking its loop instead of waiting an interval."""
+    global _reminder_announcer
+    announcer, _reminder_announcer = _reminder_announcer, None
+    if announcer is not None:
+        announcer.stop()
+        debug_log("reminder announcer stopped", "schedule")
 
 
 def _start_voice_feedback_worker() -> None:
@@ -1665,6 +1740,9 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
         return
 
     _start_voice_feedback_worker()
+    # Behind the smoke-test early return on purpose: CI boots must not spawn
+    # a reminder thread, real runs must (this feature was invisible once).
+    _start_reminder_announcer(tts)
 
     # Periodic diary update checking
     last_diary_check = time.time()
@@ -1758,6 +1836,7 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
         debug_log("daemon received KeyboardInterrupt", "claire")
     finally:
         _stop_voice_feedback_worker()
+        _stop_reminder_announcer()
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "claire")
 
