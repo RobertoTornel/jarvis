@@ -1825,3 +1825,31 @@ class TestIntentJudgeSkipOnWakeWord:
         _process_transcript(listener, "did you see the game last night")
 
         assert judge.judge.call_count == 1
+
+    def test_an_alias_wake_word_is_stripped_too(self):
+        """The deterministic extractor must handle aliases, not just the name.
+
+        Aliases are known mishearings ("Jervis", "Jaivis"); the judge normally
+        normalises them. If the fast path left one in the query, the reply
+        engine would receive it as part of the question.
+        """
+        listener, _ = _create_listener()
+        listener.cfg.wake_aliases = ["jervis"]
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "jervis what is the weather")
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_a_trailing_wake_word_is_stripped_too(self):
+        """The name can come after the question, and must still be removed."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "what is the weather claire")
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "what is the weather"
