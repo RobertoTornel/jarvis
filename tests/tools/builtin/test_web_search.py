@@ -1301,3 +1301,71 @@ class TestDegradedWikipediaFallback:
         assert web_search_module._looks_time_sensitive("") is False
         assert web_search_module._looks_time_sensitive("   ") is False
         assert web_search_module._looks_time_sensitive(None) is False
+
+    def test_a_named_past_year_makes_a_question_historical(self):
+        """A dated question is settled, so encyclopaedia prose may answer it.
+
+        "who won" is a live-result marker, but a named past year dates the
+        question: the 2022 final has a fixed winner and Wikipedia is the right
+        source for it. Refusing the search there is over-suppression, and it
+        was the behaviour before this rule.
+        """
+        for query in (
+            "who won the 2022 football world cup",
+            "who won the 1998 world cup final",
+            "how many people lived in Lisbon in 1950",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is False, query
+
+    def test_a_present_marker_keeps_a_dated_question_live(self):
+        """A present-tense marker pulls a dated question back to now."""
+        for query in (
+            "who won the 2022 world cup and who leads now",
+            "what is the price of bitcoin in 2021 right now",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is True, query
+
+    def test_the_current_year_is_never_treated_as_past(self):
+        """A question about this year can still change, so it stays live."""
+        from datetime import date
+        this_year = date.today().year
+        assert web_search_module._looks_time_sensitive(
+            f"what is the weather in Lisbon in {this_year}"
+        ) is True
+        assert web_search_module._looks_time_sensitive(
+            f"what was the score in {this_year}"
+        ) is True
+
+    def test_a_title_naming_the_querys_year_outranks_relevance(self):
+        """Wikipedia ranks the current edition first; the year wins.
+
+        Live failure this pins: "who won the 2022 FIFA World Cup" resolved to
+        "2026 FIFA World Cup knockout stage", and that extract was relayed as
+        the answer to a question about 2022. A confidently wrong answer is
+        worse than the refusal it replaced.
+        """
+        titles = [
+            "2026 FIFA World Cup knockout stage",
+            "2022 FIFA World Cup final",
+        ]
+        assert web_search_module._title_naming_a_named_year(
+            titles, "who won the 2022 FIFA World Cup"
+        ) == "2022 FIFA World Cup final"
+
+    def test_no_year_in_the_query_keeps_the_ranking(self):
+        """Without a year in the query there is nothing to prefer."""
+        assert web_search_module._title_naming_a_named_year(
+            ["2026 FIFA World Cup", "FIFA World Cup"], "who won the world cup"
+        ) is None
+
+    def test_no_candidate_carrying_the_year_keeps_the_ranking(self):
+        """A named year that no candidate carries must not pick a stranger."""
+        assert web_search_module._title_naming_a_named_year(
+            ["FIFA World Cup", "FIFA World Cup final"], "the 2022 final"
+        ) is None
+
+    def test_a_non_string_candidate_is_skipped_not_crashed_on(self):
+        """Defensive: a malformed payload must not raise inside the resolver."""
+        assert web_search_module._title_naming_a_named_year(
+            [None, "", "1998 FIFA World Cup"], "who won the 1998 world cup"
+        ) == "1998 FIFA World Cup"

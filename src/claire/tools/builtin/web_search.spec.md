@@ -162,9 +162,17 @@ answer, the tool walks a fallback chain before giving up:
    returns nothing for verbose conversational queries such as
    "modern scientists similar to Albert Einstein" — when that happens
    the helper cascades to the full-text endpoint (`list=search`,
-   `srlimit=1`) to resolve a relevant title, then continues with the
+   `srlimit=8`) to resolve a relevant title, then continues with the
    REST summary fetch. Without the full-text cascade the planner's
    typical phrasings produce zero hits and the fallback never fires.
+   Both lookups ask for several candidates and, when the query names a
+   four-digit year, a candidate whose title carries that year is
+   preferred over Wikipedia's own relevance order: that ranking favours
+   the *current* edition of a recurring event, so "who won the 2022 FIFA
+   World Cup" resolved to the 2026 knockout stage and its extract was
+   relayed as the answer to a question about 2022. A confidently wrong
+   answer is worse than the refusal it replaced. When the query names no
+   year, or no candidate carries one, the original ranking is untouched.
    Every Wikipedia request honours the chain-level deadline forwarded
    by the caller: each request's timeout collapses to whatever budget
    remains, and once the remaining budget falls below
@@ -189,6 +197,16 @@ answer, the tool walks a fallback chain before giving up:
    trace recorded in `reply.spec.md`. `_looks_time_sensitive` is a
    deliberately conservative marker list and not a classifier, so a
    false positive costs one honest "I could not search" reply.
+   A query that names a year strictly before the current one is the
+   exception: it is a question about a settled fact ("who won the 2022
+   world cup" cannot change), so the extract is allowed through even
+   though "who won" is itself a live-result marker. A present-tense
+   marker anywhere in the query overrides that exemption and pulls it
+   back to live ("...and who leads now?"), and the current year is never
+   treated as past, so "the <this year> season so far" stays live. This
+   exemption is only safe because the title resolver prefers a candidate
+   carrying the query's year; without that it would answer a 2022
+   question from the 2026 page.
 
 Rate-limit detection fires regardless of fallback availability: the
 `🚧 DuckDuckGo served a bot-challenge page` console line is printed when
@@ -263,6 +281,19 @@ Regression tests assert:
    already in the past causes the helper to short-circuit to `None`
    without hitting the network, and a near-expiry deadline shrinks the
    per-request timeout rather than firing a doomed full-timeout request.
+8. **A named year beats relevance in the title resolver**: given a
+   candidate list that puts the current edition first, a query naming a
+   past year selects the candidate whose title carries that year (the
+   2022/2026 case above). With no year in the query, or no candidate
+   carrying it, the resolver returns `None` from the preference helper so
+   the caller keeps its own ranking; a `None` or blank candidate is
+   skipped rather than raising.
+9. **Dates are historical, present markers are live**:
+   `_looks_time_sensitive` returns `False` for a dated factual question
+   ("who won the 2022 football world cup"), `True` when the same question
+   carries a present-tense marker ("...and who leads now"), `True` for an
+   undated live question ("what was the score last night"), and `True`
+   when the year named is the current one.
 
 ### Non-goals
 

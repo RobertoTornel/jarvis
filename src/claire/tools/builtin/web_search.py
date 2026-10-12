@@ -3,6 +3,7 @@
 import ipaddress
 import re
 import socket
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -120,6 +121,36 @@ _TIME_SENSITIVE_PHRASES = (
 )
 
 
+# A named, strictly past year dates a question: the answer is settled, so
+# encyclopaedia prose answers it exactly. "who won the 2022 world cup" is a
+# fact; "who won last night" is a live result. This matters because "who won"
+# is itself a live-result marker, so without this rule a dated historical
+# question is refused a search it should have had.
+#
+# The same pattern keeps the title resolver honest: Wikipedia ranks the
+# *current* edition of a recurring event highest, so a question naming 2022
+# must not be answered from the 2026 page.
+_NAMED_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# Markers that pull a dated question back to the present. If one is present,
+# the year does not settle the question ("...and who leads now?").
+_PRESENT_MARKERS = re.compile(
+    r"\b(?:right now|at the moment|currently|today|tonight|tomorrow|now|"
+    r"this (?:week|weekend|month|year|season)|latest|so far|nowadays|"
+    r"still|yet)\b"
+)
+
+
+def _names_a_past_year(text: str) -> bool:
+    """Whether the text names a year strictly before the current one.
+
+    Strictly, so a question about the current year stays live: the answer to
+    "the 2026 season so far" can still change.
+    """
+    years = [int(match) for match in _NAMED_YEAR.findall(text)]
+    return bool(years) and max(years) < date.today().year
+
+
 def _looks_time_sensitive(query: str) -> bool:
     """Whether a query plainly asks for something that changes hour to hour.
 
@@ -129,6 +160,8 @@ def _looks_time_sensitive(query: str) -> bool:
     if not isinstance(query, str) or not query.strip():
         return False
     lowered = query.strip().lower()
+    if _names_a_past_year(lowered) and not _PRESENT_MARKERS.search(lowered):
+        return False
     if _TIME_SENSITIVE_WORDS.search(lowered):
         return True
     return any(phrase in lowered for phrase in _TIME_SENSITIVE_PHRASES)
@@ -470,6 +503,30 @@ def _wikipedia_request_timeout(deadline: Optional[float]) -> Optional[float]:
     return min(_WIKIPEDIA_REQUEST_TIMEOUT_SEC, remaining)
 
 
+def _title_naming_a_named_year(titles: List[str], query: str) -> Optional[str]:
+    """The first candidate title that names a year the query named.
+
+    Wikipedia ranks the current edition of a recurring event highest, so
+    "who won the 2022 FIFA World Cup" resolved to the 2026 knockout stage and
+    that extract was relayed as the answer to a question about 2022. When the
+    query names a year, a candidate whose title carries that year is the one
+    the user meant.
+
+    Returns None when the query names no year, or when no candidate matches
+    one, so the caller keeps its own relevance ordering.
+    """
+    years = _NAMED_YEAR.findall((query or "").lower())
+    if not years:
+        return None
+    for title in titles:
+        if not isinstance(title, str) or not title.strip():
+            continue
+        lowered = title.lower()
+        if any(year in lowered for year in years):
+            return title
+    return None
+
+
 def _resolve_wikipedia_title(
     query: str,
     search_url: str,
@@ -497,7 +554,7 @@ def _resolve_wikipedia_title(
         params={
             "action": "opensearch",
             "search": query,
-            "limit": 1,
+            "limit": 8,
             "namespace": 0,
             "format": "json",
         },
@@ -517,6 +574,15 @@ def _resolve_wikipedia_title(
     # one-letter title that flows all the way to the REST summary fetch).
     raw_titles = payload[1] if len(payload) > 1 else []
     titles: List[str] = raw_titles if isinstance(raw_titles, list) else []
+    # A query that names a year outranks opensearch's own ordering: an exact
+    # prefix match may not include the year at all.
+    preferred = _title_naming_a_named_year(titles, query)
+    if preferred:
+        debug_log(
+            f"Wikipedia opensearch preferred '{preferred}' for a year-named query",
+            "web",
+        )
+        return preferred
     if titles and isinstance(titles[0], str) and titles[0].strip():
         return titles[0]
 
@@ -530,7 +596,7 @@ def _resolve_wikipedia_title(
             "action": "query",
             "list": "search",
             "srsearch": query,
-            "srlimit": 1,
+            "srlimit": 8,
             "srnamespace": 0,
             "format": "json",
         },
@@ -547,8 +613,15 @@ def _resolve_wikipedia_title(
     hits = raw_search if isinstance(raw_search, list) else []
     if not hits:
         return None
-    first = hits[0] if isinstance(hits[0], dict) else {}
-    title = first.get("title")
+    hit_titles = [
+        hit.get("title") for hit in hits if isinstance(hit, dict)
+    ]
+    # Relevance ranking puts the current edition of a recurring event first;
+    # a year the user named is a stronger signal than that ranking.
+    title = _title_naming_a_named_year(hit_titles, query)
+    if title is None:
+        first = hits[0] if isinstance(hits[0], dict) else {}
+        title = first.get("title")
     if not isinstance(title, str) or not title.strip():
         return None
     debug_log(
