@@ -289,6 +289,12 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("hot_window_seconds", "Hot Window Duration",
       "Duration of follow-up window",
       "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s")
+    f("hot_window_max_follow_ups", "Follow-up Turns",
+      "Wake-word-free follow-ups allowed per wake word (0 = unlimited)",
+      "timing", "int", min_val=0, max_val=20, step=1)
+    f("hot_window_require_directed", "Strict Follow-ups",
+      "Only accept follow-ups aimed at Claire, not background speech",
+      "timing", "bool")
     f("transcript_buffer_duration_sec", "Transcript Buffer",
       "Duration of rolling transcript history for intent judging",
       "timing", "float", min_val=10, max_val=600, step=10, suffix="s")

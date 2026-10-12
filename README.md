@@ -137,10 +137,15 @@ Three modes are defined in `listening.spec.md`:
 
 1. **Wake word mode** (default) — waiting for the wake word.
 2. **Hot window mode** — after Claire finishes speaking, a wake-word-free
-   follow-up is allowed for `hot_window_seconds` (default `3.0`) once the echo
-   has settled. At most **one** consecutive follow-up per explicit wake word is
-   permitted; a second one is refused with `Follow-up window closed — say
-   "Claire" to continue`.
+   follow-up is allowed for `hot_window_seconds` (default `3.0`, clamped on
+   load to 1.0-30.0) once the echo has settled. Up to
+   `hot_window_max_follow_ups` consecutive follow-ups (default `3`, `0` means
+   unlimited) are permitted per explicit wake word; past the cap the next one
+   is refused with `Follow-up window closed — say
+   "Claire" to continue`. Set `hot_window_require_directed` to `True` and only
+   follow-ups the intent judge judges addressed to Claire are accepted (so
+   background television cannot drive a turn); a genuine wake word is always
+   accepted.
 3. **During TTS** — only a stop command is expected, with a shorter utterance
    timeout.
 
@@ -614,7 +619,8 @@ keys by hand. The knobs most worth knowing:
 - **Voice**: `wake_word`, `wake_aliases`, `wake_fuzzy_ratio`, `stt_engine`,
   `stt_model_path`, `streaming_stt_engine`, `tts_engine` and the per-engine voice
   keys, `vad_enabled`, `endpoint_silence_ms`, `max_utterance_ms`,
-  `hot_window_enabled`, `hot_window_seconds`, `echo_tolerance`.
+  `hot_window_enabled`, `hot_window_seconds`, `hot_window_max_follow_ups`
+  (0 = unlimited), `hot_window_require_directed`, `echo_tolerance`.
 - **Reply behaviour**: `tool_selection_strategy`, `agentic_max_turns`,
   `tool_carryover_max_turns`, `low_power_mode`,
   `transcript_buffer_duration_sec`.

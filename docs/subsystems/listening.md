@@ -138,9 +138,12 @@ Order matters, and the echo decision is deliberately **acoustic**, not textual.
    and hands the remainder to collection mode.
 8. **Hot window / collection** (`state_manager.py:19` `StateManager`, `:12`
    `ListeningState`). After Claire finishes speaking, a wake-word-free follow-up
-   is allowed for `hot_window_seconds` after the echo settles; the chain is
-   broken by `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1` (a module constant in
-   `listener.py`), which is what refuses the second consecutive follow-up.
+   is allowed for `hot_window_seconds` after the echo settles; up to
+   `hot_window_max_follow_ups` consecutive follow-ups (default `3`, `0` means
+   unlimited) are admitted per explicit wake word. Past the cap the chain is
+   refused (`Follow-up window closed`), so the wake word must be said again.
+   The module constant `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1` (`listener.py`)
+   survives only as the fallback for a config that predates the key.
 9. **Ignore.** Anything else is logged as `input ignored (no wake word ...)`.
 
 ## Configuration keys that affect it
@@ -164,7 +167,10 @@ literal) and its coercion block.
 | `wake_word` / `wake_aliases` | `"claire"` / seven mishearings | Text wake matching. |
 | `wake_fuzzy_ratio` | `0.82` | Similarity floor for approximate wake matches. |
 | `stop_commands` | list | Stop phrases matched during TTS. |
-| `hot_window_seconds` | `3.0` | Follow-up window length. The loop breaker is not a config key: it is the module constant `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1` (`listener.py`), passed to `StateManager` as `hot_window_turn_limit`. |
+| `hot_window_enabled` | `True` | Arms the wake-word-free follow-up window after each reply. |
+| `hot_window_seconds` | `3.0` | Follow-up window length, clamped on load to `[1.0, 30.0]` (the range the settings UI declares). |
+| `hot_window_max_follow_ups` | `3` | Consecutive wake-word-free follow-ups per wake word; `0` means unlimited. Wired to `StateManager` as `hot_window_turn_limit`, falling back to the module constant `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1` (`listener.py`) if the key is absent. |
+| `hot_window_require_directed` | `False` | Opt-in strictness: when `True`, an utterance in the window must be judged `directed` at Claire (or carry a genuine wake word) to be accepted, so background television cannot drive a turn. `False` keeps the permissive behaviour: all non-echo speech counts as a follow-up. |
 | `transcript_buffer_duration_sec` | `120.0` | Intent-judge context window. |
 | `stt_engine` / `stt_model_path` / `stt_model_kind` | `"parakeet"` / path / `"auto"` | Authoritative recogniser. |
 | `streaming_stt_engine` | `"sherpa"` | Always-on provisional recogniser; `""` disables it. |

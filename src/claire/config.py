@@ -252,6 +252,15 @@ class Settings:
     ack_phrases: list[str]
     hot_window_enabled: bool
     hot_window_seconds: float
+    # How many consecutive wake-word-free follow-ups a single wake word unlocks
+    # in one conversation. 0 means unlimited. The listener still falls back to
+    # MAX_CONSECUTIVE_HOT_WINDOW_TURNS when a config file predates this key.
+    hot_window_max_follow_ups: int
+    # Opt-in strictness: when True, an utterance inside the hot window must be
+    # judged directed at Claire to be accepted, so background television cannot
+    # drive a turn. False (the default) keeps the documented permissive
+    # behaviour: all non-echo speech counts as a follow-up.
+    hot_window_require_directed: bool
     low_power_mode: bool
 
     # Echo Detection
@@ -722,6 +731,8 @@ def get_default_config() -> Dict[str, Any]:
         "ack_phrases": DEFAULT_ACK_PHRASES,
         "hot_window_enabled": True,
         "hot_window_seconds": 3.0,
+        "hot_window_max_follow_ups": 3,
+        "hot_window_require_directed": False,
         "low_power_mode": False,
         "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
@@ -1093,7 +1104,25 @@ def load_settings() -> Settings:
     ack_phrases = [p.strip() for p in (merged.get("ack_phrases") or [])
                    if isinstance(p, str) and p.strip()] or list(DEFAULT_ACK_PHRASES)
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
-    hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
+    # The settings UI declares the same [1.0, 30.0] range for this key, so a
+    # hand-edited config cannot arm a window too short to answer or so long it
+    # outlives the conversation (settings_window.py, hot window fields).
+    hot_window_seconds = min(max(float(merged.get("hot_window_seconds", 3.0)), 1.0), 30.0)
+    try:
+        hot_window_max_follow_ups = int(merged.get("hot_window_max_follow_ups", 3))
+    except (TypeError, ValueError):
+        hot_window_max_follow_ups = 3
+    # Negative counts are meaningless; 0 is the documented "unlimited".
+    hot_window_max_follow_ups = max(hot_window_max_follow_ups, 0)
+    raw_require_directed = merged.get("hot_window_require_directed", False)
+    if isinstance(raw_require_directed, str):
+        # A hand-edited config may quote the boolean: "false" must not become
+        # True the way bool("false") would.
+        hot_window_require_directed = raw_require_directed.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        hot_window_require_directed = bool(raw_require_directed)
     low_power_mode = bool(merged.get("low_power_mode", False))
     echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
@@ -1302,6 +1331,8 @@ def load_settings() -> Settings:
         ack_phrases=ack_phrases,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
+        hot_window_max_follow_ups=hot_window_max_follow_ups,
+        hot_window_require_directed=hot_window_require_directed,
         low_power_mode=low_power_mode,
         echo_energy_threshold=echo_energy_threshold,
         echo_tolerance=echo_tolerance,

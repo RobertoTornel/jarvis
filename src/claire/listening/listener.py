@@ -660,7 +660,10 @@ class VoiceListener(threading.Thread):
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
             voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 4.5)),
             max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 180.0)),
-            hot_window_turn_limit=MAX_CONSECUTIVE_HOT_WINDOW_TURNS,
+            # The configured follow-up count drives the chain; the module
+            # constant stays as the getattr fallback — it is the loop-breaker
+            # for a config that predates the key.
+            hot_window_turn_limit=int(getattr(self.cfg, "hot_window_max_follow_ups", MAX_CONSECUTIVE_HOT_WINDOW_TURNS)),
         )
 
         # Energy tracking for echo detection
@@ -1446,7 +1449,25 @@ class VoiceListener(threading.Thread):
                             self._stop_thinking_tune()
                             return
 
-                        if could_be_hot_window:
+                        # Strict mode (hot_window_require_directed, opt-in):
+                        # the override below only takes an utterance the judge
+                        # judged directed at Claire, so background television
+                        # cannot drive a turn. A genuine wake word always wins
+                        # — it is explicit engagement, judged or not. The
+                        # default stays the documented permissive behaviour
+                        # (listening.spec.md, hot window section). `is True`
+                        # because only a real config coerces to a bool.
+                        require_directed = (
+                            getattr(self.cfg, "hot_window_require_directed", False) is True
+                        )
+                        wake_present = self._wake_word_seen(text_lower, provisional_lower)
+                        if require_directed and could_be_hot_window and not wake_present:
+                            debug_log(
+                                f"🛑 strict hot window: not directed at Claire and no "
+                                f"wake word — refusing: \"{text_lower[:50]}\"",
+                                "voice",
+                            )
+                        if could_be_hot_window and (not require_directed or wake_present):
                             # Hot window + non-echo speech → user is talking to us.
                             # Override the intent judge rejection — small models
                             # sometimes reject valid follow-ups like "don't you

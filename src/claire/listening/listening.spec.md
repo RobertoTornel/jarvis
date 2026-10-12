@@ -267,15 +267,20 @@ wake word is genuinely present** (`listener.py:955-994`, constants at
 `listener.py:48-62`). The gate uses the acoustic `captured_during_tts` signal,
 not recogniser text — text similarity alone (`partial_ratio >= 70`) can never
 catch a mis-transcribed echo. A verified wake word resets the chain
-(`listener.py:814-818`, reusing `is_wake_word_detected`).
+(`listener.py:840-844`, reusing `is_wake_word_detected`).
 
-**Follow-up renewal cap:** at most `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
-hot-window follow-up per explicit wake word (`state_manager.py:394-408`). A
-second consecutive follow-up without "Claire" is refused
-(`Follow-up window closed — say "Claire" to continue`), an audio-independent
-loop-breaker so even a missed echo cannot cause an unbounded loop.
+**Follow-up renewal cap:** at most `hot_window_max_follow_ups` consecutive
+hot-window follow-ups per explicit wake word (default `3`, `0` means
+unlimited; enforced at `state_manager.py:394-408`, where the value arrives as
+`hot_window_turn_limit`). Past the cap, the next follow-up without "Claire"
+is refused (`Follow-up window closed — say "Claire" to continue`), an
+audio-independent loop-breaker so even a missed echo cannot cause an
+unbounded loop. The module constant `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
+remains the listener's getattr fallback for a config that predates the key;
+it is not the configured value.
 
-**Duration:** Configurable (default: 3 seconds)
+**Duration:** `hot_window_seconds`, default 3 seconds, clamped on load to
+`[1.0, 30.0]` (the range the settings UI declares)
 
 **Timer ownership:** Activation and expiry callbacks belong to the current
 scheduled window. Cancelled or superseded callbacks cannot clear a newer
@@ -287,6 +292,8 @@ hot-window admission; manual expiry also cancels pending activation.
 
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
+
+**Strict exception (`hot_window_require_directed`, default `False`):** when set to `True`, the not-directed override above accepts only an utterance the judge marked `directed`, or one carrying a genuine wake word, so background television cannot drive a turn. The early pure-echo reject (which runs without calling the judge and never resets the window timer), the mixed echo+speech handling and the acoustic tail guard are unaffected, and the wake-word path always wins. The default `False` keeps the permissive behaviour documented above; the key is opt-in so that default does not change silently.
 
 **Mixed echo+speech handling:** When the recogniser merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
 
