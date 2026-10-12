@@ -1739,3 +1739,89 @@ class TestStrictHotWindowRequireDirected:
 
         assert _accepted_query(listener) == "claire, did you watch the game"
         listener.state_manager.stop()
+
+
+# ---------------------------------------------------------------------------
+# Tests: intent_judge_skip_on_wake_word
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestIntentJudgeSkipOnWakeWord:
+    """The opt-in fast path that trades the judge's defence for about 3 seconds.
+
+    The judge runs on every turn where a wake word was detected, and on this
+    machine that call measures about 3.2 s at p50. When the utterance itself
+    contains the wake word the query is already unambiguous, so the key lets
+    the deterministic wake-word path take it instead, stripping the wake word
+    with `extract_query_after_wake`. It is off by default, it never applies
+    while TTS is speaking (the judge is what catches a stop command spoken over
+    playback), and it cannot apply without a wake word to key off.
+    """
+
+    def test_wake_word_turn_skips_the_judge_and_strips_the_wake_word(self):
+        """With the key on, the judge is not called and the query is clean."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        judge.judge.assert_not_called()
+        # The deterministic path must strip the wake word itself.
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_a_non_boolean_key_value_does_not_enable_the_fast_path(self):
+        """A mock or string config must not switch the fast path on.
+
+        `_create_listener` builds a `MagicMock` config, whose attributes are
+        truthy, so this is also the default-off case.
+        """
+        listener, _ = _create_listener()
+        judge = _install_intent_judge(listener, _make_judgment(query="what is the weather"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        assert judge.judge.call_count == 1
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_explicit_false_still_calls_the_judge(self):
+        """The documented default keeps today's behaviour exactly."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = False
+        judge = _install_intent_judge(listener, _make_judgment(query="what is the weather"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        assert judge.judge.call_count == 1
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_judge_still_runs_while_tts_is_speaking(self):
+        """Speech over playback must still reach the judge.
+
+        The utterance is longer than three words so the pre-existing
+        short-utterance-during-TTS shortcut is not what answers this.
+        """
+        listener, _ = _create_listener(tts_speaking=True)
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query=""))
+
+        _process_transcript(listener, "claire turn the music down please")
+
+        assert judge.judge.call_count == 1
+
+    def test_judge_still_runs_for_a_hot_window_follow_up(self):
+        """With no wake word there is nothing to key the fast path off.
+
+        A follow-up inside the window must still reach the judge, which is what
+        decides whether speech in the window is addressed to her.
+        """
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(directed=False))
+
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        _process_transcript(listener, "did you see the game last night")
+
+        assert judge.judge.call_count == 1

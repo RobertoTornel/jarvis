@@ -276,6 +276,14 @@ class Settings:
     # ``claire.llm.resolve_model(cfg, Tier.FAST)``.
     fast_model: str
     intent_judge_timeout_sec: float
+    # Opt-in latency escape hatch: when True, an utterance that itself contains
+    # the wake word skips the intent-judge LLM call (~3 s at p50) and is taken
+    # straight to the deterministic wake-word acceptance path (which strips the
+    # wake word from the query). Trade-off: the judge's `directed: false`
+    # defence against speech that merely mentions the name ("Claire") goes with
+    # it. False (the default) preserves today's behaviour exactly: the judge
+    # still runs on every wake-word turn.
+    intent_judge_skip_on_wake_word: bool
 
     # Transcript Buffer - ambient speech context for intent judge
     transcript_buffer_duration_sec: float
@@ -748,6 +756,11 @@ def get_default_config() -> Dict[str, Any]:
         "fast_model": "",
         "intent_judge_timeout_sec": 6.0,
         "intent_judge_thinking_enabled": False,  # Enable thinking for intent judge (adds latency to wake detection)
+        # Skip the intent judge on utterances that contain the wake word
+        # (saves ~3 s of latency per wake-word turn, but drops the judge's
+        # defence against being triggered by speech that merely mentions the
+        # assistant's name).
+        "intent_judge_skip_on_wake_word": False,
 
         # Transcript Buffer - used for both retention and context passed to intent judge
         # 120s (2 min) provides enough ambient speech context for intent judging
@@ -1140,6 +1153,16 @@ def load_settings() -> Settings:
             llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
         )
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
+    raw_skip_on_wake = merged.get("intent_judge_skip_on_wake_word", False)
+    if isinstance(raw_skip_on_wake, str):
+        # A hand-edited config may quote the boolean: "false" must not become
+        # True the way bool("false") would (same coercion as
+        # hot_window_require_directed above).
+        intent_judge_skip_on_wake_word = raw_skip_on_wake.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        intent_judge_skip_on_wake_word = bool(raw_skip_on_wake)
 
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
     transcript_buffer_duration_sec = float(merged.get("transcript_buffer_duration_sec", 120.0))
@@ -1339,6 +1362,7 @@ def load_settings() -> Settings:
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,
         intent_judge_timeout_sec=intent_judge_timeout_sec,
+        intent_judge_skip_on_wake_word=intent_judge_skip_on_wake_word,
 
         # Transcript Buffer
         transcript_buffer_duration_sec=transcript_buffer_duration_sec,

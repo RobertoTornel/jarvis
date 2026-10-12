@@ -1103,8 +1103,30 @@ class VoiceListener(threading.Thread):
                 "voice",
             )
 
+        # Opt-in latency escape hatch (`intent_judge_skip_on_wake_word`). An
+        # utterance that itself contains the wake word is already unambiguous,
+        # so the judge's LLM call (~3 s at p50) buys only its `directed: false`
+        # defence against speech that merely mentions the name. With the key on
+        # we fall through to the deterministic wake-word path further down,
+        # which strips the wake word with `extract_query_after_wake`. Playback
+        # is excluded because the judge is what catches a stop command spoken
+        # over TTS, and the hot-window case is excluded because there is no wake
+        # word to key off in the first place.
+        skip_judge_on_wake_word = (
+            getattr(self.cfg, "intent_judge_skip_on_wake_word", False) is True
+            and not is_speaking_now
+            and self._wake_word_seen(text_lower, provisional_lower)
+        )
+        if skip_judge_on_wake_word:
+            debug_log(
+                "skipping intent judge — wake word present and "
+                "intent_judge_skip_on_wake_word is on",
+                "voice",
+            )
+
         if (
             not skip_intent_judge_during_tts
+            and not skip_judge_on_wake_word
             and has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available

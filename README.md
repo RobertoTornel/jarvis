@@ -630,7 +630,8 @@ keys by hand. The knobs most worth knowing:
   `stt_model_path`, `streaming_stt_engine`, `tts_engine` and the per-engine voice
   keys, `vad_enabled`, `endpoint_silence_ms`, `max_utterance_ms`,
   `hot_window_enabled`, `hot_window_seconds`, `hot_window_max_follow_ups`
-  (0 = unlimited), `hot_window_require_directed`, `echo_tolerance`.
+  (0 = unlimited), `hot_window_require_directed`, `echo_tolerance`,
+  `intent_judge_skip_on_wake_word`.
 - **Reply behaviour**: `tool_selection_strategy`, `agentic_max_turns`,
   `tool_carryover_max_turns`, `low_power_mode`,
   `transcript_buffer_duration_sec`.
