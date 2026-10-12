@@ -133,6 +133,18 @@ ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cac
 # writable directory fixes it; this was verified under the same sandbox.
 Environment=NUMBA_CACHE_DIR=%h/.cache/numba
 
+# torch's inductor sizes its asynchronous compilation pool to the CPU count, so
+# loading the NeMo Parakeet recogniser leaves one idle `compile_worker` process
+# per core alive for the life of the daemon. On a 12-core machine that measured
+# 13 processes and roughly 4 GB of resident memory held for no further work, and
+# the unit's cgroup peak reached 12.5 GB, which is how it came to be OOM-killed.
+#
+# Setting the pool to one worker disables asynchronous compiling (torch then
+# compiles inline), which drops the whole pool. This only changes how the
+# kernels are *built*, not the kernels themselves, so transcription speed is
+# unaffected; the cost is a slower first compile at startup.
+Environment=TORCHINDUCTOR_COMPILE_THREADS=1
+
 [Install]
 # A user unit is enabled in the user's manager, so the target is default.target
 # (there is no multi-user.target in a user session).

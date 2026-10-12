@@ -449,6 +449,11 @@ _spawn() { # pidfile logfile module-args...
         cd "$REPO_ROOT"
         export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
         export PYTHONUNBUFFERED=1
+        # Keep torch's inductor compile pool to one worker. Left unset, loading
+        # the NeMo Parakeet recogniser leaves an idle compile_worker process per
+        # CPU core alive for the life of the process (~4 GB on a 12-core box).
+        # The unit file sets this too; this covers a detached run.
+        export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
         rm -f "$pidfile"
         if command -v setsid >/dev/null 2>&1; then
             nohup setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ "$pidfile" "$VENV_PY" "$@" \
