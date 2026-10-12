@@ -11,6 +11,7 @@ from ..utils.redact import redact
 from ..system_prompt import build_system_prompt
 from ..tools.registry import run_tool_with_retries, generate_tools_description, generate_tools_json_schema, BUILTIN_TOOLS
 from ..tools.builtin.stop import STOP_SIGNAL
+from ..listening.wake_detection import CLAIRE_WAKE_ALIASES
 from ..debug import debug_log
 from ..llm import (
     extract_text_from_response,
@@ -62,7 +63,12 @@ from .planner import (
     is_search_memory_step,
     resolve_next_tool_call as _resolve_plan_step,
 )
-from ..tools.selection import select_tools, ToolSelectionStrategy
+from ..tools.selection import (
+    none_verdict,
+    select_tools,
+    SYSTEM_TOOL_NAMES,
+    ToolSelectionStrategy,
+)
 import json
 import re
 import uuid
@@ -537,6 +543,132 @@ _DIGEST_SKIP_TOOLS = frozenset({
     "getTime",
 })
 
+#: Hard ceiling on how much of one tool result enters the model's context.
+#: The digest below only runs for small models, so with a large chat model a
+#: tool that returns a data dump puts all of it in front of the model on every
+#: remaining turn of the conversation. Measured 2026-10-13: fetching
+#: en.wikipedia.org/wiki/Lisbon returned 50,028 characters in one call, which
+#: is roughly 12k tokens of context carried by the rest of the conversation.
+#: Generous enough to leave a real answer intact.
+_MAX_TOOL_RESULT_CHARS = 8000
+
+
+#: Social tokens that carry no request on her own. Removing them from the
+#: front of an utterance is what lets "Hey Claire, what's up?" reduce to the
+#: phrase set below. Imperatives are deliberately absent: "stop", "shut up"
+#: and "wait" must keep reaching the router, because those select real tools.
+#: Her own name and every mishearing of it count as filler, taken from the
+#: canonical wake list so the two cannot drift apart.
+_SMALL_TALK_FILLERS = frozenset({
+    "a", "ah", "alright", "and", "anyway", "but", "bye", "cheers", "cool",
+    "eh", "er", "evening", "exactly", "good", "goodbye", "goodnight", "hello",
+    "hey", "hi", "hm", "hmm", "huh", "i", "k", "kay", "like", "love", "maybe",
+    "mhm", "mm", "mmhmm", "mmm", "morning", "nah", "night", "nice", "no",
+    "nope", "oh", "ok", "okay", "please", "really", "right", "so", "sure",
+    "thank", "thanks", "uh", "um", "well", "whatever", "what", "whats", "ya",
+    "yeah", "yep", "yes", "you",
+}) | {"claire"} | set(CLAIRE_WAKE_ALIASES)
+
+#: Whole-utterance social phrases. Checked before and after lead-in removal so
+#: that "I don't know", which opens with a filler, still matches.
+_SMALL_TALK_PHRASES = frozenset({
+    "are you alive", "are you listening", "are you ok", "are you okay",
+    "are you there", "can you hear me", "good afternoon",
+    "good evening", "good morning", "good night", "how are things",
+    "how are you", "how are you doing", "how is it going", "hows it going",
+    "i dont know", "i dont know yet", "i see",
+    "is that so", "never mind", "no idea", "no problem", "not much",
+    "nothing much", "of course", "thank you", "thanks a lot", "thats it",
+    "there we go", "what do you mean", "what is up", "whats up", "you there",
+    "youre welcome",
+})
+
+#: Longer than this and the utterance counts as contentful even when every
+#: word is filler: a six-word run is a fragment, eight is a sentence.
+_SMALL_TALK_MAX_WORDS = 6
+
+#: Noise that can sit in front of a social phrase without changing what it
+#: asks for: greetings, her name, and filler openers. Narrower than
+#: ``_SMALL_TALK_FILLERS`` on purpose — stripping every filler would eat the
+#: "whats" of "whats up" and lose the phrase it was meant to reveal.
+_SMALL_TALK_LEAD_INS = frozenset({
+    "a", "ah", "alright", "and", "but", "evening", "good", "hello", "hey",
+    "hi", "hmm", "i", "k", "kay", "morning", "night", "oh", "ok", "okay",
+    "please", "right", "so", "sure", "uh", "um", "well", "yeah", "yep",
+    "yes", "you",
+}) | {"claire"} | set(CLAIRE_WAKE_ALIASES)
+
+#: Speech hangs qualifiers off the end of a social phrase without changing
+#: what it asks for. The journal corpus has "how are you doing today?"; the
+#: phrase underneath is what decides the routing, and only these benign
+#: qualifiers may be dropped to reveal it. Every entry must be unable to
+#: carry a request on its own: "what's the weather today?" still reaches the
+#: router, because "whats the weather" is not a social phrase once the
+#: qualifier is gone.
+_SMALL_TALK_TRAILING = frozenset({
+    "again", "now", "then", "today", "tonight",
+})
+
+
+def _is_small_talk(text: str) -> bool:
+    """True when an utterance is social filler that cannot want a tool.
+
+    Deliberately conservative, because a false positive (a tool call that
+    never happens) is far worse than a false negative (a router call that
+    bought nothing). Fails closed: anything unrecognised returns False and
+    takes the ordinary path.
+    """
+    if not isinstance(text, str):
+        return False
+    lowered = text.lower()
+    if any(ch.isdigit() for ch in lowered):
+        return False
+    # Take intra-word apostrophes out of the way ("what's" -> "whats",
+    # "don't" -> "dont") so the phrase set can be written in plain ASCII.
+    cleaned = re.sub(
+        r"[^a-z\s]", "", lowered.replace("'", "").replace("\u2019", "")
+    )
+    tokens = cleaned.split()
+    if not tokens or len(tokens) > _SMALL_TALK_MAX_WORDS:
+        return False
+    if all(token in _SMALL_TALK_FILLERS for token in tokens):
+        return True
+    if " ".join(tokens) in _SMALL_TALK_PHRASES:
+        return True
+    # A qualifier on the end ("how are you doing today") hides the phrase
+    # underneath it, exactly as a lead-in does at the front. Drop the trailing
+    # qualifiers first and retry, so the spoken form of a social phrase is
+    # recognised as the phrase it is instead of paying for a router call that
+    # can only return "no tools".
+    core = list(tokens)
+    while core and core[-1] in _SMALL_TALK_TRAILING:
+        core.pop()
+    if core and " ".join(core) in _SMALL_TALK_PHRASES:
+        return True
+    # Drop the opening lead-ins and retry, so a leading "hey Claire," or
+    # "okay so" cannot hide a social phrase underneath it.
+    while core and core[0] in _SMALL_TALK_LEAD_INS:
+        core.pop(0)
+    return bool(core) and " ".join(core) in _SMALL_TALK_PHRASES
+
+
+def _cap_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """Truncate an oversized tool result, keeping the head and saying so.
+
+    The marker matters as much as the cut: a model handed a silently shortened
+    payload may answer as though it saw the whole thing. Naming the omission
+    lets it ask for something narrower instead of guessing.
+    """
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return (
+        text[:limit]
+        + f"\n\n[... {omitted} more characters of this result were omitted to "
+        "keep the reply within its context budget. Ask for something more "
+        "specific if what you need is not above.]"
+    )
+
 
 def _maybe_digest_tool_result(
     cfg,
@@ -1010,7 +1142,22 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         dialogue_memory.hot_cache_get(_router_cache_key)
         if dialogue_memory and hasattr(dialogue_memory, "hot_cache_get") else None
     )
-    if isinstance(_cached_routed, list):
+    _skip_router_for_smalltalk = (
+        bool(getattr(cfg, "smalltalk_router_skip_enabled", True))
+        and _is_small_talk(redacted)
+    )
+    if _skip_router_for_smalltalk:
+        # No tools, and no model call to discover that: the router is a chat
+        # completion (p50 ~1.3 s) and 33 of the 39 calls in a fortnight's
+        # journal picked nothing but the system tools.
+        # The same verdict the router reaches by answering "none", from a
+        # shared helper so the two routes cannot drift apart.
+        routed_tools = none_verdict(BUILTIN_TOOLS, mcp_tools)
+        debug_log(
+            f"tool router skipped: \"{redacted}\" is small talk, no tools needed",
+            "planning",
+        )
+    elif isinstance(_cached_routed, list):
         routed_tools = list(_cached_routed)
         debug_log("tool router served from hot-window cache", "planning")
     else:
@@ -1099,18 +1246,23 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # like "hello" / "how are you" / "tell me a joke", it adds a CHAT-tier
     # LLM round-trip whose only output is "Reply to the user." — pure overhead.
     #
-    # Gate: the router returned only system tools (just "stop"), meaning it
-    # positively decided no tools are needed. The router's "fall open to all
-    # tools" path (timeout / empty / no-match) is NOT treated as tool-free
-    # because it carries no signal — the router gave up rather than ruling
-    # tools out. We also require the query to be short (< 8 words) so
-    # longer tool-free queries that might need memory still reach the
-    # planner for a `searchMemory` directive. Language-agnostic: word count
-    # splits on whitespace, which works for every script-separated language.
+    # Gate: every name the router returned is a system tool, meaning it
+    # positively decided no real tool is needed. The router names the
+    # termination sentinel and the `toolSearchTool` escape hatch even for a
+    # query that needs nothing, so a verdict of `{"stop", "toolSearchTool"}`
+    # is the ordinary no-tool answer and must not defeat this gate — an
+    # earlier `len(routed_tools) <= 1` form did exactly that, and every short
+    # conversational turn paid a planner round-trip for the reply-only plan.
+    # The router's "fall open to all tools" path (None on timeout / give-up)
+    # is NOT treated as tool-free because it carries no signal — the router
+    # gave up rather than ruling tools out. We also require the query to be
+    # short (< 8 words) so longer tool-free queries that might need memory
+    # still reach the planner for a `searchMemory` directive.
+    # Language-agnostic: word count splits on whitespace, which works for
+    # every script-separated language.
     _router_said_no_tools = (
         routed_tools is not None
-        and len(routed_tools) <= 1
-        and ("stop" in routed_tools or not routed_tools)
+        and {str(_name) for _name in routed_tools} <= SYSTEM_TOOL_NAMES
     )
     _query_word_count = len(redacted.split()) if redacted else 0
     _skip_planner = (
@@ -1480,7 +1632,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         action_plan, _full_catalog_names
     )
     allowed_tools = list(routed_tools)
-    _selection_source = strategy.value
+    _selection_source = "small-talk" if _skip_router_for_smalltalk else strategy.value
     if action_plan and not _plan_under_specified:
         for _plan_name in tool_names_in_plan(action_plan, _full_catalog_names):
             if _plan_name not in allowed_tools:
@@ -2480,6 +2632,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     tool_name=tool_name,
                     raw_tool_result=result.reply_text,
                 )
+                # The digest is model-gated and skips some tools outright, so
+                # cap whatever comes out of it: nothing a tool returns may
+                # inflate the rest of the conversation without limit.
+                effective_result = _cap_tool_result(effective_result)
 
                 if use_text_tools:
                     # Plan-aware remainder nudge. When a pre-loop plan exists,

@@ -56,11 +56,19 @@ the recogniser runs, so ambient noise costs neither a transcription nor a
   bar while a VAD blip on noise cannot. An utterance that instead reached
   `max_utterance_ms` is bounded continuous audio, never a padded blip, and is
   transcribed without this test.
-- With `noise_gate_enabled`, speech must also stand `noise_gate_margin` above the
+- With `noise_gate_enabled`, speech must clear `noise_gate_min_rms` (an absolute
+  floor, so near-silence cannot pass merely because the room's own floor is
+  ~0), and must also stand `noise_gate_margin` above the
   room's own noise floor. The floor is a low percentile of a 30-second ambient
   level history, so a television or background conversation raises the bar
-  instead of needing a hand-tuned energy threshold. The gate is inert until that
-  history fills, which leaves it quiet during the first seconds after start-up.
+  instead of needing a hand-tuned energy threshold. Only this relative test is
+  inert until that history fills: the absolute floor does not depend on knowing
+  anything about the room, so it alone applies during the first seconds after
+  start-up.
+- A floor that cannot be a voice level - non-finite, or at or above half of full
+  scale - is replaced by the default instead of being trusted. A gate that
+  silently becomes deaf is worse than one that falls back, and a config object
+  that is not a `Settings` (a test double, say) floatifies to exactly 1.0.
 
 Rejected utterances are discarded with a `discarded utterance:` debug record and
 never enter the transcription queue.
@@ -189,6 +197,8 @@ The intent judge receives full context and makes intelligent decisions:
 
 **Gating:** The judge is called only when there is an engagement signal — (a) a wake word was detected in the current utterance, (b) the utterance falls inside (or pending) a hot window, or (c) TTS is currently speaking. Pure ambient speech skips the judge entirely. This keeps the synchronous audio loop from blocking up to `intent_judge_timeout_sec` on every background utterance, which would otherwise freeze the UI when Ollama is slow or contended.
 
+**Opt-in skip on the wake word (`intent_judge_skip_on_wake_word`, default `False`):** the judge is the largest avoidable cost on a wake-word turn, measured at about 3.2 s at p50 on this machine, and when the utterance itself contains the wake word its query is already unambiguous. With the key on and a wake word present, the judge is not called and the utterance takes the deterministic wake-word path instead, which strips the wake word with `extract_query_after_wake`. The key does not apply while TTS is speaking, because the judge is what catches a stop command spoken over playback, and it cannot apply without a wake word to key off, so a hot-window follow-up still goes through the judge. The cost of enabling it is the judge's `directed: false` refusal of speech that merely mentions the name, which is why it is off by default.
+
 **Alias normalisation:** Before the transcript is sent to the judge, every configured wake-word alias in each segment is replaced with the primary assistant name (case-insensitive, word-boundary-aware). Aliases are known mishearings of the wake word (e.g. "Jervis", "Jaivis" for "Claire"); without this step the small judge model sees the alias, doesn't know it refers to the assistant, and can decide the user is addressing a different person. Normalisation happens at prompt-build time only — the raw transcript buffer is untouched.
 
 **Wake-word removal in the extracted query:** When the assistant is addressed, its wake word is not part of the query content. The judge prompt explicitly instructs removing every occurrence of the wake word from the extracted `query` — at the start, end, or middle of the sentence, including when it sits next to a named entity (e.g. "movie called Possessor Claire" → film is "Possessor", not "Possessor Claire"). The only exception is when the user is literally talking *about* the assistant as a subject ("tell me about Claire"). This is enforced by prompt rule + example rather than post-hoc string stripping, because the LLM already understands the semantic distinction and can handle cases a regex would mishandle (e.g. proper names that contain the wake word, like "Claire Cocker").
@@ -255,19 +265,24 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Acoustic tail guard:** audio captured during TTS, or starting inside
 `POST_TTS_TAIL_GUARD_SECONDS` (0.6 s) after TTS ends, is rejected **unless the
-wake word is genuinely present** (`listener.py:880-919`, constants at
-`listener.py:47-67`). The gate uses the acoustic `captured_during_tts` signal,
+wake word is genuinely present** (`listener.py:955-994`, constants at
+`listener.py:48-62`). The gate uses the acoustic `captured_during_tts` signal,
 not recogniser text — text similarity alone (`partial_ratio >= 70`) can never
 catch a mis-transcribed echo. A verified wake word resets the chain
-(`listener.py:738-743`, reusing `is_wake_word_detected`).
+(`listener.py:840-844`, reusing `is_wake_word_detected`).
 
-**Follow-up renewal cap:** at most `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
-hot-window follow-up per explicit wake word (`state_manager.py:394-408`). A
-second consecutive follow-up without "Claire" is refused
-(`Follow-up window closed — say "Claire" to continue`), an audio-independent
-loop-breaker so even a missed echo cannot cause an unbounded loop.
+**Follow-up renewal cap:** at most `hot_window_max_follow_ups` consecutive
+hot-window follow-ups per explicit wake word (default `3`, `0` means
+unlimited; enforced at `state_manager.py:394-408`, where the value arrives as
+`hot_window_turn_limit`). Past the cap, the next follow-up without "Claire"
+is refused (`Follow-up window closed — say "Claire" to continue`), an
+audio-independent loop-breaker so even a missed echo cannot cause an
+unbounded loop. The module constant `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
+remains the listener's getattr fallback for a config that predates the key;
+it is not the configured value.
 
-**Duration:** Configurable (default: 3 seconds)
+**Duration:** `hot_window_seconds`, default 3 seconds, clamped on load to
+`[1.0, 30.0]` (the range the settings UI declares)
 
 **Timer ownership:** Activation and expiry callbacks belong to the current
 scheduled window. Cancelled or superseded callbacks cannot clear a newer
@@ -279,6 +294,10 @@ hot-window admission; manual expiry also cancels pending activation.
 
 
 **Behaviour:** Speech first passes through an early fuzzy echo check (rapidfuzz `partial_ratio`, threshold 70, with word-count guard to avoid catching mixed echo+speech). Pure echo is silently rejected **without calling the intent judge** — this keeps echo rejection instant and prevents it from blocking the audio loop. The hot window timer is **not** reset on echo rejection. Non-echo speech is sent to the intent judge, but if the judge rejects it, the rejection is overridden — all non-echo speech in the hot window is accepted as a follow-up query.
+
+**Strict exception (`hot_window_require_directed`, default `False`):** when set to `True`, the not-directed override above accepts only an utterance the judge marked `directed`, or one carrying a genuine wake word, so background television cannot drive a turn. The early pure-echo reject (which runs without calling the judge and never resets the window timer), the mixed echo+speech handling and the acoustic tail guard are unaffected, and the wake-word path always wins. The default `False` keeps the permissive behaviour documented above; the key is opt-in so that default does not change silently.
+
+**Fast band inside strict mode (`hot_window_grace_seconds`, default `0.0`):** a follow-up that arrives within this many seconds of Claire finishing is accepted **without calling the intent judge at all**, because the turn immediately after she stops speaking is the one a human reply is most likely on and the judge is the most expensive stage of it (~3 s at p50). Past the band, strict mode applies exactly as above, so background television is still gated; the band is clamped to the window itself. `0.0` — the default — judges every follow-up, so enabling strict mode keeps the guarantee it advertises unless the user also asks for the trade. Only a real config value arms the band: the duration must be an `int`/`float` and not a bool, because `float(MagicMock())` is `1.0` and a mock config would otherwise arm it by accident. The band reuses the early pure-echo check before accepting, so a follow-up arriving while Claire's own voice is still in the buffer is still rejected.
 
 **Mixed echo+speech handling:** When the recogniser merges TTS echo and user speech into one chunk (e.g. mic picks up TTS then user speaks), the word-count guard detects the extra content and lets it through to the intent judge. The judge extracts the user's actual query from the mixed transcript. Post-judge echo checks also use the word-count guard and verify the judge's extracted query isn't itself echo before rejecting.
 
@@ -420,6 +439,35 @@ If the intent judge later rejects the query (and no hot window override applies)
 
 **Face state is not set during TTS** — the beep is suppressed while TTS is playing to avoid self-triggering.
 
+## Spoken Acknowledgement
+
+The beep and the THINKING face are not answers. The reply engine can take
+seconds, and until it returns Claire says nothing at all, so a request that was
+heard perfectly still feels ignored. `_dispatch_query` therefore speaks one
+short phrase the moment the turn is dispatched — before taking the query lock
+and before `run_reply_engine` — and the reply is queued behind it.
+
+- **Rotation.** `ack_phrases` is cycled in order (`_ack_index`), so consecutive
+  requests do not all open with the same words. Defaults live in
+  `config.DEFAULT_ACK_PHRASES` ("On it.", "Okay.", "Right away.", "Let me look.").
+- **Opt-out.** `ack_enabled: false` restores the silent behaviour exactly.
+- **Skipped, never queued, while she is already speaking.** That means the
+  person talked over a reply; an acknowledgement arriving after the thing it
+  acknowledges is worse than silence. The reply path is unaffected, so a
+  barged-in request is still answered.
+- **The thinking tune stops first.** Tune and voice must not overlap, and the
+  ack replaces the tune as the "I heard you" signal. The tune is not restarted
+  afterwards: it would collide with the reply audio.
+- **The echo detector is told about it** (`track_tts_start(phrase)`), so the
+  phrase is not mistaken for a new utterance in the room.
+- **The ack is not the reply's completion path.** The callbacks that free the
+  hot window belong to the reply utterance (`_SpeechItem`), not to the engine,
+  so a second utterance in flight cannot steal them.
+- **Superseded turns.** The ack is spoken before the reply engine runs, so a
+  turn superseded *during* generation has already said "on it" and keeps its
+  reply suppressed by the normal staleness guard — she was working on it, and
+  the stale answer is still discarded.
+
 ## Low-Confidence Rejection Events
 
 `VoiceListener` accepts an optional keyword-only `on_low_confidence` callback.
@@ -468,7 +516,10 @@ pending feedback.
   "intent_judge_timeout_sec": 6.0,
 
   "hot_window_seconds": 3.0,
-  "echo_tolerance": 0.3
+  "echo_tolerance": 0.3,
+
+  "ack_enabled": true,
+  "ack_phrases": ["On it.", "Okay.", "Right away.", "Let me look."]
 }
 ```
 
@@ -477,6 +528,8 @@ pending feedback.
 | `transcript_buffer_duration_sec` | 120 | Duration (seconds) for rolling ambient speech transcript. Provides conversation context so the intent judge can synthesise a complete query when someone involves Claire. Separate from dialogue memory. |
 | `whisper_min_confidence` (opt-in Whisper path) | 0.3 | Minimum `avg_logprob`-derived confidence score for a transcribed segment. Segments below this are discarded before the intent judge sees them. |
 | `whisper_no_speech_threshold` (opt-in Whisper path) | 0.5 | Hard cutoff on Whisper's `no_speech_prob` field. Any segment at or above this value is discarded **regardless of `avg_logprob`** — Whisper can be confident about a hallucinated phrase even when no real speech is present (e.g. the "MBC 뉴스" hallucination on background noise). This filter runs before the `avg_logprob` check so it catches high-confidence hallucinations that would otherwise survive. Applies to both the faster-whisper and MLX backends. |
+| `ack_enabled` | true | Speak a short "on it" as soon as a voice turn is dispatched, before the reply engine runs. |
+| `ack_phrases` | `["On it.", "Okay.", "Right away.", "Let me look."]` | Phrases rotated in order for the spoken acknowledgement; an empty list falls back to the defaults. |
 
 Note: Intent judge is always used when available (no enable flag). Falls back to simple wake word detection when Ollama is unavailable.
 
@@ -549,7 +602,9 @@ On the opt-in Whisper path, model loading handles transient download failures au
 
 ### Download and loading visibility
 
-LLM startup messages report warmup probe results, not role readiness. Chat, judge and router roles sharing one model share one reported probe; the configured intent deadline is displayed separately, with an explicit notice that the full intent request was not tested. Embeddings always use their own embedding-endpoint probe, even when configured with the same model name. Failure directs users to model availability/settings rather than promising success on first use.
+LLM startup messages report warmup probe results, not role readiness. Chat, judge and router roles sharing one model share one reported probe; the configured intent deadline is displayed separately, with an explicit notice that the full intent request was not tested. Embeddings always use their own embedding-endpoint probe, even when configured with the same model name, and never promise success on first use.
+
+A failed embedding probe prints the runtime's own reason on the same line - `⚠️ Embedding probe failed: 'nomic-embed-text' - HTTP 404: model "nomic-embed-text" not found, try pulling it first` - followed by the consequence, `ℹ️ Memory search falls back to keyword ranking until this works.` The reason comes from `embed_with_reason()`; the earlier generic "check model availability and embedding settings" was actively misleading, because the three failures seen in practice need different actions (pull the model, choose a provider that embeds, pay for credits). A backend that cannot explain itself contributes no reason rather than an invented one. The probe allows `COLD_EMBED_PROBE_TIMEOUT_SECONDS` (30 s) for a model that is not resident yet: the first call pages it in from disk and can take tens of seconds, while warm calls take ~20 ms, and the probe runs in a background thread at startup where nothing waits on it.
 
 MLX Whisper prepares files through Hugging Face's snapshot cache before loading the model. The desktop displays the Hub's native per-file byte progress rather than an outer file-count bar. Existing caching, authentication, offline cache fallback and transfer resume remain owned by the Hub. The resulting local path is used for both warmup and subsequent transcription so the in-memory MLX model is reused.
 

@@ -70,6 +70,8 @@ from claire.utils.redact import scrub_secrets
 __all__ = [
     # constants
     "ACTION_LOG_ENV_VAR",
+    "BIND_HOST_ENV_VAR",
+    "BIND_PORT_ENV_VAR",
     "DEFAULT_BIND_HOST",
     "DEFAULT_PORT",
     "FORBIDDEN_KEY_FIELDS",
@@ -257,6 +259,15 @@ MEMORY_WRITE_MAX_CHARS = 32 * 1024
 #: Where Claire appends one JSON object per completed action.
 ACTION_LOG_ENV_VAR = "CLAIRE_ACTION_LOG"
 DEFAULT_ACTION_LOG = "~/.config/claire/actions.jsonl"
+
+#: Bind overrides, read as the defaults for ``--host``/``--port``.
+#:
+#: They exist so the *unit* can be configured without a command line: a systemd
+#: service cannot append flags conditionally, and claire.env (which the units
+#: read through EnvironmentFile) can only carry environment, not arguments.
+#: start.sh reads the same two variables, so both paths agree on one source.
+BIND_HOST_ENV_VAR = "CLAIRE_PANEL_HOST"
+BIND_PORT_ENV_VAR = "CLAIRE_PANEL_PORT"
 
 HTML_CONTENT_TYPE = "text/html; charset=utf-8"
 TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
@@ -1071,8 +1082,14 @@ def check_write_origin(
 
     A browser always sends ``Origin`` on a cross-origin form POST, so a page the
     owner is merely *visiting* cannot make their browser change Claire's
-    configuration: that page's Origin is its own, not loopback.  A missing
-    ``Origin`` is refused too — silence is not a same-origin proof.  Returns the
+    configuration: that page's Origin is its own, not loopback.
+
+    A **missing or opaque** (``Origin: null``) origin proves nothing on its own —
+    a cross-site attacker produces exactly the same value — so it is accepted
+    only when ``Sec-Fetch-Site: same-origin`` accompanies it, which a foreign
+    page cannot forge because the browser sets that header from the request's
+    real initiator.  Without it, silence is refused rather than trusted; see the
+    branch below for why the opaque case has to be supported at all.  Returns the
     validated origin (useful for a log line) or raises :class:`PanelOriginError`.
 
     ``route`` names the endpoint in every refusal.  It is a parameter because the
@@ -4123,14 +4140,33 @@ def serve(
         server.server_close()
 
 
+def _port_number(value: str) -> int:
+    """argparse type for ``--port``, so a bad ${CLAIRE_PANEL_PORT} is one line."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a port number")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI: ``python -m claire.panel.server [--host H] [--port N]``."""
     parser = argparse.ArgumentParser(
         prog="python -m claire.panel.server",
         description="Claire's local web panel - loopback only, server-rendered, no key values.",
     )
-    parser.add_argument("--host", default=DEFAULT_BIND_HOST, help="bind host (default 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="bind port (default 8765)")
+    # A string default is parsed through `type`, so an override in the
+    # environment is validated exactly like a flag and reported the same way.
+    parser.add_argument(
+        "--host",
+        default=os.environ.get(BIND_HOST_ENV_VAR) or DEFAULT_BIND_HOST,
+        help=f"bind host (default {DEFAULT_BIND_HOST}, or ${BIND_HOST_ENV_VAR})",
+    )
+    parser.add_argument(
+        "--port",
+        type=_port_number,
+        default=os.environ.get(BIND_PORT_ENV_VAR) or DEFAULT_PORT,
+        help=f"bind port (default {DEFAULT_PORT}, or ${BIND_PORT_ENV_VAR})",
+    )
     parser.add_argument(
         "--allow-remote-binding",
         action="store_true",

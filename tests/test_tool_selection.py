@@ -522,6 +522,62 @@ class TestLLMStrategy:
         assert "nonExistentTool" not in result
 
     @pytest.mark.unit
+    def test_system_tools_do_not_consume_real_tool_slots(self):
+        """The router routinely names the two system tools (`stop` sentinel,
+        `toolSearchTool` escape hatch) alongside its real picks. They steer
+        the agent loop rather than do the user's work, so they must not eat
+        into the `_LLM_MAX_SELECTED` real-tool budget: two system tools plus
+        five real tools keeps all five real ones, and a router that names
+        MORE real tools than the cap still gets exactly `_LLM_MAX_SELECTED`
+        of them — with both system tools retained either way."""
+        from claire.tools.selection import SYSTEM_TOOL_NAMES, _LLM_MAX_SELECTED
+
+        assert SYSTEM_TOOL_NAMES == {"stop", "toolSearchTool"}
+
+        tools = _builtin()
+        tools["toolSearchTool"] = FakeTool(
+            "toolSearchTool", "Search for tools outside the current list."
+        )
+        names = [f"widget{i}" for i in range(_LLM_MAX_SELECTED + 2)]  # 7 real
+        for name in names:
+            tools[name] = FakeTool(name, f"Run {name}.")
+
+        def _real(result):
+            return [t for t in result if t not in SYSTEM_TOOL_NAMES]
+
+        # 2 system + exactly 5 real → all five real tools survive.
+        backend = _llm_backend(
+            return_value="stop, toolSearchTool, " + ", ".join(names[:5])
+        )
+        result = select_tools(
+            "run the widgets",
+            tools, {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+        )
+        for name in names[:5]:
+            assert name in result, f"{name} crowded out: {result}"
+        for name in SYSTEM_TOOL_NAMES:
+            assert name in result, f"system tool {name} missing: {result}"
+        assert len(_real(result)) == _LLM_MAX_SELECTED, _real(result)
+
+        # 2 system + 7 real → cap still trims the REAL tools to five.
+        backend = _llm_backend(
+            return_value="stop, toolSearchTool, " + ", ".join(names)
+        )
+        result = select_tools(
+            "run the widgets",
+            tools, {},
+            strategy=ToolSelectionStrategy.LLM,
+            llm_backend=backend,
+            llm_model="test",
+        )
+        assert len(_real(result)) == _LLM_MAX_SELECTED, _real(result)
+        for name in SYSTEM_TOOL_NAMES:
+            assert name in result, f"system tool {name} missing: {result}"
+
+    @pytest.mark.unit
     def test_context_hint_splits_into_known_facts_and_recent_dialogue(self):
         """When the hint carries a 'Recent dialogue' subsection, the router
         prompt must surface facts and dialogue under separate labels so the

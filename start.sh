@@ -21,6 +21,11 @@
 #   * the web panel     `python -m claire.panel.server`, a standalone stdlib
 #                       server.  Nothing else starts it, so this script does.
 #                       Skip it with --no-panel.
+#   * the tray app      `python -m desktop_app`, a PyQt6 tray icon and the
+#                       low-poly on-screen face.  It needs a desktop session,
+#                       so it is the one component that is never started at
+#                       boot; `--install-service` wires it to the session.
+#                       Skip it with --no-desktop.
 #
 # Nothing machine-specific is written into this file.  Every path is derived from
 # where the script actually lives, and every default is read from the project's
@@ -33,7 +38,13 @@
 #   CLAIRE_STATE_DIR      pid/log directory           (default: $XDG_STATE_HOME/claire, else ~/.local/state/claire)
 #   CLAIRE_LOG_DIR        log directory               (default: <state dir>/logs)
 #   CLAIRE_SERVICE_NAME   systemd user unit name      (default: claire)
+#   CLAIRE_PANEL_SERVICE_NAME    panel unit name      (default: claire-panel)
+#   CLAIRE_DESKTOP_SERVICE_NAME  tray unit name       (default: claire-desktop)
 #   CLAIRE_DAEMON_MODE    auto | systemd | direct     (default: auto)
+#   CLAIRE_PANEL_MODE     auto | systemd | direct     (default: auto)
+#   CLAIRE_DESKTOP_MODE   auto | systemd | direct     (default: auto)
+#   CLAIRE_USER_UNIT_DIR  where units are installed   (default: ~/.config/systemd/user)
+#   CLAIRE_AUTOSTART_DIR  where the session trigger goes (default: ~/.config/autostart)
 #   CLAIRE_PANEL_HOST     panel bind host             (default: the panel's own DEFAULT_BIND_HOST)
 #   CLAIRE_PANEL_PORT     panel bind port             (default: the panel's own DEFAULT_PORT)
 #   CLAIRE_PREFLIGHT_TIMEOUT  seconds the LLM probe may take (default: 10)
@@ -65,10 +76,15 @@ REPO_ROOT="$(cd -P -- "$(dirname -- "$__self")" && pwd)"
 # Defaults and overrides - all derived, none hardcoded to this machine.
 # --------------------------------------------------------------------------- #
 SERVICE_NAME="${CLAIRE_SERVICE_NAME:-claire}"
+PANEL_SERVICE_NAME="${CLAIRE_PANEL_SERVICE_NAME:-claire-panel}"
+DESKTOP_SERVICE_NAME="${CLAIRE_DESKTOP_SERVICE_NAME:-claire-desktop}"
 VENV_DIR="${CLAIRE_VENV:-$REPO_ROOT/.venv}"
 VENV_PY="$VENV_DIR/bin/python"
 REQUIREMENTS="$REPO_ROOT/requirements.txt"
 UNIT_TEMPLATE="$REPO_ROOT/deploy/claire.service"
+PANEL_UNIT_TEMPLATE="$REPO_ROOT/deploy/claire-panel.service"
+DESKTOP_UNIT_TEMPLATE="$REPO_ROOT/deploy/claire-desktop.service"
+DESKTOP_AUTOSTART_TEMPLATE="$REPO_ROOT/deploy/claire-desktop.desktop"
 
 : "${XDG_STATE_HOME:=$HOME/.local/state}"
 STATE_DIR="${CLAIRE_STATE_DIR:-$XDG_STATE_HOME/claire}"
@@ -76,10 +92,17 @@ LOG_DIR="${CLAIRE_LOG_DIR:-$STATE_DIR/logs}"
 RUN_DIR="$STATE_DIR/run"
 DAEMON_PID_FILE="$RUN_DIR/daemon.pid"
 PANEL_PID_FILE="$RUN_DIR/panel.pid"
+DESKTOP_PID_FILE="$RUN_DIR/desktop.pid"
+
+USER_UNIT_DIR="${CLAIRE_USER_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
+AUTOSTART_DIR="${CLAIRE_AUTOSTART_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/autostart}"
+DESKTOP_AUTOSTART_FILE="$AUTOSTART_DIR/claire-desktop.desktop"
 
 START_WAIT="${CLAIRE_START_WAIT:-60}"
 PREFLIGHT_TIMEOUT="${CLAIRE_PREFLIGHT_TIMEOUT:-10}"
 DAEMON_MODE="${CLAIRE_DAEMON_MODE:-auto}"
+PANEL_MODE="${CLAIRE_PANEL_MODE:-auto}"
+DESKTOP_MODE="${CLAIRE_DESKTOP_MODE:-auto}"
 FORCE_INSTALL="${CLAIRE_FORCE_INSTALL:-0}"
 
 EXIT_OK=0
@@ -127,8 +150,10 @@ pid_from_file() { # pidfile marker -> echoes the pid only when it is really ours
 }
 
 # TCP liveness without extra tooling: the project's interpreter is a dependency
-# this script has already verified by the time it is used.
+# this script needs anyway, and the probe is stdlib-only.  It resolves $PYBIN
+# itself so a caller that reached it without the preflight still works.
 port_open() { # host port
+    ensure_pybin
     "$PYBIN" - "$1" "$2" <<'PY' >/dev/null 2>&1
 import socket, sys
 host, port = sys.argv[1], int(sys.argv[2])
@@ -201,6 +226,15 @@ resolve_pybin() {
     local found
     found="$(find_python 2>/dev/null || true)"
     printf '%s' "${found:-python3}"
+}
+
+# Resolve the interpreter into *this* shell.  Everything that probes the machine
+# with a Python one-liner (port liveness above all) needs $PYBIN here and now,
+# because a command substitution runs in a subshell: a resolution that happens
+# inside `$( )` never reaches the caller.  Idempotent, and cheap after the first
+# call.
+ensure_pybin() {
+    [ -n "$PYBIN" ] || PYBIN="$(resolve_pybin)"
 }
 
 requirements_hash() {
@@ -294,15 +328,28 @@ systemd_usable() {
     systemctl --user list-units >/dev/null 2>&1
 }
 
-unit_installed() {
+unit_file_installed() { # NAME
     systemd_usable || return 1
-    systemctl --user list-unit-files "$SERVICE_NAME.service" 2>/dev/null \
-        | grep -q "^$SERVICE_NAME\.service"
+    systemctl --user list-unit-files "$1.service" 2>/dev/null \
+        | grep -q "^$1\.service"
 }
 
-systemd_active() {
-    systemd_usable && systemctl --user is-active --quiet "$SERVICE_NAME" 2>/dev/null
+unit_active() { # NAME
+    systemd_usable && systemctl --user is-active --quiet "$1" 2>/dev/null
 }
+
+unit_enabled() { # NAME
+    systemd_usable && systemctl --user is-enabled --quiet "$1" 2>/dev/null
+}
+
+# The three components are supervised the same way, so the helpers are written
+# once and named for the component they ask about.
+unit_installed() { unit_file_installed "$SERVICE_NAME"; }
+systemd_active() { unit_active "$SERVICE_NAME"; }
+panel_unit_installed() { unit_file_installed "$PANEL_SERVICE_NAME"; }
+panel_systemd_active() { unit_active "$PANEL_SERVICE_NAME"; }
+desktop_unit_installed() { unit_file_installed "$DESKTOP_SERVICE_NAME"; }
+desktop_systemd_active() { unit_active "$DESKTOP_SERVICE_NAME"; }
 
 daemon_pid() {
     if systemd_active; then
@@ -322,10 +369,60 @@ daemon_state() {
     fi
 }
 
-panel_pid() { pid_from_file "$PANEL_PID_FILE" "claire.panel.server"; }
+panel_pid() {
+    if panel_systemd_active; then
+        systemctl --user show "$PANEL_SERVICE_NAME" -p MainPID --value 2>/dev/null || true
+        return 0
+    fi
+    pid_from_file "$PANEL_PID_FILE" "claire.panel.server"
+}
+
+panel_state() {
+    if panel_systemd_active; then
+        printf 'systemd'
+    elif [ -n "$(pid_from_file "$PANEL_PID_FILE" "claire.panel.server")" ]; then
+        printf 'direct'
+    else
+        printf 'stopped'
+    fi
+}
+
+desktop_pid() {
+    if desktop_systemd_active; then
+        systemctl --user show "$DESKTOP_SERVICE_NAME" -p MainPID --value 2>/dev/null || true
+        return 0
+    fi
+    pid_from_file "$DESKTOP_PID_FILE" "desktop_app"
+}
+
+desktop_state() {
+    if desktop_systemd_active; then
+        printf 'systemd'
+    elif [ -n "$(pid_from_file "$DESKTOP_PID_FILE" "desktop_app")" ]; then
+        printf 'direct'
+    else
+        printf 'stopped'
+    fi
+}
+
+# The panel and the tray app can be supervised by systemd or run detached, in
+# the same auto|systemd|direct shape as the daemon: 'auto' prefers the shipped
+# unit when it is installed, because that is the path that survives a crash and
+# a reboot.
+resolve_mode() { # auto|systemd|direct installed?
+    local mode="$1" installed="$2"
+    if [ "$mode" = "auto" ]; then
+        if [ "$installed" = "1" ]; then printf 'systemd'; else printf 'direct'; fi
+        return 0
+    fi
+    printf '%s' "$mode"
+}
 
 # Defaults come from the panel's own source, never from a copy in this script.
 panel_default() { # ATTRIBUTE
+    # This always runs inside a command substitution, so resolve the interpreter
+    # in the subshell as well: the parent's $PYBIN is not guaranteed here.
+    ensure_pybin
     "$PYBIN" -c 'import sys; sys.path.insert(0, sys.argv[1]); import claire.panel.server as s; print(getattr(s, sys.argv[2]))' \
         "$REPO_ROOT/src" "$1" 2>/dev/null || true
 }
@@ -352,6 +449,11 @@ _spawn() { # pidfile logfile module-args...
         cd "$REPO_ROOT"
         export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
         export PYTHONUNBUFFERED=1
+        # Keep torch's inductor compile pool to one worker. Left unset, loading
+        # the NeMo Parakeet recogniser leaves an idle compile_worker process per
+        # CPU core alive for the life of the process (~4 GB on a 12-core box).
+        # The unit file sets this too; this covers a detached run.
+        export TORCHINDUCTOR_COMPILE_THREADS="${TORCHINDUCTOR_COMPILE_THREADS:-1}"
         rm -f "$pidfile"
         if command -v setsid >/dev/null 2>&1; then
             nohup setsid bash -c 'echo $$ > "$1"; shift; exec "$@"' _ "$pidfile" "$VENV_PY" "$@" \
@@ -430,7 +532,8 @@ start_daemon() {
 }
 
 start_panel() {
-    local host port pid
+    local host port pid mode installed=0
+    ensure_pybin
     host="$(panel_host)"
     port="$(panel_port)"
     if [ -z "$port" ]; then
@@ -439,15 +542,46 @@ start_panel() {
         return 1
     fi
 
+    panel_unit_installed && installed=1
+    mode="$(resolve_mode "$PANEL_MODE" "$installed")"
+
     pid="$(panel_pid)"
     if [ -n "$pid" ]; then
-        ok "Panel already running (pid $pid, http://$host:$port/) - left untouched"
+        ok "Panel already running ($(panel_state), pid $pid, http://$host:$port/) - left untouched"
         return 0
     fi
     if port_open "$host" "$port"; then
         warn "Something is already listening on $host:$port; not starting a second panel."
         info "If that is another panel, that is fine. Otherwise set CLAIRE_PANEL_PORT to a free port."
         return 0
+    fi
+
+    if [ "$mode" = "systemd" ] && [ "$installed" != "1" ]; then
+        warn "No systemd user unit named $PANEL_SERVICE_NAME.service is installed; running the panel directly instead."
+        info "Install the shipped units with:   ./$PROG --install-service"
+        mode="direct"
+    fi
+
+    if [ "$mode" = "systemd" ]; then
+        if ! guard_write; then
+            info "DRY-RUN: systemctl --user start $PANEL_SERVICE_NAME"
+            return 0
+        fi
+        say "🚀 Starting the web panel: systemctl --user start $PANEL_SERVICE_NAME"
+        if ! systemctl --user start "$PANEL_SERVICE_NAME"; then
+            bad "systemctl could not start $PANEL_SERVICE_NAME."
+            info "See why:   systemctl --user status $PANEL_SERVICE_NAME"
+            info "           journalctl --user -u $PANEL_SERVICE_NAME -n 50"
+            return 1
+        fi
+        if wait_for_port "$host" "$port" "$START_WAIT"; then
+            ok "Panel is serving http://$host:$port/ (pid $(panel_pid))"
+            return 0
+        fi
+        bad "The panel did not start listening on $host:$port within ${START_WAIT}s."
+        info "Last log lines:"
+        systemctl --user status "$PANEL_SERVICE_NAME" --no-pager -n 25 2>&1 | sed 's/^/      /' || true
+        return 1
     fi
 
     if ! guard_write; then
@@ -470,6 +604,77 @@ start_panel() {
     bad "The panel did not start listening on $host:$port within ${START_WAIT}s."
     info "Last log lines:"
     tail -n 25 "$LOG_DIR/panel.log" 2>/dev/null | sed 's/^/      /' || true
+    return 1
+}
+
+# The tray icon and the on-screen face. A GUI, so it is only ever started into
+# an existing session: see deploy/claire-desktop.service for why this one is
+# never enabled at boot the way the daemon and the panel are.
+start_desktop() {
+    local mode installed=0 pid
+    desktop_unit_installed && installed=1
+    mode="$(resolve_mode "$DESKTOP_MODE" "$installed")"
+
+    pid="$(desktop_pid)"
+    if [ -n "$pid" ]; then
+        ok "Tray app already running ($(desktop_state), pid $pid) - left untouched"
+        return 0
+    fi
+
+    if [ "$mode" = "systemd" ] && [ "$installed" != "1" ]; then
+        warn "No systemd user unit named $DESKTOP_SERVICE_NAME.service is installed; starting the tray app directly instead."
+        info "Install the shipped units with:   ./$PROG --install-service"
+        mode="direct"
+    fi
+
+    if [ "$mode" = "systemd" ]; then
+        if ! guard_write; then
+            info "DRY-RUN: systemctl --user start $DESKTOP_SERVICE_NAME"
+            return 0
+        fi
+        say "🚀 Starting the tray app: systemctl --user start $DESKTOP_SERVICE_NAME"
+        if ! systemctl --user start "$DESKTOP_SERVICE_NAME"; then
+            bad "systemctl could not start $DESKTOP_SERVICE_NAME."
+            info "A desktop session is required (DISPLAY and a system tray)."
+            info "See why:   systemctl --user status $DESKTOP_SERVICE_NAME"
+            info "           journalctl --user -u $DESKTOP_SERVICE_NAME -n 50"
+            return 1
+        fi
+        local deadline
+        deadline=$(($(date +%s) + START_WAIT))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if desktop_systemd_active; then
+                ok "Tray app active under systemd (pid $(desktop_pid))"
+                return 0
+            fi
+            sleep 0.5
+        done
+        bad "The tray app did not become active within ${START_WAIT}s."
+        info "Last log lines:"
+        systemctl --user status "$DESKTOP_SERVICE_NAME" --no-pager -n 25 2>&1 | sed 's/^/      /' || true
+        return 1
+    fi
+
+    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        warn "No DISPLAY or WAYLAND_DISPLAY here, so the tray app cannot open a window."
+        info "It starts with your desktop session; skip it with --no-desktop."
+        return 1
+    fi
+    if ! guard_write; then
+        info "DRY-RUN: PYTHONPATH=$REPO_ROOT/src setsid $VENV_PY -m desktop_app >> $LOG_DIR/desktop.log 2>&1"
+        return 0
+    fi
+    mkdir -p "$RUN_DIR" "$LOG_DIR"
+    say "🚀 Starting the tray app (logs: $LOG_DIR/desktop.log)"
+    _spawn "$DESKTOP_PID_FILE" "$LOG_DIR/desktop.log" -m desktop_app
+    pid="$(wait_for_pid_file "$DESKTOP_PID_FILE" 5 || true)"
+    if pid_alive "$pid"; then
+        ok "Tray app started (pid $pid)"
+        return 0
+    fi
+    bad "The tray app did not stay up."
+    info "Last log lines:"
+    tail -n 25 "$LOG_DIR/desktop.log" 2>/dev/null | sed 's/^/      /' || true
     return 1
 }
 
@@ -530,6 +735,52 @@ stop_daemon() {
         return 0
     fi
     stop_one "Daemon" "$DAEMON_PID_FILE" "claire"
+}
+
+# Stop a component that can be supervised either by systemd or detached. The
+# systemd check comes first and is by *observed state*, not by mode: a unit the
+# user started by hand must still be stopped by this script rather than left
+# running behind a "nothing to do" message.
+stop_component() { # label service-name active-fn pidfile marker direct-only-fn
+    local label="$1" unit="$2" is_active="$3" pidfile="$4" marker="$5" mode="$6"
+    if "$is_active"; then
+        if ! guard_write; then
+            info "DRY-RUN: systemctl --user stop $unit"
+            return 0
+        fi
+        say "🛑 Stopping $label: systemctl --user stop $unit"
+        systemctl --user stop "$unit" || true
+        if "$is_active"; then
+            bad "$unit is still active after stop."
+            info "Inspect: systemctl --user status $unit"
+            return 1
+        fi
+        ok "$label stopped (the unit stays enabled, so it returns on next login)"
+        return 0
+    fi
+    if [ "$mode" = "systemd" ]; then
+        info "No active $unit systemd unit"
+        return 0
+    fi
+    stop_one "$label" "$pidfile" "$marker"
+}
+
+stop_panel() {
+    if [ "$DO_PANEL" = "0" ]; then
+        info "Panel left alone (--no-panel)"
+        return 0
+    fi
+    stop_component "Panel" "$PANEL_SERVICE_NAME" panel_systemd_active \
+        "$PANEL_PID_FILE" "claire.panel.server" "$PANEL_MODE"
+}
+
+stop_desktop() {
+    if [ "$DO_DESKTOP" = "0" ]; then
+        info "Tray app left alone (--no-desktop)"
+        return 0
+    fi
+    stop_component "Tray app" "$DESKTOP_SERVICE_NAME" desktop_systemd_active \
+        "$DESKTOP_PID_FILE" "desktop_app" "$DESKTOP_MODE"
 }
 
 # --------------------------------------------------------------------------- #
@@ -647,9 +898,9 @@ command_check() {
 # Commands
 # --------------------------------------------------------------------------- #
 command_status() {
-    local dstate pid
+    local dstate pid state
     step "Claire status"
-    PYBIN="$(resolve_pybin)"
+    ensure_pybin
     dstate="$(daemon_state)"
 
     case "$dstate" in
@@ -658,13 +909,58 @@ command_status() {
         *)       warn "Daemon:     stopped" ;;
     esac
 
+    state="$(panel_state)"
     pid="$(panel_pid)"
-    if [ -n "$pid" ]; then
-        ok "Panel:      running (pid $pid, http://$(panel_host):$(panel_port)/)"
-    elif [ -n "$(panel_port)" ] && port_open "$(panel_host)" "$(panel_port)"; then
-        ok "Panel:      serving http://$(panel_host):$(panel_port)/ (not started by this script)"
+    case "$state" in
+        systemd) ok "Panel:      running under systemd ($PANEL_SERVICE_NAME.service, pid $pid, http://$(panel_host):$(panel_port)/)" ;;
+        direct)  ok "Panel:      running directly (pid $pid, http://$(panel_host):$(panel_port)/)" ;;
+        *)
+            if [ -n "$(panel_port)" ] && port_open "$(panel_host)" "$(panel_port)"; then
+                ok "Panel:      serving http://$(panel_host):$(panel_port)/ (not started by this script)"
+            else
+                warn "Panel:      stopped"
+            fi
+            ;;
+    esac
+
+    state="$(desktop_state)"
+    pid="$(desktop_pid)"
+    case "$state" in
+        systemd) ok "Tray app:   running under systemd ($DESKTOP_SERVICE_NAME.service, pid $pid)" ;;
+        direct)  ok "Tray app:   running directly (pid $pid)" ;;
+        *)       warn "Tray app:   stopped" ;;
+    esac
+
+    step "Startup wiring"
+    if unit_enabled "$SERVICE_NAME"; then
+        ok "Daemon:     starts at login ($SERVICE_NAME.service enabled)"
+    elif unit_file_installed "$SERVICE_NAME"; then
+        warn "Daemon:     installed but NOT enabled - run ./$PROG --install-service"
     else
-        warn "Panel:      stopped"
+        warn "Daemon:     no systemd unit installed - run ./$PROG --install-service"
+    fi
+    if unit_enabled "$PANEL_SERVICE_NAME"; then
+        ok "Panel:      starts at login ($PANEL_SERVICE_NAME.service enabled)"
+    elif unit_file_installed "$PANEL_SERVICE_NAME"; then
+        warn "Panel:      installed but NOT enabled - run ./$PROG --install-service"
+    else
+        warn "Panel:      no systemd unit installed - run ./$PROG --install-service"
+    fi
+    if [ -f "$DESKTOP_AUTOSTART_FILE" ]; then
+        if unit_file_installed "$DESKTOP_SERVICE_NAME"; then
+            local autostart_note="$(basename -- "$DESKTOP_AUTOSTART_FILE")"
+            if unit_enabled "$DESKTOP_SERVICE_NAME"; then
+                ok "Tray app:   starts with the desktop session ($autostart_note; $DESKTOP_SERVICE_NAME.service enabled)"
+            else
+                ok "Tray app:   starts with the desktop session ($autostart_note)"
+            fi
+        else
+            warn "Tray app:   autostart entry present but $DESKTOP_SERVICE_NAME.service is missing"
+        fi
+    elif unit_enabled "$DESKTOP_SERVICE_NAME"; then
+        ok "Tray app:   starts with graphical-session.target ($DESKTOP_SERVICE_NAME.service enabled)"
+    else
+        warn "Tray app:   not wired into the session - run ./$PROG --install-service"
     fi
 
     if [ -x "$VENV_PY" ]; then
@@ -679,7 +975,7 @@ command_status() {
 command_start() {
     step "Claire startup"
 
-    PYBIN="$(resolve_pybin)"
+    ensure_pybin
 
     hard_checks || true
     if [ "$PREFLIGHT_FAILED" = "1" ]; then
@@ -717,10 +1013,15 @@ command_start() {
     else
         info "Panel skipped (--no-panel)"
     fi
+    if [ "$DO_DESKTOP" = "1" ]; then
+        start_desktop || rc="$EXIT_STARTUP"
+    else
+        info "Tray app skipped (--no-desktop)"
+    fi
 
     step "Result"
     if [ "$rc" = "0" ]; then
-        ok "Claire is up.  Daemon: $(daemon_state)."
+        ok "Claire is up.  Daemon: $(daemon_state).  Tray app: $(desktop_state)."
         info "Panel:      http://$(panel_host):$(panel_port)/"
         info "Logs:       $LOG_DIR"
         info "Stop her:   ./$PROG stop"
@@ -734,11 +1035,8 @@ command_start() {
 command_stop() {
     step "Claire shutdown"
     local rc=0
-    if [ "$DO_PANEL" = "1" ]; then
-        stop_one "Panel" "$PANEL_PID_FILE" "claire.panel.server" || rc=1
-    else
-        info "Panel left alone (--no-panel)"
-    fi
+    stop_desktop || rc=1
+    stop_panel || rc=1
     stop_daemon || rc=1
     step "Result"
     if [ "$rc" != "0" ]; then
@@ -756,76 +1054,125 @@ command_restart() {
     command_start
 }
 
-# The unit template with the checkout path substituted in.  Written in bash so
+# A shipped template with the checkout path substituted in.  Written in bash so
 # an '&', '/' or '\' in the checkout path stays literal (sed replacement text
 # does not treat '&' literally).
-render_unit() {
-    local line
+render_template() { # template
+    local template="$1" line
     while IFS= read -r line || [ -n "$line" ]; do
         printf '%s\n' "${line//@CLAIRE_REPO_ROOT@/$REPO_ROOT}"
-    done < "$UNIT_TEMPLATE"
+    done < "$template"
+}
+
+render_unit() { render_template "$UNIT_TEMPLATE"; }
+
+# Render one template onto its destination, staging first so a failure never
+# leaves a half-written unit behind.  Sets INSTALL_CHANGED when it wrote.
+install_rendered() { # template destination permissions label
+    local template="$1" dest="$2" perms="$3" label="$4" staged backup
+    if [ ! -f "$template" ]; then
+        bad "Template missing: $template"
+        return 1
+    fi
+    if ! grep -q '@CLAIRE_REPO_ROOT@' "$template"; then
+        bad "$template does not contain the @CLAIRE_REPO_ROOT@ placeholder."
+        info "Refusing to guess; restore it from the repository."
+        return 1
+    fi
+    mkdir -p "$(dirname -- "$dest")"
+    staged="$dest.new.$$"
+    if ! render_template "$template" > "$staged"; then
+        rm -f "$staged"
+        bad "Could not render $template."
+        return 1
+    fi
+    if [ -f "$dest" ] && cmp -s "$staged" "$dest"; then
+        rm -f "$staged"
+        ok "$label already up to date: $dest"
+        return 0
+    fi
+    if [ -f "$dest" ]; then
+        backup="$dest.bak.$(date +%Y%m%d%H%M%S)"
+        cp -p "$dest" "$backup"
+        warn "Existing $label backed up to $backup"
+    fi
+    chmod "$perms" "$staged"
+    mv -f "$staged" "$dest"
+    INSTALL_CHANGED=1
+    ok "Wrote $dest"
+    return 0
 }
 
 command_install_service() {
     step "Installing the systemd user unit"
+    # No preflight ran on this path, so the interpreter is resolved here: the
+    # panel start below probes its port with $PYBIN (see ensure_pybin).
+    ensure_pybin
     if ! systemd_usable; then
         bad "No systemd user session here (systemctl --user does not work)."
         info "Run the daemon directly instead: ./$PROG --direct"
         return "$EXIT_PREFLIGHT"
     fi
-    if [ ! -f "$UNIT_TEMPLATE" ]; then
-        bad "Unit template missing: $UNIT_TEMPLATE"
-        return "$EXIT_PREFLIGHT"
-    fi
-    if ! grep -q '@CLAIRE_REPO_ROOT@' "$UNIT_TEMPLATE"; then
-        bad "$UNIT_TEMPLATE does not contain the @CLAIRE_REPO_ROOT@ placeholder."
-        info "Refusing to guess; restore it from the repository."
-        return "$EXIT_PREFLIGHT"
-    fi
-
-    local unit_dir target staged changed=0
-    unit_dir="${CLAIRE_USER_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
-    target="$unit_dir/$SERVICE_NAME.service"
+    local template
+    for template in "$UNIT_TEMPLATE" "$PANEL_UNIT_TEMPLATE" \
+                    "$DESKTOP_UNIT_TEMPLATE" "$DESKTOP_AUTOSTART_TEMPLATE"; do
+        if [ ! -f "$template" ]; then
+            bad "Template missing: $template"
+            return "$EXIT_PREFLIGHT"
+        fi
+    done
 
     if ! guard_write; then
-        info "DRY-RUN: render $UNIT_TEMPLATE -> $target (repo root: $REPO_ROOT)"
+        info "DRY-RUN: render the daemon, panel and tray units into $USER_UNIT_DIR"
+        info "DRY-RUN: render the tray autostart entry into $AUTOSTART_DIR"
         info "DRY-RUN: systemctl --user daemon-reload"
+        info "DRY-RUN: systemctl --user enable $SERVICE_NAME $PANEL_SERVICE_NAME $DESKTOP_SERVICE_NAME"
         return 0
     fi
 
-    mkdir -p "$unit_dir"
-    staged="$target.new.$$"
-    # Rendering in the shell (not sed) keeps a '&' or '/' in the checkout path
-    # literal, which sed's replacement text does not.
-    if ! render_unit > "$staged"; then
-        rm -f "$staged"
-        bad "Could not render $UNIT_TEMPLATE."
-        return "$EXIT_PREFLIGHT"
-    fi
-
-    if [ -f "$target" ] && cmp -s "$staged" "$target"; then
-        rm -f "$staged"
-        ok "Unit already up to date: $target"
-    else
-        if [ -f "$target" ]; then
-            local backup="$target.bak.$(date +%Y%m%d%H%M%S)"
-            cp -p "$target" "$backup"
-            warn "Existing unit backed up to $backup"
-        fi
-        chmod 644 "$staged"
-        mv -f "$staged" "$target"
-        changed=1
-        ok "Wrote $target"
-    fi
+    INSTALL_CHANGED=0
+    install_rendered "$UNIT_TEMPLATE" "$USER_UNIT_DIR/$SERVICE_NAME.service" \
+        644 "daemon unit" || return "$EXIT_PREFLIGHT"
+    install_rendered "$PANEL_UNIT_TEMPLATE" "$USER_UNIT_DIR/$PANEL_SERVICE_NAME.service" \
+        644 "panel unit" || return "$EXIT_PREFLIGHT"
+    install_rendered "$DESKTOP_UNIT_TEMPLATE" "$USER_UNIT_DIR/$DESKTOP_SERVICE_NAME.service" \
+        644 "tray unit" || return "$EXIT_PREFLIGHT"
+    install_rendered "$DESKTOP_AUTOSTART_TEMPLATE" "$DESKTOP_AUTOSTART_FILE" \
+        644 "tray autostart entry" || return "$EXIT_PREFLIGHT"
 
     systemctl --user daemon-reload || true
     ok "systemd reloaded"
-    if [ "$changed" = "1" ] && systemd_active; then
+    if [ "$INSTALL_CHANGED" = "1" ] && systemd_active; then
         info "$SERVICE_NAME is running the previous unit; restart it when convenient:"
         info "   systemctl --user restart $SERVICE_NAME"
     fi
-    info "Enable at login and start now:   systemctl --user enable --now $SERVICE_NAME"
-    info "Logs:                            journalctl --user -u $SERVICE_NAME -f"
+
+    step "Enabling at startup"
+    local unit
+    for unit in "$SERVICE_NAME" "$PANEL_SERVICE_NAME" "$DESKTOP_SERVICE_NAME"; do
+        if systemctl --user enable "$unit" >/dev/null 2>&1; then
+            ok "$unit.service enabled"
+        else
+            warn "Could not enable $unit.service - do it by hand: systemctl --user enable $unit"
+        fi
+    done
+    info "Daemon and panel start at login (and at boot while linger is on)."
+    info "The tray app starts with the desktop session via $(basename -- "$DESKTOP_AUTOSTART_FILE")."
+    info "On GNOME/KDE it is started by graphical-session.target instead; both are safe together."
+
+    step "Starting now"
+    if [ "$DO_DAEMON" = "1" ]; then
+        start_daemon || warn "The daemon is not up yet - see above."
+    fi
+    if [ "$DO_PANEL" = "1" ]; then
+        start_panel || warn "The panel is not up yet - see above."
+    fi
+    if [ "$DO_DESKTOP" = "1" ]; then
+        start_desktop || warn "The tray app is not up in this session; it starts with your next desktop login."
+    fi
+    info "Logs:   journalctl --user -u $SERVICE_NAME -f"
+    info "        journalctl --user -u $PANEL_SERVICE_NAME -f"
+    info "        journalctl --user -u $DESKTOP_SERVICE_NAME -f"
 }
 
 usage() {
@@ -844,21 +1191,25 @@ Commands:
 Options:
   --check              same as the 'check' command
   --dry-run, -n        print every action, execute none
+  --no-desktop         do not manage the tray icon / on-screen face
   --no-panel           do not manage the web panel
   --no-daemon          do not manage the daemon
   --systemd            force the daemon through the systemd user unit
   --direct             force the daemon as a detached process
   --strict             refuse to start unless the self-check is all green
   --force-install      pip install even while a Claire daemon is live
-  --install-service    render and install the systemd user unit for this checkout
+  --install-service    install the startup wiring for this checkout: the
+                       daemon, panel and tray units plus the tray's autostart
+                       entry, all enabled
   -h, --help           this text
 
 Everything machine-specific is resolved at runtime: the repo root from this
 script's own location, the venv from the repo, the panel's host and port from
-the panel's source, and the daemon's mode from what is actually installed.
+the panel's source, and each component's mode from what is actually installed.
 See the header of this file for the environment overrides.
 
-  start            daemon + web panel (the daemon starts the phone bridge itself)
+  start            daemon + web panel + tray app (the daemon starts the phone
+                   bridge itself)
   stop / restart    clean shutdown, no stray processes
 EOF
 }
@@ -870,6 +1221,7 @@ COMMAND=""
 DRY_RUN=0
 DO_DAEMON=1
 DO_PANEL=1
+DO_DESKTOP=1
 STRICT=0
 INSTALL_SERVICE=0
 
@@ -880,6 +1232,7 @@ while [ "$#" -gt 0 ]; do
         --dry-run|-n) DRY_RUN=1 ;;
         --no-panel) DO_PANEL=0 ;;
         --no-daemon) DO_DAEMON=0 ;;
+        --no-desktop) DO_DESKTOP=0 ;;
         --systemd) DAEMON_MODE="systemd" ;;
         --direct) DAEMON_MODE="direct" ;;
         --strict) STRICT=1 ;;
@@ -897,6 +1250,16 @@ done
 case "$DAEMON_MODE" in
     auto|systemd|direct) ;;
     *) die "CLAIRE_DAEMON_MODE must be auto, systemd or direct (got '$DAEMON_MODE')." "$EXIT_USAGE" ;;
+esac
+
+case "$PANEL_MODE" in
+    auto|systemd|direct) ;;
+    *) die "CLAIRE_PANEL_MODE must be auto, systemd or direct (got '$PANEL_MODE')." "$EXIT_USAGE" ;;
+esac
+
+case "$DESKTOP_MODE" in
+    auto|systemd|direct) ;;
+    *) die "CLAIRE_DESKTOP_MODE must be auto, systemd or direct (got '$DESKTOP_MODE')." "$EXIT_USAGE" ;;
 esac
 
 case "$COMMAND" in

@@ -1,0 +1,82 @@
+# Claire - the desktop tray icon and the on-screen face, as a systemd USER unit.
+#
+# THIS FILE IS A TEMPLATE.  It contains @CLAIRE_REPO_ROOT@ where the checkout
+# lives. Install it with
+#
+#   ./start.sh --install-service
+#
+# which renders the placeholder, installs this unit AND the session trigger
+# described below. Do NOT copy it verbatim into ~/.config/systemd/user.
+#
+#   logs:     journalctl --user -u claire-desktop -f
+#   status:   systemctl --user status claire-desktop
+#   restart:  systemctl --user restart claire-desktop
+#
+# WHAT THIS IS: `python -m desktop_app` - a PyQt6 tray application that shows
+# the low-poly face, the log viewer and the memory viewer, and that reports
+# Claire's state (idle / listening / thinking / speaking) read from the state
+# files the daemon writes. It is the only part of Claire that is a GUI.
+#
+# WHY IT IS NOT `WantedBy=default.target` (the failure this file avoids)
+# ---------------------------------------------------------------------
+# This unit needs a display, a session bus and a system tray, so it must start
+# with the *session*, never with the user manager. `default.target` is reached
+# as soon as the user manager is up - and with `loginctl enable-linger`, that is
+# at boot, before anyone logs in. PyQt6 then aborts for want of a display; with
+# `Restart=on-failure` and `StartLimitBurst=5` the retries burn through the
+# burst window in well under a minute, systemd gives up, and the app is left
+# permanently failed by the time you actually log in. Enabling it that way is
+# worse than not enabling it at all, because it *looks* installed.
+#
+# WHY THE SESSION TRIGGER IS A SEPARATE FILE
+# ------------------------------------------
+# GNOME and KDE activate `graphical-session.target`, so `WantedBy=graphical-session.target`
+# below starts and stops the tray with the session there, and enabling this unit
+# is enough on its own.
+#
+# Not every desktop does. On this project's reference machine (Cinnamon/Muffin)
+# `systemctl --user is-active graphical-session.target` reports `inactive` and
+# the only active targets are basic/default/paths/sockets/timers - so an
+# `After=`/`WantedBy=graphical-session.target` ordering is inert and this unit
+# would simply never start by itself. For those desktops
+# `deploy/claire-desktop.desktop` is installed into ~/.config/autostart and asks
+# systemd to start this unit once the desktop session is genuinely up. Both
+# mechanisms are left in place on purpose: they are harmless together (starting
+# an already-active unit is a no-op) and each covers the desktops the other
+# cannot.
+#
+# The application takes a single-instance lock, so a manual launch, the
+# autostart entry and the session target cannot produce two trays.
+
+[Unit]
+Description=Claire - desktop tray icon and on-screen face
+Documentation=file://@CLAIRE_REPO_ROOT@/src/desktop_app/desktop_app.spec.md
+PartOf=graphical-session.target
+After=graphical-session.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@CLAIRE_REPO_ROOT@
+Environment=PYTHONPATH=@CLAIRE_REPO_ROOT@/src
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/claire/claire.env
+ExecStart=@CLAIRE_REPO_ROOT@/.venv/bin/python -m desktop_app
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claire-desktop
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# %h/.claire is where the app keeps its log and (in app.py) the single-instance
+# lock.  Without write access there, ProtectHome makes the lock fail with EROFS
+# and the app silently falls back to a private temp directory - which is both a
+# lost log and a lost single-instance guarantee, so it is listed explicitly.
+ReadWritePaths=%h/.claire %h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.local/state/claire
+
+[Install]
+WantedBy=graphical-session.target

@@ -63,6 +63,17 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Spoken the moment a voice request is understood, so Claire answers back
+# before the reply engine has finished thinking. Kept short on purpose: it is
+# spoken *instead of* silence, not instead of the answer, and the reply follows
+# as soon as it is ready. Rotated in order so she does not sound like a recording.
+DEFAULT_ACK_PHRASES = [
+    "On it.",
+    "Okay.",
+    "Right away.",
+    "Let me look.",
+]
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -227,11 +238,36 @@ class Settings:
     # gate keeps working with a television or conversation in the background.
     noise_gate_enabled: bool
     noise_gate_margin: float
+    # Absolute level floor for the speech gate. The relative test above cannot
+    # catch a room whose own noise floor is near zero: dither then clears
+    # `floor * margin` trivially, and a recogniser fed near-silence answers with
+    # its priors ("Yeah.", "Okay.", "Uh."). 0.0 disables the test.
+    noise_gate_min_rms: float
 
     # UI/UX Features
     tune_enabled: bool
+    # Say a short "On it" the moment a voice request is understood, instead of
+    # staying silent until the full reply is ready (see listening.spec.md).
+    ack_enabled: bool
+    ack_phrases: list[str]
     hot_window_enabled: bool
     hot_window_seconds: float
+    # How many consecutive wake-word-free follow-ups a single wake word unlocks
+    # in one conversation. 0 means unlimited. The listener still falls back to
+    # MAX_CONSECUTIVE_HOT_WINDOW_TURNS when a config file predates this key.
+    hot_window_max_follow_ups: int
+    # Opt-in strictness: when True, an utterance inside the hot window must be
+    # judged directed at Claire to be accepted, so background television cannot
+    # drive a turn. False (the default) keeps the documented permissive
+    # behaviour: all non-echo speech counts as a follow-up.
+    hot_window_require_directed: bool
+    # Opt-in fast band at the very start of a hot window. A follow-up that
+    # arrives within this many seconds of Claire finishing is taken without
+    # the intent judge, so the most likely follow-up of all does not pay a
+    # ~3 s classification call. 0.0 (the default) judges every follow-up, so
+    # enabling strict mode keeps the guarantee it advertises. Clamped to the
+    # window itself.
+    hot_window_grace_seconds: float
     low_power_mode: bool
 
     # Echo Detection
@@ -247,6 +283,25 @@ class Settings:
     # ``claire.llm.resolve_model(cfg, Tier.FAST)``.
     fast_model: str
     intent_judge_timeout_sec: float
+    # Opt-in latency escape hatch: when True, an utterance that itself contains
+    # the wake word skips the intent-judge LLM call (~3 s at p50) and is taken
+    # straight to the deterministic wake-word acceptance path (which strips the
+    # wake word from the query). Trade-off: the judge's `directed: false`
+    # defence against speech that merely mentions the name ("Claire") goes with
+    # it. False (the default) preserves today's behaviour exactly: the judge
+    # still runs on every wake-word turn.
+    intent_judge_skip_on_wake_word: bool
+    #: Skip the tool router when the query is only social filler ("yeah",
+    #: "okay", "hello Claire", "what's up"). Measured 2026-10-13: 33 of the 39
+    #: router calls in a fortnight's journal selected no tools at all, and the
+    #: router is a ~1.3 s model call. The filter fails closed, so a query that
+    #: might name anything still reaches the router.
+    smalltalk_router_skip_enabled: bool
+    # Off by default: the coaching sentence was a second model call that took
+    # 16.6-18.0 s and returned empty content on two calls out of three
+    # (measured 2026-10-13, reasoning consuming its whole 1024-token budget).
+    # Turning it on buys the follow-up text back at that price.
+    nutrition_coaching_enabled: bool
 
     # Transcript Buffer - ambient speech context for intent judge
     transcript_buffer_duration_sec: float
@@ -693,11 +748,18 @@ def get_default_config() -> Dict[str, Any]:
         # room's background without demanding the speaker raise their voice.
         "noise_gate_enabled": True,
         "noise_gate_margin": 2.0,
+        # ~-54 dBFS: below this the input is the converter, not a voice.
+        "noise_gate_min_rms": 0.002,
 
         # UI/UX Features
         "tune_enabled": True,
+        "ack_enabled": True,
+        "ack_phrases": DEFAULT_ACK_PHRASES,
         "hot_window_enabled": True,
         "hot_window_seconds": 3.0,
+        "hot_window_max_follow_ups": 3,
+        "hot_window_require_directed": False,
+        "hot_window_grace_seconds": 0.0,
         "low_power_mode": False,
         "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
@@ -713,6 +775,13 @@ def get_default_config() -> Dict[str, Any]:
         "fast_model": "",
         "intent_judge_timeout_sec": 6.0,
         "intent_judge_thinking_enabled": False,  # Enable thinking for intent judge (adds latency to wake detection)
+        # Skip the intent judge on utterances that contain the wake word
+        # (saves ~3 s of latency per wake-word turn, but drops the judge's
+        # defence against being triggered by speech that merely mentions the
+        # assistant's name).
+        "intent_judge_skip_on_wake_word": False,
+        "smalltalk_router_skip_enabled": True,
+        "nutrition_coaching_enabled": False,
 
         # Transcript Buffer - used for both retention and context passed to intent judge
         # 120s (2 min) provides enough ambient speech context for intent judging
@@ -797,6 +866,32 @@ def runtime_env_file() -> Path:
     if xdg:
         return Path(xdg).expanduser() / "claire" / "claire.env"
     return Path.home() / ".config" / "claire" / "claire.env"
+
+
+#: What a boolean environment variable accepts, in either case. Anything else
+#: is treated as unset rather than guessed at: a typo must not silently flip a
+#: setting whose whole purpose is to be trusted while testing.
+_ENV_FLAG_TRUE = frozenset({"1", "true", "yes", "on"})
+_ENV_FLAG_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Return a boolean setting from ``name``, falling back to ``default``.
+
+    An explicit environment variable outranks the config file, matching
+    :func:`load_runtime_env` (the file never overrides the environment) and
+    every other env-backed setting here. An unset variable, an empty one or one
+    holding something unrecognised leaves the file's value alone.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if token in _ENV_FLAG_TRUE:
+        return True
+    if token in _ENV_FLAG_FALSE:
+        return False
+    return default
 
 
 def load_runtime_env() -> None:
@@ -1023,10 +1118,57 @@ def load_settings() -> Settings:
     min_speech_ms = float(merged.get("min_speech_ms", 250.0))
     noise_gate_enabled = bool(merged.get("noise_gate_enabled", True))
     noise_gate_margin = float(merged.get("noise_gate_margin", 2.0))
+    raw_min_rms = merged.get("noise_gate_min_rms", 0.002)
+    try:
+        # `float(True)` is 1.0, i.e. a floor at full scale: honoring a stray
+        # boolean here would leave the assistant permanently unable to hear
+        # anything, so a boolean falls back like any other value nobody meant.
+        if isinstance(raw_min_rms, bool):
+            raise TypeError("a level is not a boolean")
+        noise_gate_min_rms = float(raw_min_rms)
+    except (TypeError, ValueError):
+        noise_gate_min_rms = 0.002
+    if noise_gate_min_rms < 0.0:
+        noise_gate_min_rms = 0.0
     sample_rate = int(merged.get("sample_rate", 16000))
-    tune_enabled = bool(merged.get("tune_enabled", True))
+    tune_enabled = _env_flag(
+        "CLAIRE_TUNE_ENABLED", default=bool(merged.get("tune_enabled", True))
+    )
+    ack_enabled = bool(merged.get("ack_enabled", True))
+    ack_phrases = [p.strip() for p in (merged.get("ack_phrases") or [])
+                   if isinstance(p, str) and p.strip()] or list(DEFAULT_ACK_PHRASES)
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
-    hot_window_seconds = float(merged.get("hot_window_seconds", 3.0))
+    # The settings UI declares the same [1.0, 30.0] range for this key, so a
+    # hand-edited config cannot arm a window too short to answer or so long it
+    # outlives the conversation (settings_window.py, hot window fields).
+    hot_window_seconds = min(max(float(merged.get("hot_window_seconds", 3.0)), 1.0), 30.0)
+    try:
+        hot_window_max_follow_ups = int(merged.get("hot_window_max_follow_ups", 3))
+    except (TypeError, ValueError):
+        hot_window_max_follow_ups = 3
+    # Negative counts are meaningless; 0 is the documented "unlimited".
+    hot_window_max_follow_ups = max(hot_window_max_follow_ups, 0)
+    raw_require_directed = merged.get("hot_window_require_directed", False)
+    if isinstance(raw_require_directed, str):
+        # A hand-edited config may quote the boolean: "false" must not become
+        # True the way bool("false") would.
+        hot_window_require_directed = raw_require_directed.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        hot_window_require_directed = bool(raw_require_directed)
+    # The fast band at the start of a hot window. Default 0.0 so strict mode
+    # keeps the guarantee it advertises: nothing is accepted without the
+    # judge's verdict unless the user asks for the trade. A grace longer than
+    # the window itself is meaningless, so it is clamped to the window.
+    try:
+        hot_window_grace_seconds = float(merged.get("hot_window_grace_seconds", 0.0))
+    except (TypeError, ValueError):
+        raise TypeError("hot_window_grace_seconds must be a number")
+    if hot_window_grace_seconds < 0.0:
+        hot_window_grace_seconds = 0.0
+    if hot_window_grace_seconds > hot_window_seconds:
+        hot_window_grace_seconds = hot_window_seconds
     low_power_mode = bool(merged.get("low_power_mode", False))
     echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
@@ -1044,6 +1186,36 @@ def load_settings() -> Settings:
             llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
         )
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
+    raw_skip_on_wake = merged.get("intent_judge_skip_on_wake_word", False)
+    if isinstance(raw_skip_on_wake, str):
+        # A hand-edited config may quote the boolean: "false" must not become
+        # True the way bool("false") would (same coercion as
+        # hot_window_require_directed above).
+        intent_judge_skip_on_wake_word = raw_skip_on_wake.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        intent_judge_skip_on_wake_word = bool(raw_skip_on_wake)
+
+    raw_smalltalk_skip = merged.get("smalltalk_router_skip_enabled", True)
+    if isinstance(raw_smalltalk_skip, str):
+        # Same quoted-boolean coercion as above: "false" must not become True
+        # the way bool("false") would.
+        smalltalk_router_skip_enabled = raw_smalltalk_skip.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        smalltalk_router_skip_enabled = bool(raw_smalltalk_skip)
+
+    raw_nutrition_coaching = merged.get("nutrition_coaching_enabled", False)
+    if isinstance(raw_nutrition_coaching, str):
+        # Same quoted-boolean coercion as above: "false" must not become True
+        # the way bool("false") would.
+        nutrition_coaching_enabled = raw_nutrition_coaching.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        nutrition_coaching_enabled = bool(raw_nutrition_coaching)
 
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
     transcript_buffer_duration_sec = float(merged.get("transcript_buffer_duration_sec", 120.0))
@@ -1098,7 +1270,17 @@ def load_settings() -> Settings:
     whisper_min_confidence = float(merged.get("whisper_min_confidence", 0.4))
     whisper_no_speech_threshold = float(merged.get("whisper_no_speech_threshold", 0.5))
     whisper_min_audio_duration = float(merged.get("whisper_min_audio_duration", 0.3))
-    stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower()
+    # Every spelling the STT factory and the specs accept is canonicalised here
+    # rather than narrowed to one of them. Regression: this kept only
+    # ("parakeet", "faster_whisper"), so `faster-whisper` and `whisper` - both
+    # accepted by create_stt_engine() and both named in listening.spec.md - were
+    # silently rewritten to parakeet, and a user who configured Whisper got
+    # Parakeet listening to them with no signal at all. An unrecognised token
+    # still falls back to the safe default, which is the documented contract for
+    # string enums here (see docs/subsystems/configuration.md).
+    stt_engine = str(merged.get("stt_engine", "parakeet")).strip().lower().replace("-", "_")
+    if stt_engine == "whisper":
+        stt_engine = "faster_whisper"
     if stt_engine not in ("parakeet", "faster_whisper"):
         stt_engine = "parakeet"
     stt_model_path = str(merged.get("stt_model_path", "") or "").strip()
@@ -1217,17 +1399,26 @@ def load_settings() -> Settings:
         min_speech_ms=min_speech_ms,
         noise_gate_enabled=noise_gate_enabled,
         noise_gate_margin=noise_gate_margin,
+        noise_gate_min_rms=noise_gate_min_rms,
 
         # UI/UX Features
         tune_enabled=tune_enabled,
+        ack_enabled=ack_enabled,
+        ack_phrases=ack_phrases,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
+        hot_window_max_follow_ups=hot_window_max_follow_ups,
+        hot_window_require_directed=hot_window_require_directed,
+        hot_window_grace_seconds=hot_window_grace_seconds,
         low_power_mode=low_power_mode,
         echo_energy_threshold=echo_energy_threshold,
         echo_tolerance=echo_tolerance,
         # Fast tier (voice intent, tool routing, quick classifications)
         fast_model=fast_model,
         intent_judge_timeout_sec=intent_judge_timeout_sec,
+        intent_judge_skip_on_wake_word=intent_judge_skip_on_wake_word,
+        smalltalk_router_skip_enabled=smalltalk_router_skip_enabled,
+        nutrition_coaching_enabled=nutrition_coaching_enabled,
 
         # Transcript Buffer
         transcript_buffer_duration_sec=transcript_buffer_duration_sec,

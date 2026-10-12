@@ -63,6 +63,13 @@ def _create_listener(**kwargs):
     mock_cfg.echo_energy_threshold = 2.0
     mock_cfg.hot_window_seconds = kwargs.get("hot_window_seconds", 3.0)
     mock_cfg.hot_window_enabled = True
+    # Defaults to the module constant so existing loop-breaker tests keep the
+    # legacy one-follow-up chain; new tests override it to exercise the config
+    # key. `cfg_omits` leaves the attribute off entirely, exercising the
+    # listener's getattr fallback.
+    mock_cfg.hot_window_max_follow_ups = kwargs.get(
+        "hot_window_max_follow_ups", MAX_CONSECUTIVE_HOT_WINDOW_TURNS
+    )
     mock_cfg.voice_collect_seconds = 2.0
     mock_cfg.voice_max_collect_seconds = 60.0
     mock_cfg.voice_device = None
@@ -83,6 +90,24 @@ def _create_listener(**kwargs):
     mock_tts.enabled = True
     mock_tts.is_speaking.return_value = kwargs.get("tts_speaking", False)
     mock_dialogue_memory = MagicMock()
+
+    if kwargs.get("cfg_omits"):
+        omitted = set(kwargs["cfg_omits"])
+        wrapped = mock_cfg
+
+        class _CfgOmitting:
+            """Config proxy that raises AttributeError for selected names.
+
+            Lets a test exercise a getattr(...) fallback on a key the loaded
+            Settings would always carry.
+            """
+
+            def __getattr__(self, name):
+                if name in omitted:
+                    raise AttributeError(name)
+                return getattr(wrapped, name)
+
+        mock_cfg = _CfgOmitting()
 
     with patch("claire.listening.listener.webrtcvad", None), \
          patch("claire.listening.listener.sd", None), \
@@ -414,9 +439,79 @@ class TestHotWindowCannotRenewForever:
             manager.stop()
 
     def test_listener_wires_the_chain_limit(self):
-        listener, _ = _create_listener()
+        """The configured follow-up count reaches the StateManager.
+
+        The module constant survives only as the getattr fallback for a cfg
+        that lacks the key — it is the loop-breaker, not the default policy.
+        """
+        listener, _ = _create_listener(hot_window_max_follow_ups=7)
+        assert listener.state_manager.hot_window_turn_limit == 7
+        listener.state_manager.stop()
+
+        listener, _ = _create_listener(cfg_omits=("hot_window_max_follow_ups",))
         assert listener.state_manager.hot_window_turn_limit == MAX_CONSECUTIVE_HOT_WINDOW_TURNS
         listener.state_manager.stop()
+
+    def test_multi_turn_follow_ups_are_admitted_up_to_the_limit(self):
+        """A configured cap of 3 admits three turns, then demands the wake word."""
+        listener, _ = _create_listener(
+            echo_tolerance=0.01, hot_window_seconds=0.5, hot_window_max_follow_ups=3,
+        )
+        listener.state_manager.note_wake_word_engagement()
+
+        for turn in range(1, 4):
+            _start_tts(listener, f"Answer number {turn}.")
+            _finish_tts(listener)
+            assert _wait_for_hot_window_active(listener), (
+                f"follow-up turn {turn} must be admitted within the cap"
+            )
+            assert listener.state_manager.hot_window_chain_length() == turn
+            listener.state_manager.expire_hot_window()
+
+        # Fourth turn: the cap is reached, so the window must not re-arm.
+        _start_tts(listener, "Answer number four.")
+        _finish_tts(listener)
+        time.sleep(0.05)
+        assert not listener.state_manager.is_hot_window_active()
+        listener.state_manager.stop()
+
+    def test_zero_limit_means_unlimited_renewal(self):
+        """0 is the documented 'unlimited' value: the chain never refuses."""
+        listener, _ = _create_listener(
+            echo_tolerance=0.01, hot_window_seconds=0.5, hot_window_max_follow_ups=0,
+        )
+        listener.state_manager.note_wake_word_engagement()
+
+        for turn in range(1, 5):
+            _start_tts(listener, f"Reply {turn}.")
+            _finish_tts(listener)
+            assert _wait_for_hot_window_active(listener), (
+                f"turn {turn} must renew with no cap configured"
+            )
+            listener.state_manager.expire_hot_window()
+
+        assert listener.state_manager.hot_window_chain_length() == 4
+        listener.state_manager.stop()
+
+    def test_renewal_refused_at_the_configured_cap(self):
+        """An arbitrary configured cap (not the legacy constant) ends the chain."""
+        manager = StateManager(
+            hot_window_seconds=0.5, echo_tolerance=0.01, hot_window_turn_limit=3,
+        )
+        try:
+            for turn in range(1, 4):
+                manager.schedule_hot_window_activation()
+                assert _wait_manager_active(manager), (
+                    f"turn {turn} must be admitted below the cap"
+                )
+                manager.expire_hot_window()
+
+            manager.schedule_hot_window_activation()
+            time.sleep(0.05)
+            assert not manager.is_hot_window_active()
+            assert not manager.was_speech_during_hot_window(0.0)
+        finally:
+            manager.stop()
 
     @patch("builtins.print")
     def test_reply_cannot_rearm_the_hot_window(self, _print):

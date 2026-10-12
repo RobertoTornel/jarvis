@@ -938,3 +938,107 @@ class TestOpenAICompatibleSanitizesMessages:
         assert sys_msg["role"] == "system"
         assert sys_msg["content"] == "You are a helpful assistant."
         assert "_is_context_injected" not in sys_msg
+
+
+# ---------------------------------------------------------------------------
+# embed_with_reason() — a failed embedding must say why
+# ---------------------------------------------------------------------------
+
+class TestEmbedWithReason:
+    """`embed` returns a bare None, which made three very different failures
+    look identical at startup: a model the runtime does not have, a provider
+    that cannot embed at all, and an account with no credits. The probe could
+    only advise "check model availability and embedding settings", and the
+    reader was left to guess which of the three it was."""
+
+    def _backend(self):
+        from claire.llm.openai_compatible import OpenAICompatibleBackend
+
+        return OpenAICompatibleBackend("http://127.0.0.1:20129/v1", api_key="k")
+
+    @patch("claire.llm.requests.post")
+    def test_a_missing_model_repeats_the_routers_own_words(self, mock_post):
+        mock_post.return_value = _make_response(
+            status_code=404,
+            json_data={"error": {"message": 'model "nomic-embed-text" not found, '
+                                            'try pulling it first'}},
+        )
+
+        vector, reason = self._backend().embed_with_reason("ping", "nomic-embed-text")
+
+        assert vector is None
+        assert "404" in reason
+        assert "try pulling it first" in reason, reason
+
+    @patch("claire.llm.requests.post")
+    def test_no_credits_is_reported_as_no_credits_not_as_a_missing_feature(self, mock_post):
+        mock_post.return_value = _make_response(
+            status_code=402,
+            json_data={"error": {"message": "Insufficient credits."}},
+        )
+
+        _, reason = self._backend().embed_with_reason("ping", "openrouter/baai/bge-m3")
+
+        assert "402" in reason and "Insufficient credits" in reason
+
+    @patch("claire.llm.requests.post")
+    def test_a_provider_that_cannot_embed_says_so(self, mock_post):
+        mock_post.return_value = _make_response(
+            status_code=400,
+            json_data={"error": {"message": "Unknown embedding provider: free-ai."}},
+        )
+
+        _, reason = self._backend().embed_with_reason("ping", "free-ai/bge-m3")
+
+        assert "Unknown embedding provider" in reason
+
+    @patch("claire.llm.requests.post")
+    def test_a_successful_embed_returns_the_vector_and_no_reason(self, mock_post):
+        mock_post.return_value = _make_response(
+            json_data={"data": [{"embedding": [0.5, -0.25, 1.0]}]}
+        )
+
+        vector, reason = self._backend().embed_with_reason("ping", "nomic-embed-text")
+
+        assert vector == [0.5, -0.25, 1.0]
+        assert reason == ""
+
+    @patch("claire.llm.requests.post")
+    def test_embed_still_returns_just_the_vector(self, mock_post):
+        """The existing callers must not have to change."""
+        mock_post.return_value = _make_response(
+            json_data={"data": [{"embedding": [1.0, 2.0]}]}
+        )
+
+        assert self._backend().embed("ping", "nomic-embed-text") == [1.0, 2.0]
+
+    @patch("claire.llm.requests.post")
+    def test_a_reply_with_no_embedding_is_distinguished_from_an_error(self, mock_post):
+        mock_post.return_value = _make_response(json_data={"data": []})
+
+        vector, reason = self._backend().embed_with_reason("ping", "nomic-embed-text")
+
+        assert vector is None
+        assert "no embedding" in reason
+
+    @patch("claire.llm.requests.post")
+    def test_a_transport_failure_names_the_exception_class_only(self, mock_post):
+        """Never the exception's text: a request URL can carry a key."""
+        mock_post.side_effect = RuntimeError("http://user:secret@host/v1/embeddings")
+
+        _, reason = self._backend().embed_with_reason("ping", "m")
+
+        assert "RuntimeError" in reason
+        assert "secret" not in reason, reason
+
+    def test_the_interface_default_states_only_what_it_knows(self):
+        class _Blind:
+            def embed(self, text, model, timeout_sec=15.0, task_type=None):
+                return None
+
+        from claire.llm.backend import LLMBackend
+
+        vector, reason = LLMBackend.embed_with_reason(_Blind(), "ping", "m")
+
+        assert vector is None
+        assert reason == "the runtime returned no vector"

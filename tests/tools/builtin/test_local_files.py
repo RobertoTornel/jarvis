@@ -123,3 +123,77 @@ class TestLocalFilesTool:
         assert isinstance(result, ToolExecutionResult)
         assert result.success is False
         assert "Unknown localFiles operation" in result.reply_text
+
+
+class TestRelativePathResolution:
+    """`path` is documented in the schema as "relative to home directory".
+
+    run() must therefore resolve a relative path against $HOME — not against
+    the process working directory, which is what ``Path.resolve()`` does on a
+    relative input. The daemon runs with ``WorkingDirectory=.../jarvis_cloud``,
+    so a CWD-based resolve broke every documented relative path."""
+
+    def setup_method(self):
+        self.tool = LocalFilesTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+
+    def test_relative_path_resolves_under_home(self, tmp_path, monkeypatch):
+        """A relative path resolves under $HOME even when a decoy file of the
+        same relative name exists under the current working directory."""
+        home = tmp_path / "home"
+        (home / "docs").mkdir(parents=True)
+        (home / "docs" / "note.txt").write_text("hello from home", encoding="utf-8")
+        cwd = tmp_path / "cwd"
+        (cwd / "docs").mkdir(parents=True)
+        (cwd / "docs" / "note.txt").write_text("decoy from cwd", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(cwd)
+
+        result = self.tool.run(
+            {"operation": "read", "path": "docs/note.txt"}, self.context
+        )
+
+        assert result.success is True, result.reply_text
+        assert result.reply_text == "hello from home"
+
+    def test_tilde_path_resolves_under_home(self, tmp_path, monkeypatch):
+        """`~`-prefixed paths keep resolving against $HOME exactly as before."""
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "welcome.txt").write_text("tilde works", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+
+        result = self.tool.run(
+            {"operation": "read", "path": "~/welcome.txt"}, self.context
+        )
+
+        assert result.success is True, result.reply_text
+        assert result.reply_text == "tilde works"
+
+    def test_absolute_path_unchanged(self, tmp_path, monkeypatch):
+        """An absolute path is never re-rooted under $HOME: it resolves to
+        itself and containment is judged against home as before."""
+        home = tmp_path / "home"
+        home.mkdir()
+        target = home / "abs.txt"
+        target.write_text("absolute stays put", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+
+        result = self.tool.run(
+            {"operation": "read", "path": str(target)}, self.context
+        )
+
+        assert result.success is True, result.reply_text
+        assert result.reply_text == "absolute stays put"
+
+        # The write reply echoes the resolved path back — it must be the
+        # absolute path itself, never $HOME joined onto it.
+        result = self.tool.run(
+            {"operation": "write", "path": str(home / "out.txt"), "content": "x"},
+            self.context,
+        )
+        assert result.success is True, result.reply_text
+        assert f"to {home / 'out.txt'}" in result.reply_text

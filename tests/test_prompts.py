@@ -103,10 +103,14 @@ class TestPromptComponents:
 
     def test_small_model_tool_constraints_has_current_conditions_section(self):
         """Small model constraints include a current-conditions rule covering
-        statements, questions, and contextual remarks about weather. Since the
-        getWeather tool was retired there is no dedicated conditions tool: the
-        rule must instead route the model to the web search tool, and still
-        forbid answering with an opinion or generic pleasantry."""
+        statements, questions, and contextual remarks about weather. The rule
+        must route the model to the `getWeather` tool and still forbid
+        answering with an opinion or generic pleasantry.
+
+        The tool was retired on 7 October 2026 in favour of routing weather to
+        web search; it is back, because that route is what produced the
+        parroted-film-summary answer recorded in reply.spec.md, and a general
+        web search cannot give a current reading anyway."""
         from claire.reply.prompts import get_system_prompts, ModelSize
 
         prompts = get_system_prompts(ModelSize.SMALL)
@@ -114,11 +118,11 @@ class TestPromptComponents:
 
         assert "current conditions" in text
         assert "weather" in text
-        # The retired getWeather tool must not be named in the prompt.
-        assert "getweather" not in text
-        # With no dedicated conditions tool, the surviving route is web search.
-        assert "no dedicated conditions tool" in text
-        assert "web search tool" in text
+        # The dedicated conditions tool is the documented route again.
+        assert "getweather" in text
+        assert "no dedicated conditions tool" not in text
+        # It must not send a temperature question to a general web search.
+        assert "web search" not in text or "do not reach for" in text
         # Must not allow an opinion or generic pleasantry before the lookup.
         assert "generic pleasantry" in text or "opinion" in text or "observation" in text
 

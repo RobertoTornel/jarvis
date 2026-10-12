@@ -142,34 +142,101 @@ class TestOpenAICompatStartupCheck:
         finally:
             splash.close()
 
-    def test_reachable_when_models_listed(self):
+    def test_a_failing_catalogue_does_not_make_a_working_server_unreachable(self, monkeypatch):
+        """Regression, measured on this machine.
+
+        OmniRoute answers ``GET /v1/models`` with HTTP 503
+        ``catalog_build_timeout`` after ~8 s, while
+        ``POST /v1/chat/completions`` answers 200 in ~1.1 s. The old check
+        listed models with a 4 s cap and read ``[]`` as "no server", so a
+        perfectly healthy endpoint produced a blocking "start a local server"
+        dialog on every launch. Reachability must come from a turn.
+        """
+        import claire.llm as llm
         from types import SimpleNamespace
         from desktop_app.app import _check_openai_compat_reachable
+
+        class _HealthyTurnBrokenCatalogue:
+            def warm_up(self, model, timeout_sec=10.0):
+                assert model == "m", "the probe must use the configured chat model"
+                return True
+
+            def list_models(self, timeout_sec=5.0):
+                raise AssertionError("the catalogue must not be consulted for reachability")
+
+        monkeypatch.setattr(llm, "get_llm_backend", lambda cfg: _HealthyTurnBrokenCatalogue())
         cfg = SimpleNamespace(
             llm_provider="openai_compatible", llm_base_url="http://x/v1",
             llm_api_key="", llm_chat_model="m", embedding_provider="")
 
-        class _Backend:
-            def list_models(self, timeout_sec=4.0):
-                return ["m-chat"]
+        assert _check_openai_compat_reachable(cfg) is True
 
-        with patch("claire.llm.get_llm_backend", return_value=_Backend()):
-            assert _check_openai_compat_reachable(cfg) is True
-
-    def test_unreachable_when_listing_empty_or_raises(self):
+    def test_unreachable_when_the_turn_does_not_complete(self, monkeypatch):
+        """When a turn fails, the reason must come from the endpoint probe."""
+        import claire.llm as llm
+        import claire.platform.service as svc
         from types import SimpleNamespace
-        from desktop_app.app import _check_openai_compat_reachable
-        cfg = SimpleNamespace(llm_provider="openai_compatible", llm_base_url="http://x/v1")
+        from desktop_app.app import _check_openai_compat_reachable, _probe_llm_endpoint
 
-        class _Empty:
-            def list_models(self, timeout_sec=4.0):
-                return []
+        class _RefusingBackend:
+            def warm_up(self, model, timeout_sec=10.0):
+                return False
 
-        with patch("claire.llm.get_llm_backend", return_value=_Empty()):
-            assert _check_openai_compat_reachable(cfg) is False
+        monkeypatch.setattr(llm, "get_llm_backend", lambda cfg: _RefusingBackend())
+        monkeypatch.setattr(
+            svc, "_default_http_get",
+            lambda url, headers, timeout: (401, b""),
+        )
+        cfg = SimpleNamespace(
+            llm_provider="openai_compatible", llm_base_url="http://x/v1",
+            llm_api_key="sk-secret", llm_chat_model="m", embedding_provider="")
 
-        with patch("claire.llm.get_llm_backend", side_effect=RuntimeError("boom")):
-            assert _check_openai_compat_reachable(cfg) is False
+        assert _check_openai_compat_reachable(cfg) is False
+        reachable, reason = _probe_llm_endpoint(cfg)
+        assert reachable is False
+        # A refused credential must be named as such, not as a missing server.
+        assert "credential" in reason.lower(), reason
+
+    def test_no_configured_model_is_reported_as_such(self, monkeypatch):
+        import claire.llm as llm
+        from types import SimpleNamespace
+        from desktop_app.app import _probe_llm_endpoint
+
+        class _Unused:
+            def warm_up(self, model, timeout_sec=10.0):
+                raise AssertionError("nothing to probe without a model")
+
+        monkeypatch.setattr(llm, "get_llm_backend", lambda cfg: _Unused())
+        cfg = SimpleNamespace(
+            llm_provider="openai_compatible", llm_base_url="http://x/v1",
+            llm_api_key="", llm_chat_model="", llm_model="")
+
+        reachable, reason = _probe_llm_endpoint(cfg)
+
+        assert reachable is False
+        assert "model" in reason.lower()
+
+    def test_startup_probe_allows_for_a_slow_first_turn(self):
+        """A cold model load or a loaded gateway must not read as "no server"."""
+        from desktop_app.app import LLM_STARTUP_PROBE_TIMEOUT_SECONDS
+
+        assert LLM_STARTUP_PROBE_TIMEOUT_SECONDS >= 6.0
+        # And a wrong model name must not be the reason this warns: it is a real
+        # rejection, but the timeout is what the old 4 s cap got wrong.
+        # (Measured: a warm turn takes ~2.6 s on this machine.)
+        assert LLM_STARTUP_PROBE_TIMEOUT_SECONDS > 2.6
+
+    def test_unreachable_message_carries_the_probe_reason(self):
+        """A refused credential must not read like "nothing is listening"."""
+        from types import SimpleNamespace
+        from desktop_app.app import _build_unreachable_message
+
+        cfg = SimpleNamespace(llm_base_url="http://localhost:1234/v1", llm_api_key="sk-secret")
+        reason = "answered HTTP 401 for /models - reachable but REJECTED the credential"
+        msg = _build_unreachable_message(cfg, reason)
+
+        assert reason in msg
+        assert "sk-secret" not in msg
 
     def test_unreachable_message_names_url_not_key(self):
         """The unreachable dialog message mentions the URL but never the API key."""
@@ -1783,6 +1850,11 @@ class TestListeningWindowVisibility:
         )
         # No real reader thread in a unit test.
         monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+        # These tests are about what the app does when it *is* the one starting
+        # the daemon. Without this the machine's own daemon would be discovered
+        # and start_daemon would attach to it instead of spawning - correct
+        # behaviour, but not the behaviour under test here.
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: None)
         return tray
 
     def test_start_daemon_does_not_show_log_viewer(self, qapp, monkeypatch):
@@ -1967,3 +2039,264 @@ class TestListeningWindowVisibility:
         assert show_idx > start_idx, (
             "the launch windows must open after the daemon auto-start"
         )
+
+
+class TestDesktopAppDoesNotDuplicateTheDaemon:
+    """The tray app is a view of a supervised daemon, not a second owner.
+
+    Measured on this machine: launching the tray app started a second daemon
+    beside the systemd unit's one. Both reached for the microphone, the
+    recogniser and the phone bridge (the bridge bind failing in a ~5 s retry
+    loop), and the daemon the app started could not transcribe at all, because
+    it was launched without the numba cache directory the unit sets.
+    """
+
+    def test_a_daemon_on_the_systemd_unit_is_found_by_the_status(self, monkeypatch):
+        import subprocess
+        from desktop_app.app import _systemd_claire_daemon_pid
+
+        class _Done:
+            returncode = 0
+            stdout = "ActiveState=active\nMainPID=4242\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Done())
+        assert _systemd_claire_daemon_pid() == 4242
+
+    def test_an_inactive_unit_is_not_a_running_daemon(self, monkeypatch):
+        import subprocess
+        from desktop_app.app import _systemd_claire_daemon_pid
+
+        class _Done:
+            returncode = 0
+            stdout = "ActiveState=inactive\nMainPID=0\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _Done())
+        assert _systemd_claire_daemon_pid() is None
+
+    def test_a_missing_systemctl_is_not_an_error(self, monkeypatch):
+        import subprocess
+        from desktop_app.app import _systemd_claire_daemon_pid
+
+        def _boom(*args, **kwargs):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(subprocess, "run", _boom)
+        assert _systemd_claire_daemon_pid() is None
+
+    def test_the_process_scan_finds_the_daemon_and_ignores_its_neighbours(self, tmp_path):
+        """Exact token matching: the panel and MCP servers must not count."""
+        from desktop_app.app import _process_claire_daemon_pid
+
+        def _fake_proc(pid: int, argv: list[str]) -> None:
+            entry = tmp_path / str(pid)
+            entry.mkdir()
+            (entry / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+
+        _fake_proc(11, ["/venv/bin/python", "-m", "claire.panel.server"])
+        _fake_proc(12, ["/venv/bin/python", "-m", "claire.mcp_servers.linux_desktop"])
+        _fake_proc(13, ["/venv/bin/python", "-m", "desktop_app"])
+        _fake_proc(14, ["/venv/bin/python", "-m", "claire"])  # the daemon
+
+        assert _process_claire_daemon_pid(tmp_path) == 14
+
+    def test_the_process_scan_also_recognises_the_main_module(self, tmp_path):
+        from desktop_app.app import _process_claire_daemon_pid
+
+        entry = tmp_path / "21"
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"/venv/bin/python\0-m\0claire.main\0")
+        assert _process_claire_daemon_pid(tmp_path) == 21
+
+    def test_no_daemon_means_none(self, tmp_path, monkeypatch):
+        from desktop_app.app import _process_claire_daemon_pid, _running_claire_daemon_pid
+        import desktop_app.app as app_mod
+
+        entry = tmp_path / "31"
+        entry.mkdir()
+        (entry / "cmdline").write_bytes(b"/venv/bin/python\0-m\0desktop_app\0")
+
+        assert _process_claire_daemon_pid(tmp_path) is None
+        monkeypatch.setattr(app_mod, "_systemd_claire_daemon_pid", lambda: None)
+        monkeypatch.setattr(app_mod, "_process_claire_daemon_pid", lambda *a, **k: None)
+        assert _running_claire_daemon_pid() is None
+
+    def test_the_daemon_gets_a_writable_numba_cache(self, monkeypatch, tmp_path):
+        """Regression: without this the Parakeet recogniser silently degrades."""
+        import os as _os
+        from desktop_app.app import _daemon_subprocess_env
+
+        monkeypatch.delenv("NUMBA_CACHE_DIR", raising=False)
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+        env = _daemon_subprocess_env()
+
+        assert env["NUMBA_CACHE_DIR"] == str(tmp_path / "numba")
+        assert Path(env["NUMBA_CACHE_DIR"]).is_dir(), "numba must be able to write there"
+        assert env["CLAIRE_STDIN_IPC"] == "1"
+        first_path_entry = env["PYTHONPATH"].split(_os.pathsep)[0]
+        assert first_path_entry.endswith("src"), first_path_entry
+
+    def test_an_explicit_numba_cache_dir_is_respected(self, monkeypatch):
+        """An operator's NUMBA_CACHE_DIR wins over this app's default."""
+        from desktop_app.app import _daemon_subprocess_env
+
+        monkeypatch.setenv("NUMBA_CACHE_DIR", "/tmp/pinned-numba")
+
+        assert _daemon_subprocess_env()["NUMBA_CACHE_DIR"] == "/tmp/pinned-numba"
+
+    def test_start_daemon_attaches_instead_of_spawning_a_second_one(self, monkeypatch):
+        """The guard must be checked *before* any process is launched."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.status = None
+        tray._set_chat_daemon_status = lambda value: setattr(tray, "status", value)
+
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: 4242)
+        monkeypatch.setattr(app_mod.subprocess, "Popen", MagicMock())
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+
+        app_mod.ClaireSystemTray.start_daemon(tray)
+
+        assert tray.status == "running"
+        assert getattr(tray, "daemon_process", None) is None, "nothing may be spawned"
+        emitted = " ".join(str(c) for c in tray.log_signals.new_log.emit.call_args_list)
+        assert "4242" in emitted
+        # Attaching must still show the daemon's own log, which now lives in
+        # the systemd unit's journal rather than in a pipe this app owns.
+        assert tray.journal_process is not None
+
+
+class TestAttachedDaemonLogIsVisible:
+    """Attaching must not blind the log window.
+
+    The daemon's stdout pipe only exists when this app started the daemon. In
+    attach mode its log lives in the journal the systemd unit writes to, so the
+    app follows that instead - otherwise "Claire Logs" would show nothing but
+    the app's own messages while Claire was running.
+    """
+
+    def _attached_tray(self, monkeypatch, popen):
+        """A real tray instance forced down the attach path."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.status = None
+        tray._set_chat_daemon_status = lambda value: setattr(tray, "status", value)
+
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: 4242)
+        monkeypatch.setattr(app_mod.subprocess, "Popen", popen)
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+        app_mod.ClaireSystemTray.start_daemon(tray)
+        return tray, app_mod
+
+    def test_the_journal_command_targets_the_unit_without_prefixes(self):
+        from desktop_app.app import JOURNAL_UNIT, _journal_follow_command
+
+        assert _journal_follow_command() == [
+            "journalctl", "--user", "-u", "claire.service", "-f", "-n", "40", "-o", "cat",
+        ]
+        assert JOURNAL_UNIT == "claire.service"
+
+    def test_attaching_follows_the_journal(self, monkeypatch):
+        """`journalctl -o cat` lines carry no timestamp for the app to strip."""
+        seen = {}
+
+        class _FakeProc:
+            stdout = MagicMock()
+
+        def _popen(command, **kwargs):
+            seen["command"] = command
+            seen["kwargs"] = kwargs
+            return _FakeProc()
+
+        tray, app_mod = self._attached_tray(monkeypatch, _popen)
+
+        assert seen["command"][0] == "journalctl"
+        assert "claire.service" in seen["command"]
+        assert seen["kwargs"].get("stderr") is not None, "stderr must be suppressed"
+        assert tray.journal_process is not None
+        thread_call = app_mod.threading.Thread.call_args
+        target = thread_call.kwargs.get("target")
+        assert target.__func__ is app_mod.ClaireSystemTray._read_daemon_journal
+        assert target.__self__ is tray, "the method must be bound to this tray"
+        assert thread_call.kwargs.get("daemon") is True
+        assert tray.status == "running"
+
+    def test_journal_lines_reach_the_log_viewer(self):
+        import desktop_app.app as app_mod
+
+        lines = ["🎙️  Listening!\n", "\n", "🧠 Using chat model: example\n"]
+
+        class _FakeProc:
+            class stdout:
+                @staticmethod
+                def readline():
+                    return lines.pop(0) if lines else ""
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.journal_process = _FakeProc()
+        tray.log_signals = MagicMock()
+
+        app_mod.ClaireSystemTray._read_daemon_journal(tray)
+
+        emitted = [
+            call.args[0] for call in tray.log_signals.new_log.emit.call_args_list
+        ]
+        assert "🎙️  Listening!\n" in emitted
+        assert "🧠 Using chat model: example\n" in emitted
+
+    def test_a_missing_journalctl_says_so_and_still_runs(self, monkeypatch):
+        """No journalctl must not cost the assistant: report the fallback."""
+
+        def _boom(command, **kwargs):
+            raise FileNotFoundError("journalctl")
+
+        tray, _ = self._attached_tray(monkeypatch, _boom)
+
+        assert tray.journal_process is None
+        assert tray.status == "running"
+        emitted = " ".join(str(c) for c in tray.log_signals.new_log.emit.call_args_list)
+        assert "journalctl --user -u claire.service -f" in emitted
+
+    def test_spawning_a_daemon_stops_following_the_journal(self, monkeypatch):
+        """Otherwise one daemon is reported twice, from two sources."""
+        import desktop_app.app as app_mod
+
+        tray = app_mod.ClaireSystemTray.__new__(app_mod.ClaireSystemTray)
+        tray.log_signals = MagicMock()
+        tray.log_reader_threads = []
+        tray.journal_process = None
+        tray.daemon_process = None
+        tray.daemon_thread = None
+        tray.is_bundled = False
+        tray.chat_window = None
+        tray._chat_submit_fn = tray._chat_cancel_fn = tray._chat_control_fn = None
+        tray._set_chat_daemon_status = MagicMock()
+        tray.update_icon = MagicMock()
+        for attribute in ("tray_icon", "toggle_action", "status_action", "app"):
+            setattr(tray, attribute, MagicMock())
+
+        following = MagicMock()
+        tray.journal_process = following
+        fake_proc = MagicMock()
+        fake_proc.pid = 99
+        fake_proc.stdin = MagicMock()
+        fake_proc.stdout = MagicMock()
+
+        monkeypatch.setattr(app_mod, "_running_claire_daemon_pid", lambda: None)
+        monkeypatch.setattr(app_mod.subprocess, "Popen", lambda *a, **k: fake_proc)
+        monkeypatch.setattr(app_mod.threading, "Thread", MagicMock())
+
+        app_mod.ClaireSystemTray.start_daemon(tray)
+
+        following.terminate.assert_called_once()
+        assert tray.journal_process is None
+        assert tray.daemon_process is fake_proc
+

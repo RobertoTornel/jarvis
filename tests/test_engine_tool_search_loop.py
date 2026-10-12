@@ -300,7 +300,9 @@ def test_tool_search_max_calls_cap(mock_config, db, dialogue_memory):
             db=db,
             cfg=mock_config,
             tts=None,
-            text="hello",
+            # Must reach the router so the patched select_tools above is the
+            # allow-list under test; "hello" is small talk and would bypass it.
+            text="search the web for the news",
             dialogue_memory=dialogue_memory,
         )
 

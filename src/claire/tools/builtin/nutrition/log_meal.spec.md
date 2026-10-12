@@ -82,10 +82,58 @@ Two passes against the chat model (`cfg.llm_chat_model`):
    `None` and the tool retries up to `context.max_retries`.
 2. **Follow-ups** (`generate_followups_for_meal`): a short coach prompt
    asking for 2-3 healthy, realistic follow-ups (hydration, protein,
-   veggies, sodium/potassium balance, light activity).
+   veggies, sodium/potassium balance, light activity). Opt-in via
+   `nutrition_coaching_enabled`, off by default.
 
-Both passes share a bounded 1,024-token generation budget, including reasoning
-and the answer, `cfg.llm_chat_timeout_sec` and the `llm_thinking_enabled` flag.
+Both passes are bounded by `cfg.llm_chat_timeout_sec` and pass the
+`llm_thinking_enabled` flag. Their token budgets differ, because the budget
+also pays for the model's reasoning.
+
+#### Asking for one aggregate estimate
+
+The system prompt asks for the whole meal as **one aggregate in a single pass**
+and forbids enumerating or calculating the items one at a time, while still
+requiring the description to list every item. This is a latency fix with a
+measured cause. Asking the model to sum each item's values made it work through
+the arithmetic item by item: measured on the live configuration (2026-10-13) a
+seven-item breakfast spent 3051 reasoning tokens on one run and 6133 on another.
+The aggregate instruction cut the same meal to 2112 reasoning tokens and, with
+the ladder below, to 25.9 s.
+
+`description` still names every food, so nothing is lost from the logged record;
+the fields returned are unchanged.
+
+#### The extraction token-budget ladder
+
+The gateway charges the model's reasoning tokens against `max_tokens` as well
+as the answer, so a budget that reasoning exhausts returns **empty content**
+with `finish_reason: "length"`, or a partial object that will not parse.
+`_NUTRITION_BUDGET_LADDER` is `(1024, 4096, 8192)` and the extractor takes the
+first budget that yields a usable object, so a meal that fits the cheap rung
+pays for one call only. `NONE` stops the ladder: it is a decision, not a
+truncation. When every rung is unusable the extractor returns `None`.
+
+The starting rung is not always the first: `_first_budget_for` counts the foods
+a description names (crudely, from separators) and starts an itemised meal (3+
+items) at `4096`, because that rung is known in advance to be too small for a
+listed meal. Measured with the aggregate method: a seven-item breakfast was
+truncated at 2048 and completed at 4096.
+
+Prompt-level attempts to suppress the reasoning instead of changing the task
+(asking for the answer immediately, `enable_thinking: false`,
+`chat_template_kwargs`, `thinking: {type: disabled}`, `reasoning_effort`) were
+all measured ineffective on this gateway: each variant still spent the whole
+1024-token budget on reasoning. Reducing the *schema* does work (a 6-field
+version fitted 1024 in 7.0 s) but drops the micronutrient fields, which the
+aggregate method does not have to.
+
+#### Coaching cost
+
+The coaching pass measured 16.6-18.0 s and returned empty content on two calls
+out of three (its own 1024-token budget is exhausted by reasoning the same way).
+Since the meal is committed before it runs, it is off by default and
+`nutrition_coaching_enabled` buys it back. This is why the reply's
+`Follow-ups:` line is absent by default.
 
 ### Database
 
@@ -109,8 +157,10 @@ Logged meal #<id>: <description>: <macro summary>[ (confidence X%)].
 Follow-ups: <coach text>
 ```
 
-The follow-up line is present only when coaching returns non-empty text.
+The follow-up line is present only when coaching is enabled and returns
+non-empty text.
 The macro summary is a comma-joined list of present-only fields (kcal,
-protein, carbs, fat, fiber). On failure: `"Failed to log meal"` (extractor
-returned NONE or all retries raised) or `"No meal description provided"`
-(extract-text guard).
+protein, carbs, fat, fiber). On failure: an actionable message telling the user
+to name one or two specific items (the extractor returned NONE, or every rung of
+the budget ladder was unusable, or all retries raised) or
+`"No meal description provided"` (extract-text guard).

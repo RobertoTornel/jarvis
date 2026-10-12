@@ -178,6 +178,86 @@ Animated loading screen shown during startup with:
 - Status text updates ("Checking Ollama...", "Starting daemon...")
 - Frameless, centered, always-on-top
 
+### The app is a view of the daemon, never a second owner
+
+A second daemon is never a harmless duplicate: it fights the first for the
+microphone, for the GPU-resident recogniser and for the phone-bridge port, so on
+a machine whose audio device admits one client neither works. `start_daemon()`
+therefore checks for a daemon that is already running *before* spawning one, via
+`_running_claire_daemon_pid()`:
+
+1. `_systemd_claire_daemon_pid()` - `systemctl --user show claire.service -p
+   ActiveState,MainPID`; the supported topology is the systemd user unit, so
+   this is authoritative when it answers.
+2. `_process_claire_daemon_pid()` - a `/proc/*/cmdline` scan for the exact
+   token pair `-m claire` / `-m claire.main`, which covers a daemon started by
+   hand or by an older version of this app. Exact matching keeps the panel
+   (`-m claire.panel.server`), an MCP server (`-m claire.mcp_servers.…`) and
+   this app (`-m desktop_app`) from being mistaken for the daemon.
+
+When one is found the app logs `Claire's daemon is already running (pid N);
+attaching to it instead of starting a second one.` and sets its status to
+running.
+
+Attaching must not blind the log window. The daemon's stdout pipe only exists
+when this app started the daemon, while the unit writes its log to the journal,
+so attach mode follows that instead: `_start_daemon_log_tail()` runs
+`journalctl --user -u claire.service -f -n 40 -o cat` and feeds its lines to the
+same `log_signals.new_log` the stdout reader used. `-o cat` deliberately drops
+journald's own timestamp and host prefix, so lines look exactly as they did when
+the app owned the pipe. If `journalctl` is missing the app says so, prints the
+manual command, and carries on - a log window is never worth losing the
+assistant over. `_stop_daemon_log_tail()` ends the follow (called before
+spawning a daemon of the app's own, so one daemon is never reported twice, and
+on exit).
+
+`stop_daemon()` mirrors the ownership rule: if the app owns neither a bundled
+thread nor a subprocess it leaves the running daemon alone, says so, and prints
+the honest control (`systemctl --user stop claire`) rather than announcing a
+stop that never happened.
+
+### The daemon's environment is a contract
+
+`_daemon_subprocess_env()` builds the environment for the spawned daemon, so it
+can be asserted without launching anything, and mirrors what
+`deploy/claire.service` provides:
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `PYTHONPATH` | the `src/` tree, first | so `python -m claire.main` resolves from a source checkout |
+| `CLAIRE_STDIN_IPC` | `1` | tells the daemon this app owns its stdin, so the chat query-in monitor starts |
+| `NUMBA_CACHE_DIR` | `$XDG_CACHE_HOME/numba`, else `~/.cache/numba`, created | see below |
+
+`NUMBA_CACHE_DIR` is the one that is easy to lose and expensive to miss. numba
+caches compiled helpers beside the source file that defines them unless told
+otherwise; the unit's `ProtectHome=read-only` makes the venv read-only, so the
+write fails and the failure arrives wearing someone else's face:
+
+```
+RuntimeError("cannot cache function '__o_fold': no locator available for file
+'…/librosa/core/notation.py'")  ->  NeMo cannot instantiate its preprocessor
+->  "Voice transcript degraded: produced no authoritative Parakeet transcript"
+```
+
+The unit carried the fix while the app's own subprocess path did not, so a
+daemon launched from the tray re-introduced the same silent degradation by a
+different route. An operator's explicit `NUMBA_CACHE_DIR` is respected
+(`setdefault`); the app only supplies the default.
+
+### Startup LLM probe
+
+The startup reachability check performs a **real turn** through
+`_probe_llm_endpoint()` (`warm_up`), not a catalogue listing. Measured against
+the configured OmniRouter endpoint: `GET /v1/models` took 8.1 s and returned
+`HTTP 503 catalog_build_timeout` for a 9,508-entry catalogue, while
+`POST /v1/chat/completions` completed in 1.1 s - so judging readiness by the
+catalogue produced a blocking "Claire couldn't reach a ready LLM server" modal
+on a server that answered chat requests correctly. The probe allows for a slow
+first turn (`LLM_STARTUP_PROBE_TIMEOUT_SECONDS`), returns immediately when no
+provider configuration or no chat model is loaded, and passes its reason to the
+dialog (`_build_unreachable_message`) so a failure says what was actually wrong
+(a credential, a model name) instead of blaming the server.
+
 ## Daemon Integration
 
 The desktop app runs the Claire daemon in a **QThread** (bundled mode) or **subprocess** (development mode).

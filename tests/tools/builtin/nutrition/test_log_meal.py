@@ -87,12 +87,16 @@ class TestLogMealTool:
         assert original_text == self.context.redacted_text
 
     def test_run_failure(self):
-        """When extraction returns nothing on all retries, return failure."""
+        """When extraction returns nothing on all retries, return failure.
+
+        The message has to be actionable: an earlier one said only "Failed to
+        log meal", which left the user with nothing to try.
+        """
         result = self.tool.run(None, self.context)
 
         assert isinstance(result, ToolExecutionResult)
         assert result.success is False
-        assert result.reply_text == "Failed to log meal"
+        assert "name one or two specific items" in result.reply_text
 
     def test_run_returns_friendly_failure_when_both_meal_and_redacted_empty(self):
         """If neither the 'meal' arg nor context.redacted_text carries any

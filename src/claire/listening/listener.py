@@ -6,6 +6,7 @@ Coordinates audio capture, speech recognition, echo detection, and state managem
 
 from __future__ import annotations
 import functools
+import math
 import os
 import threading
 import time
@@ -35,9 +36,10 @@ from .intent_judge import (
     create_intent_judge,
     warm_up_chat_model,
 )
-from ..debug import debug_log
+from ..debug import debug_enabled, debug_log
 from ..llm import get_embedding_backend
 from ..utils.location import get_configured_city, is_location_available
+from ..utils.redact import redact as redact_secrets
 
 if TYPE_CHECKING:
     from ..memory.db import Database
@@ -60,6 +62,16 @@ if TYPE_CHECKING:
 #     0.3 s ``echo_tolerance`` alone was demonstrably too short.
 POST_TTS_TAIL_GUARD_SECONDS = 0.6
 
+# The startup embedding probe allows for a model that is not resident yet: the
+# first call pages it in from disk and can take tens of seconds, while warm
+# calls take ~20 ms. The probe runs in the background, so nothing waits on it,
+# and a failure after this allowance is a real one rather than a slow start.
+COLD_EMBED_PROBE_TIMEOUT_SECONDS = 30.0
+
+#: A banner is one line: a runtime's error body is quoted up to this many
+#: characters and no further.
+_EMBED_REASON_MAX = 200
+
 # At most one hot-window follow-up per explicit wake word. This is the loop
 # breaker: even if a garbled echo slips past the acoustic gate, Claire's reply
 # cannot re-arm the window off itself — the human must say "Claire" again.
@@ -72,6 +84,14 @@ _AMBIENT_WINDOW_FRAMES = 1500
 
 # The percentile of the ambient history treated as the noise floor. A low
 # percentile ignores speech, which is a minority of frames even in a busy room.
+#: Level floor for the speech gate. Speech measured on a real microphone
+#: (47% input volume) sat at 0.00226-0.00926 while the converter's dither - which
+#: a recogniser answers with "Yeah.", "Okay.", "Uh." - sat at 0.0002-0.0015.
+_AUDIBLE_FLOOR_DEFAULT = 0.002
+#: Above half of full scale no voice can clear the floor, so a value up there is
+#: a mistake (or a test double) rather than a stricter gate.
+_AUDIBLE_FLOOR_CEILING = 0.5
+
 _AMBIENT_FLOOR_PERCENTILE = 20.0
 
 
@@ -612,8 +632,22 @@ class VoiceListener(threading.Thread):
         if webrtcvad is not None and bool(getattr(self.cfg, "vad_enabled", True)):
             try:
                 self._vad = webrtcvad.Vad(int(getattr(self.cfg, "vad_aggressiveness", 2)))
-            except Exception:
+            except Exception as exc:
+                # Not fatal - the loop falls back to energy framing - but not
+                # silent either. Without the VAD, where an utterance *ends* is
+                # decided differently, which shows up only as oddly clipped or
+                # run-on transcripts with nothing in the log to explain them.
                 self._vad = None
+                debug_log(
+                    f"webrtcvad initialisation failed ({type(exc).__name__}: {exc}); "
+                    "using energy-based endpointing",
+                    "voice",
+                )
+                print(
+                    "  ⚠️  Voice activity detection unavailable "
+                    f"({type(exc).__name__}); using energy-based endpointing.",
+                    flush=True,
+                )
 
         # Initialise modular components
         self.echo_detector = EchoDetector(
@@ -626,7 +660,10 @@ class VoiceListener(threading.Thread):
             echo_tolerance=float(getattr(self.cfg, "echo_tolerance", 0.3)),
             voice_collect_seconds=float(getattr(self.cfg, "voice_collect_seconds", 4.5)),
             max_collect_seconds=float(getattr(self.cfg, "voice_max_collect_seconds", 180.0)),
-            hot_window_turn_limit=MAX_CONSECUTIVE_HOT_WINDOW_TURNS,
+            # The configured follow-up count drives the chain; the module
+            # constant stays as the getattr fallback — it is the loop-breaker
+            # for a config that predates the key.
+            hot_window_turn_limit=int(getattr(self.cfg, "hot_window_max_follow_ups", MAX_CONSECUTIVE_HOT_WINDOW_TURNS)),
         )
 
         # Energy tracking for echo detection
@@ -650,6 +687,10 @@ class VoiceListener(threading.Thread):
 
         # Thinking tune player
         self._tune_player: Optional = None
+
+        # Rotates the spoken acknowledgement phrases so consecutive requests
+        # do not all open with the same words (see _speak_acknowledgement).
+        self._ack_index = 0
 
     def stop(self) -> None:
         """Stop the voice listener."""
@@ -682,6 +723,48 @@ class VoiceListener(threading.Thread):
     def _is_thinking_tune_active(self) -> bool:
         """Check if thinking tune is currently active."""
         return self._tune_player is not None and self._tune_player.is_playing()
+
+    def _speak_acknowledgement(self, generation: int) -> None:
+        """Say a short "on it" the moment a voice request is understood.
+
+        The reply engine can take seconds, and until it returns Claire says
+        nothing at all: the tune plays, the face shows THINKING, and the person
+        who just spoke is left wondering whether they were heard. One short
+        phrase, spoken first, fixes that — the reply still follows as soon as
+        it is ready, queued behind it.
+
+        It is *skipped*, not queued, when she is already speaking: that means
+        the person talked over a reply, and an acknowledgement arriving after
+        the thing it acknowledges is worse than silence. The thinking tune is
+        stopped rather than mixed under the voice.
+        """
+        if not getattr(self.cfg, "ack_enabled", True):
+            return
+        if self._should_stop or not self._transcription_is_current(generation):
+            return
+        tts = self.tts
+        if tts is None or not tts.enabled or tts.is_speaking():
+            return
+
+        phrases = getattr(self.cfg, "ack_phrases", None)
+        if not phrases:
+            # Old config objects (and tests) may predate the option.
+            from ..config import DEFAULT_ACK_PHRASES
+            phrases = list(DEFAULT_ACK_PHRASES)
+        index = getattr(self, "_ack_index", 0)
+        phrase = phrases[index % len(phrases)]
+
+        self._stop_thinking_tune()
+        # Stopping the tune can itself invalidate this turn: the teardown is
+        # where a new utterance (or a shutdown) is noticed. Re-check before
+        # speaking, or a dead turn gets an acknowledgement and no answer.
+        if self._should_stop or not self._transcription_is_current(generation):
+            return
+
+        self._ack_index = index + 1
+        self.track_tts_start(phrase)
+        debug_log(f"speaking acknowledgement: {phrase!r}", "voice")
+        tts.speak(phrase)
 
     def _set_face_state_listening(self) -> None:
         """Set the desktop face widget to LISTENING state."""
@@ -1020,8 +1103,76 @@ class VoiceListener(threading.Thread):
                 "voice",
             )
 
+        # Opt-in latency escape hatch (`intent_judge_skip_on_wake_word`). An
+        # utterance that itself contains the wake word is already unambiguous,
+        # so the judge's LLM call (~3 s at p50) buys only its `directed: false`
+        # defence against speech that merely mentions the name. With the key on
+        # we fall through to the deterministic wake-word path further down,
+        # which strips the wake word with `extract_query_after_wake`. Playback
+        # is excluded because the judge is what catches a stop command spoken
+        # over TTS, and the hot-window case is excluded because there is no wake
+        # word to key off in the first place.
+        skip_judge_on_wake_word = (
+            getattr(self.cfg, "intent_judge_skip_on_wake_word", False) is True
+            and not is_speaking_now
+            and self._wake_word_seen(text_lower, provisional_lower)
+        )
+        if skip_judge_on_wake_word:
+            debug_log(
+                "skipping intent judge — wake word present and "
+                "intent_judge_skip_on_wake_word is on",
+                "voice",
+            )
+
+        # Opt-in fast band (`hot_window_grace_seconds`): a follow-up arriving
+        # immediately after Claire stops speaking is taken without the judge,
+        # because that is the turn a human reply is most likely on and the
+        # judge is the single most expensive stage of it. Acceptance reuses
+        # the existing hot-window fallback below, which still rejects echo.
+        skip_judge_in_grace = (
+            not is_speaking_now
+            and not skip_judge_on_wake_word
+            and self._inside_follow_up_grace()
+        )
+        if skip_judge_in_grace:
+            debug_log(
+                "skipping intent judge — follow-up inside the grace band of "
+                "the hot window",
+                "voice",
+            )
+            # The accept-from-None path lives inside the judge block below, so
+            # skipping the judge would also skip acceptance. Take the turn here
+            # instead, after the same echo check that path uses: a follow-up
+            # arriving while Claire's own voice is still in the buffer must not
+            # drive a turn.
+            if could_be_hot_window:
+                grace_tts_text = (
+                    (self.echo_detector._last_tts_text or "") if same_tts_context else ""
+                )
+                is_pure_echo_grace = False
+                if grace_tts_text:
+                    grace_score = fuzz.partial_ratio(text_lower, grace_tts_text.lower())
+                    grace_tts_words = len(grace_tts_text.split())
+                    grace_text_words = len(text_lower.split())
+                    is_pure_echo_grace = (
+                        grace_score >= 70
+                        and grace_text_words
+                        <= max(grace_tts_words * 1.3, grace_tts_words + 3)
+                    )
+                if is_pure_echo_grace:
+                    debug_log(
+                        f"🔇 Echo inside the grace band: \"{text_lower}\"",
+                        "voice",
+                    )
+                    self._stop_thinking_tune()
+                    return
+                self._accept_follow_up(text_lower, "grace band", last_voice_time=utterance_end_time or None)
+                return
+
         if (
             not skip_intent_judge_during_tts
+            and not skip_judge_on_wake_word
+            and not skip_judge_in_grace
             and has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available
@@ -1055,9 +1206,19 @@ class VoiceListener(threading.Thread):
                 else:
                     print(f"  🧠 Intent ({mode_str}): not directed ({intent_judgment.reasoning})", flush=True)
             else:
-                reason = self._intent_judge.last_failure_reason or "no segments or unavailable"
-                print(f"  🧠 Intent judge: unavailable ({reason})", flush=True)
-                debug_log(f"intent judge returned None — falling back ({reason})", "voice")
+                if skip_judge_in_grace:
+                    # A deliberate skip, not a failure: saying "unavailable"
+                    # here would send field triage after a judge that was
+                    # never asked.
+                    print("  🧠 Intent: follow-up inside the grace window (no judge needed)", flush=True)
+                    debug_log(
+                        "intent judge deliberately skipped — grace band",
+                        "voice",
+                    )
+                else:
+                    reason = self._intent_judge.last_failure_reason or "no segments or unavailable"
+                    print(f"  🧠 Intent judge: unavailable ({reason})", flush=True)
+                    debug_log(f"intent judge returned None — falling back ({reason})", "voice")
                 # Hot window fallback: if the early echo check already cleared
                 # this text, accept it even without the judge's verdict.
                 if could_be_hot_window:
@@ -1079,7 +1240,7 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
+                        self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                         self._start_thinking_tune()
                         try:
                             print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1117,7 +1278,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(intent_judgment.query)
+                            self.state_manager.start_collection(intent_judgment.query, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1186,7 +1347,7 @@ class VoiceListener(threading.Thread):
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
 
-                        self.state_manager.start_collection(hot_query)
+                        self.state_manager.start_collection(hot_query, last_voice_time=utterance_end_time or None)
 
                         # Start thinking tune and show processing message
                         self._start_thinking_tune()
@@ -1220,7 +1381,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1250,7 +1411,7 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
+                        self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                         self._start_thinking_tune()
                         try:
                             print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1292,7 +1453,7 @@ class VoiceListener(threading.Thread):
                             self._transcript_buffer.mark_segment_processed(text_lower)
 
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1333,7 +1494,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1366,7 +1527,25 @@ class VoiceListener(threading.Thread):
                             self._stop_thinking_tune()
                             return
 
-                        if could_be_hot_window:
+                        # Strict mode (hot_window_require_directed, opt-in):
+                        # the override below only takes an utterance the judge
+                        # judged directed at Claire, so background television
+                        # cannot drive a turn. A genuine wake word always wins
+                        # — it is explicit engagement, judged or not. The
+                        # default stays the documented permissive behaviour
+                        # (listening.spec.md, hot window section). `is True`
+                        # because only a real config coerces to a bool.
+                        require_directed = (
+                            getattr(self.cfg, "hot_window_require_directed", False) is True
+                        )
+                        wake_present = self._wake_word_seen(text_lower, provisional_lower)
+                        if require_directed and could_be_hot_window and not wake_present:
+                            debug_log(
+                                f"🛑 strict hot window: not directed at Claire and no "
+                                f"wake word — refusing: \"{text_lower[:50]}\"",
+                                "voice",
+                            )
+                        if could_be_hot_window and (not require_directed or wake_present):
                             # Hot window + non-echo speech → user is talking to us.
                             # Override the intent judge rejection — small models
                             # sometimes reject valid follow-ups like "don't you
@@ -1381,7 +1560,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1417,7 +1596,7 @@ class VoiceListener(threading.Thread):
             self._clear_audio_buffers()
 
             query_fragment = extract_query_after_wake(text_lower, wake_word, list(aliases))
-            self.state_manager.start_collection(query_fragment)
+            self.state_manager.start_collection(query_fragment, last_voice_time=utterance_end_time or None)
 
             # Start thinking tune and show processing message
             self._start_thinking_tune()
@@ -1484,6 +1663,11 @@ class VoiceListener(threading.Thread):
             debug_log("face state set to THINKING (dispatch_query)", "voice")
         except Exception as e:
             debug_log(f"failed to set face state to THINKING: {e}", "voice")
+
+        # Answer back before thinking: the reply engine below can take seconds,
+        # and a request that meets silence feels like it was ignored. This
+        # speaks one short phrase now; the reply is queued behind it.
+        self._speak_acknowledgement(generation)
 
         # Import reply engine
         from ..reply.engine import run_reply_engine
@@ -1651,6 +1835,29 @@ class VoiceListener(threading.Thread):
         except Exception:
             return 0.0
 
+    def _audible_floor(self) -> float:
+        """``noise_gate_min_rms`` as a usable level, or the shipped default.
+
+        The gate decides by *level*, so a floor that comes back wrong does not
+        fail loudly - it fails as silence. A ``MagicMock`` config (test doubles
+        hand one back) floatifies to exactly 1.0, full scale: no real voice
+        clears that, so the assistant stops transcribing anything at all. Any
+        value that cannot be a voice level is therefore replaced by the default
+        rather than trusted.
+        """
+        raw = getattr(self.cfg, "noise_gate_min_rms", _AUDIBLE_FLOOR_DEFAULT)
+        try:
+            floor = float(raw)
+        except (TypeError, ValueError):
+            return _AUDIBLE_FLOOR_DEFAULT
+        if floor < 0.0:
+            # `config.py` clamps a negative floor to 0.0, so agree with it:
+            # negative means "no floor", not "the default floor".
+            return 0.0
+        if not math.isfinite(floor) or floor >= _AUDIBLE_FLOOR_CEILING:
+            return _AUDIBLE_FLOOR_DEFAULT
+        return floor
+
     def _speech_gate_reason(self) -> Optional[str]:
         """Why the buffered utterance is not worth transcribing, else ``None``.
 
@@ -1676,14 +1883,50 @@ class VoiceListener(threading.Thread):
                 return f"speech too short ({speech_ms:.0f} ms < {min_speech_ms:.0f} ms)"
 
         if bool(getattr(self.cfg, "noise_gate_enabled", True)) and voice_frames > 0:
+            speech_rms = self._utterance_speech_rms_sum / voice_frames
+            # Absolute floor first: when the room itself is near-silent its
+            # 20th-percentile floor is ~0, which makes the relative test below
+            # compare dither against nothing and pass it. A recogniser fed
+            # dither answers with its priors - "Yeah.", "Okay.", "Uh." - so the
+            # level has to be pinned to something absolute as well.
+            min_rms = self._audible_floor()
+            if min_rms > 0.0 and speech_rms < min_rms:
+                return (f"speech below the audible floor "
+                        f"({speech_rms:.5f} < {min_rms:.5f})")
             floor = self._ambient_noise_floor()
             margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
             if floor > 0.0 and margin > 0.0:
-                speech_rms = self._utterance_speech_rms_sum / voice_frames
                 if speech_rms < floor * margin:
                     return (f"speech below room noise floor "
                             f"({speech_rms:.5f} < {floor * margin:.5f})")
         return None
+
+    def _speech_evidence(self) -> str:
+        """The acoustic numbers behind a gate decision, ready for the log.
+
+        The gate logs its reasons for *discarded* utterances, but a noisy room
+        fails in the other direction too: noise loud enough to satisfy both
+        tests reaches the recogniser and comes back as a stray word like
+        "Yeah.". Recording the same evidence for accepted utterances is what
+        makes the next "she is hallucinating" report measurable - it shows
+        whether to move ``min_speech_ms``, ``noise_gate_margin`` or
+        ``vad_aggressiveness``, instead of guessing.
+        """
+        voice_frames = int(getattr(self, "_utterance_voice_frames", 0))
+        buffered_frames = len(getattr(self, "_utterance_frames", ()) or ())
+        rate = max(1, int(getattr(self, "_stream_samplerate", self._samplerate) or 1))
+        per_frame_ms = 1000.0 * self._frame_samples / rate
+        floor = self._ambient_noise_floor()
+        margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
+        speech_rms = (self._utterance_speech_rms_sum / voice_frames) if voice_frames else 0.0
+        min_rms = self._audible_floor()
+        return (
+            f"buffered {buffered_frames * per_frame_ms:.0f} ms, "
+            f"vad speech {voice_frames * per_frame_ms:.0f} ms "
+            f"(audible floor {min_rms:.5f}, "
+            f"room floor {floor:.5f} x{margin:.1f} = {floor * margin:.5f}, "
+            f"speech rms {speech_rms:.5f})"
+        )
 
     def _discard_noisy_utterance(self, reason: str) -> None:
         """Drop a completed buffer that never held enough speech to transcribe."""
@@ -2159,6 +2402,52 @@ class VoiceListener(threading.Thread):
         return self._assembler().build(
             provisional, authoritative, source or "authoritative", **timings
         )
+
+    def _accept_follow_up(self, text_lower: str, reason: str,
+                          last_voice_time: Optional[float] = None) -> None:
+        """Take an utterance as this turn's query and hand it to collection.
+
+        The sequence is: cancel the pending activation, mark the segment so it
+        is not re-extracted, clear the audio buffers, start collection and give
+        the user the thinking cue. The caller owns the echo decision. Extracted
+        so a new acceptance path does not add a tenth copy of it.
+        """
+        debug_log(f"✅ Accepting ({reason}): \"{text_lower}\"", "voice")
+        self.state_manager.cancel_hot_window_activation()
+        self._transcript_buffer.mark_segment_processed(text_lower)
+        self._clear_audio_buffers()
+        self.state_manager.start_collection(text_lower, last_voice_time=last_voice_time)
+        self._start_thinking_tune()
+        try:
+            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
+        except Exception:
+            pass
+
+    def _inside_follow_up_grace(self) -> bool:
+        """Whether a hot-window follow-up is inside the judge-free fast band.
+
+        The first moments after Claire stops speaking are when a human
+        follow-up is overwhelmingly most likely, and the intent judge costs
+        ~3 s at p50 on exactly that turn. Inside `hot_window_grace_seconds`
+        the follow-up is taken without the judge; after it, strict mode
+        applies as before, so background television is still gated.
+
+        Opt-in and narrow: the key defaults to 0.0 (every follow-up judged),
+        permissive mode already accepts without the judge, and a genuine wake
+        word has its own escape hatch. `is not True` because only a real
+        config coerces to a bool, and a MagicMock is not True; the duration is
+        likewise required to be a real number, because `float(MagicMock())` is
+        1.0 and a mock config would otherwise enable the band by accident.
+        """
+        if getattr(self.cfg, "hot_window_require_directed", False) is not True:
+            return False
+        grace = getattr(self.cfg, "hot_window_grace_seconds", 0.0)
+        if isinstance(grace, bool) or not isinstance(grace, (int, float)):
+            return False
+        if grace <= 0.0:
+            return False
+        elapsed = self.state_manager.hot_window_elapsed()
+        return elapsed is not None and elapsed < grace
 
     def _wake_word_seen(self, text_lower: str, provisional_lower: str = "") -> bool:
         """Whether this utterance addressed Claire by name.
@@ -2744,7 +3033,10 @@ class VoiceListener(threading.Thread):
             if ok:
                 print(f"     📐 Embedding probe passed: '{name}'", flush=True)
             else:
-                print(f"     ⚠️ Embedding probe failed: '{name}'. Check model availability and embedding settings.", flush=True)
+                reason = getattr(self, '_llm_warmup_reasons', {}).get('embed', '')
+                detail = f" - {reason}" if reason else ""
+                print(f"     ⚠️ Embedding probe failed: '{name}'{detail}", flush=True)
+                print("     ℹ️ Memory search falls back to keyword ranking until this works.", flush=True)
 
     def _start_llm_warmup(self) -> list[threading.Thread]:
         """Pre-load chat and intent judge models via the active backend.
@@ -2762,6 +3054,9 @@ class VoiceListener(threading.Thread):
         role-specific requests and their deadlines are not exercised.
         """
         self._llm_warmup_results: dict[str, tuple[str, bool]] = {}
+        # Why a failed probe failed, in the runtime's own words (see
+        # _report_llm_warmup); an empty entry means the backend had nothing to add.
+        self._llm_warmup_reasons: dict[str, str] = {}
 
         if _is_low_power_mode_enabled(self.cfg):
             print("     🌱 Low power mode: LLM warmup skipped", flush=True)
@@ -2829,6 +3124,7 @@ class VoiceListener(threading.Thread):
         # even when both settings happen to name the same model.
         if embed_model:
             def _warm_embed() -> None:
+                reason = ""
                 try:
                     backend = get_embedding_backend(self.cfg)
                     # Use embed() rather than warm_up() because embedding-only
@@ -2836,15 +3132,37 @@ class VoiceListener(threading.Thread):
                     # on the chat endpoint — warm_up() sends a chat completion
                     # which would fail for those models. A single-token embedding
                     # request forces the runtime to load the model the same way.
-                    # Use the embed method's own default timeout (15s) rather than
-                    # the full chat_timeout (60s) since this probe is sub-second.
-                    embed_timeout = min(chat_timeout, 15.0)
-                    result = backend.embed("ping", embed_model, timeout_sec=embed_timeout)
+                    # The cold-load allowance is deliberate: a model that is not
+                    # yet resident can take tens of seconds to page in on first
+                    # use, and this probe runs in the background at startup where
+                    # nothing is waiting on it. Once warm, calls are ~20 ms, so a
+                    # failure here is real rather than a slow start.
+                    embed_timeout = max(
+                        float(getattr(self.cfg, "llm_embedding_timeout_sec", 5.0)),
+                        min(chat_timeout, COLD_EMBED_PROBE_TIMEOUT_SECONDS),
+                    )
+                    result, reason = backend.embed_with_reason(
+                        "ping", embed_model, timeout_sec=embed_timeout
+                    )
                     ok = result is not None
                 except Exception as exc:
-                    debug_log(f"embed warmup failed: {exc}", "voice")
+                    # The exception is often the whole diagnosis (a refused
+                    # connection when the provider is not running), so it is
+                    # carried into the banner rather than reduced to "no reason
+                    # given". Redacted first: a provider that puts its key in the
+                    # query string would otherwise print it into the journal.
+                    reason = redact_secrets(
+                        f"{type(exc).__name__}: {exc}", max_len=_EMBED_REASON_MAX
+                    )
+                    debug_log(f"embed warmup failed: {reason}", "voice")
                     ok = False
                 self._llm_warmup_results["embed"] = (embed_model, ok)
+                if not ok:
+                    # Carry the runtime's own words into the banner: "model not
+                    # found, try pulling it first" and "insufficient credits"
+                    # used to look identical, and the generic advice sent the
+                    # reader looking in the wrong place.
+                    self._llm_warmup_reasons["embed"] = reason or "no reason given"
 
             threads.append(threading.Thread(target=_warm_embed, daemon=True, name="warmup-embed"))
 
@@ -3326,6 +3644,14 @@ class VoiceListener(threading.Thread):
                                 if reason is not None:
                                     self._discard_noisy_utterance(reason)
                                 else:
+                                    if debug_enabled():
+                                        # Assembling the evidence reads the
+                                        # ambient history, so it is only worth
+                                        # doing when someone will read it.
+                                        debug_log(
+                                            f"utterance accepted: {self._speech_evidence()}",
+                                            "voice",
+                                        )
                                     self._finalize_utterance()
                             self._pre_roll.clear()
                     # The streaming recogniser is fed frame by frame for
@@ -3353,6 +3679,9 @@ class VoiceListener(threading.Thread):
 
         # Track when utterance ends - but don't overwrite global timing yet
         utterance_end_time = time.time()
+        # The silence window runs from this moment, not from when the
+        # transcript finishes decoding: note it before transcription starts.
+        self.state_manager.note_voice_heard(utterance_end_time)
         utterance_start_time = self.echo_detector._utterance_start_time
 
         if self.cfg.voice_debug:

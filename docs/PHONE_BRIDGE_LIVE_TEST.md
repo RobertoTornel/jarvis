@@ -24,8 +24,8 @@ note.
   SDK 35, reached over wireless ADB — and **11 instrumented tests ran there: 10
   passed, 1 skipped, 0 failed**. That run caught and fixed a real defect: a dead
   camera shutter after a bind failure (commit `1305415`). Those on-device results
-  are recorded in [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L322) §8 and §8.1,
-  and in [`docs/HANDOVER.md`](HANDOVER.md#L410) §6.8.
+  are recorded in [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L323) §8 and §8.1,
+  and in [`docs/HANDOVER.md`](HANDOVER.md#L412) §6.8.
 * What this note records is narrower, and still useful: the **bridge itself** —
   its interface, and its behaviour when exercised from the handset *before an
   app existed*. The bridge is an HTTP **server that runs on the laptop**
@@ -180,7 +180,7 @@ Two things worth recording honestly:
 * **A phone-side client.** There was none: testing used `adb shell` + the
   Android system `curl`, and Termux was not installed. The client now exists in
   this repository at [`android/`](../android), and its on-device results are in
-  [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L322) §8 and §8.1.
+  [`docs/PHONE_CLIENT.md`](PHONE_CLIENT.md#L323) §8 and §8.1.
 * **A production utterance sink.** At the time `POST /text` worked only because
   the bridge was started with `--echo`. The daemon now starts the bridge and
   injects the production sink (`_start_phone_bridge` → `_phone_utterance_sink`

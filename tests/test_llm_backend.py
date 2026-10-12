@@ -1063,3 +1063,43 @@ class TestOllamaBackendSanitizesMessages:
         assert sys_msg["role"] == "system"
         assert sys_msg["content"] == "You are a helpful assistant."
         assert "_is_context_injected" not in sys_msg
+
+
+class TestOllamaEmbedWithReason:
+    """Ollama explains itself well; the reason must survive the call."""
+
+    @patch("claire.llm.requests.post")
+    def test_a_missing_model_repeats_ollamas_instruction(self, mock_post):
+        from claire.llm import OllamaBackend
+
+        resp = _make_response(status_code=404)
+        resp.text = '{"error":"model \\"nomic-embed-text\\" not found, try pulling it first"}'
+        mock_post.return_value = resp
+
+        vector, reason = OllamaBackend("http://localhost:11434").embed_with_reason(
+            "ping", "nomic-embed-text"
+        )
+
+        assert vector is None
+        assert "404" in reason and "try pulling it first" in reason, reason
+
+    @patch("claire.llm.requests.post")
+    def test_a_vector_comes_back_without_a_reason(self, mock_post):
+        from claire.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"embedding": [0.1, 0.2]})
+
+        vector, reason = OllamaBackend("http://localhost:11434").embed_with_reason(
+            "ping", "nomic-embed-text"
+        )
+
+        assert vector == [0.1, 0.2]
+        assert reason == ""
+
+    @patch("claire.llm.requests.post")
+    def test_embed_still_returns_just_the_vector(self, mock_post):
+        from claire.llm import OllamaBackend
+
+        mock_post.return_value = _make_response(json_data={"embedding": [3.0]})
+
+        assert OllamaBackend("http://localhost:11434").embed("ping", "m") == [3.0]

@@ -63,7 +63,7 @@ integration in `src/claire/reply/engine.py`.
 
 The engine skips the planner entirely when **all** of these hold:
 
-- The tool router returned no real tools (only system tools like `stop` — the router's positive "none" decision, not its fall-open-to-all-tools path).
+- The tool router returned no real tools. Every name in its verdict is a system tool (`SYSTEM_TOOL_NAMES` in `tools/selection.py`: the `stop` sentinel and the `toolSearchTool` escape hatch), which is the router's positive "none" decision. The count does not matter: the router routinely names both, so a verdict of `{"stop", "toolSearchTool"}` is the ordinary no-tool answer. A `None` verdict (the router timed out or gave up and fell open to all tools) is *not* tool-free, because it carries no signal.
 - The query is short (≤ 8 words, split on whitespace — language-agnostic).
 - `planner_enabled` is True (the skip is an optimisation, not a feature-gate bypass).
 

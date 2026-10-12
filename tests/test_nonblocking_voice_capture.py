@@ -178,7 +178,10 @@ def test_invalidated_reply_does_not_speak(synthetic_listener, monkeypatch, inval
         return 'Synthetic reply'
     monkeypatch.setattr('claire.reply.engine.run_reply_engine', reply)
     obj._dispatch_query('weather')
-    assert spoken == [], 'Invalidated voice reply reached speech output'
+    # The acknowledgement is spoken before the reply engine runs, so it is
+    # already out by the time the turn is invalidated — she *was* on it. What
+    # must never be spoken is the answer to a turn that no longer exists.
+    assert 'Synthetic reply' not in spoken, 'Invalidated voice reply reached speech output'
 
 
 def test_cleared_buffers_discard_captured_audio_without_waiting_for_worker(synthetic_listener):

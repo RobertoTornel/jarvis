@@ -137,10 +137,15 @@ Three modes are defined in `listening.spec.md`:
 
 1. **Wake word mode** (default) — waiting for the wake word.
 2. **Hot window mode** — after Claire finishes speaking, a wake-word-free
-   follow-up is allowed for `hot_window_seconds` (default `3.0`) once the echo
-   has settled. At most **one** consecutive follow-up per explicit wake word is
-   permitted; a second one is refused with `Follow-up window closed — say
-   "Claire" to continue`.
+   follow-up is allowed for `hot_window_seconds` (default `3.0`, clamped on
+   load to 1.0-30.0) once the echo has settled. Up to
+   `hot_window_max_follow_ups` consecutive follow-ups (default `3`, `0` means
+   unlimited) are permitted per explicit wake word; past the cap the next one
+   is refused with `Follow-up window closed — say
+   "Claire" to continue`. Set `hot_window_require_directed` to `True` and only
+   follow-ups the intent judge judges addressed to Claire are accepted (so
+   background television cannot drive a turn); a genuine wake word is always
+   accepted.
 3. **During TTS** — only a stop command is expected, with a shorter utterance
    timeout.
 
@@ -304,6 +309,7 @@ specs beside their code:
 | `schedule` | `add`, `list`, `move`, `cancel`, `due` against Claire's own calendar |
 | `logMeal`, `fetchMeals`, `deleteMeal` | Nutrition log: estimate macros for a described meal, list or delete entries |
 | `getTime` | Current date and time |
+| `getWeather` | Current weather via Open-Meteo (no API key): temperature, feels-like, conditions, humidity, wind, three-day outlook |
 | `screenshot` | Native screenshot capture |
 | `toolSearchTool` | Escape hatch that widens the tool allow-list mid-conversation by re-running the router |
 | `refreshMCPTools` | Re-discover tools from configured MCP servers |
@@ -437,11 +443,20 @@ rotating backups.
 
 ### Weather
 
-There is no dedicated conditions tool. Weather, climate, temperature and
-"what is it like outside" are answered through `webSearch`: the prompt tells the
-model to call the search tool in the same turn for any current-conditions
-request, direct or indirect, and forbids answering from training data, which
-cannot know today's temperature anywhere.
+`getWeather` answers current conditions and a three-day outlook through
+Open-Meteo, which needs no API key. A place the user names goes in the tool's
+`location` argument; with no place named it falls back to the configured
+`location_city`, so the common "what is it like outside" needs no clarifying
+question. Every failure — no place resolvable, the service unreachable, a
+response that carries no temperature — is reported as a failure rather than
+guessed at, and the prompt forbids answering from training data, which cannot
+know today's temperature anywhere.
+
+The tool was removed from the product on 7 October 2026 in favour of routing
+weather to `webSearch`. It is back because that route is what produced the
+parroted film-summary answer that motivated the tool carry-over guard (see
+`src/claire/reply/reply.spec.md`), and because a general web search cannot give
+a current reading on a host whose search engine refuses requests.
 
 ### Location
 
@@ -614,7 +629,9 @@ keys by hand. The knobs most worth knowing:
 - **Voice**: `wake_word`, `wake_aliases`, `wake_fuzzy_ratio`, `stt_engine`,
   `stt_model_path`, `streaming_stt_engine`, `tts_engine` and the per-engine voice
   keys, `vad_enabled`, `endpoint_silence_ms`, `max_utterance_ms`,
-  `hot_window_enabled`, `hot_window_seconds`, `echo_tolerance`.
+  `hot_window_enabled`, `hot_window_seconds`, `hot_window_max_follow_ups`
+  (0 = unlimited), `hot_window_require_directed`, `echo_tolerance`,
+  `intent_judge_skip_on_wake_word`.
 - **Reply behaviour**: `tool_selection_strategy`, `agentic_max_turns`,
   `tool_carryover_max_turns`, `low_power_mode`,
   `transcript_buffer_duration_sec`.
@@ -716,8 +733,8 @@ PYTHONPATH=src python -m claire --help
 `scripts/run_linux.sh` creates `.venv` when missing, installs
 `requirements.txt`, exports `PYTHONPATH=src` and runs `python -m claire`, which
 hands off to the daemon. The console script `claire` (from `pyproject.toml`) and
-`python -m claire` both land in `claire.cli`, which parses `--version` and
-`--smoke-test` and calls the daemon.
+`python -m claire` both land in `claire.cli`, which parses `--version`,
+`--smoke-test` and `--no-tune` and calls the daemon.
 
 `pip install -r requirements.txt` installs the dependencies but not Claire
 herself, so `src/` must be on `PYTHONPATH` — the run script exports it.
@@ -730,9 +747,25 @@ Available flags:
 ```text
 claire --version        # print the Claire version and exit
 claire --smoke-test     # start the daemon, verify core subsystems, then exit
+claire --no-tune        # start the daemon without the pinging thinking tune
 ```
 
-### As a systemd user service
+`--no-tune` silences the pad that pulses while Claire thinks — the one cue sound
+she makes; her voice is unaffected. For the installed service the same switch is
+the environment variable `CLAIRE_TUNE_ENABLED=0`, which belongs in
+`~/.config/claire/claire.env`:
+
+```bash
+echo 'CLAIRE_TUNE_ENABLED=0' >> ~/.config/claire/claire.env
+systemctl --user restart claire
+```
+
+The same pair also decides whether the tune starts at all: `tune_enabled` in
+`~/.config/claire/config.json` (or the "Startup Tune" toggle in the settings
+window) is the stored preference, and an explicit flag or environment variable
+outranks it for the run.
+
+### Starts on startup
 
 `deploy/claire.service` is a **user** unit, not a system unit, and that is
 deliberate: Claire needs the microphone, the speakers and (for the screen
@@ -740,20 +773,55 @@ senses) the graphical session, all of which belong to a human login session. A
 system unit starts before any session exists and has no audio server or display,
 so the failure surfaces as "no microphone" and looks like a Claire bug.
 
-The file is a **template**: it carries `@CLAIRE_REPO_ROOT@` where the checkout
-lives, because a unit file cannot discover its own repository. Install it with a
-command that substitutes the real path (do not copy it verbatim — the
-placeholder is not a path):
+One command wires all three parts to come up by themselves:
 
 ```bash
-./start.sh --install-service        # renders and installs, backs up any existing unit
-systemctl --user enable --now claire
-journalctl --user -u claire -f
+./start.sh --install-service
 ```
 
-Consequence, stated honestly: Claire runs while that user is logged in.
-`loginctl enable-linger` keeps the process alive without a login but the audio
-and display parts are unavailable by definition in that case.
+It renders and installs, backing up anything already there:
+
+| Installed | Starts |
+| --- | --- |
+| `~/.config/systemd/user/claire.service` | at login, and at boot while linger is on |
+| `~/.config/systemd/user/claire-panel.service` | at login, and at boot while linger is on |
+| `~/.config/systemd/user/claire-desktop.service` | with the desktop session |
+| `~/.config/autostart/claire-desktop.desktop` | with the desktop session |
+
+The units are **templates**: they carry `@CLAIRE_REPO_ROOT@` where the checkout
+lives, because a unit file cannot discover its own repository. Do not copy one
+verbatim, the placeholder is not a path. `./start.sh --install-service`
+substitutes the real path, runs `systemctl --user daemon-reload`, enables every
+unit and starts what it can in the current session.
+
+Check what is running and how it is wired:
+
+```bash
+./start.sh status                   # components, plus a "Startup wiring" section
+journalctl --user -u claire -f
+journalctl --user -u claire-panel -f
+journalctl --user -u claire-desktop -f
+```
+
+Turn it off again:
+
+```bash
+./start.sh --no-desktop             # leave the tray app out of this start
+./start.sh stop                     # stop the panel and the daemon
+systemctl --user disable claire claire-panel claire-desktop
+rm ~/.config/autostart/claire-desktop.desktop
+```
+
+The honest split: the daemon and the panel are plain services and start at login
+(or at boot with `loginctl enable-linger`), but they get no audio or display
+without a session. The tray app needs a graphical session, so it is deliberately
+**not** enabled at `default.target`; it is started by the desktop session, via
+its `WantedBy=graphical-session.target` on desktops that activate that target and
+via the autostart entry on the desktops (such as Cinnamon) that do not.
+
+Machine-specific runtime settings belong in `~/.config/claire/claire.env` (mode
+`0600`, outside the repository), never in a shipped unit: see
+[Configuration](docs/CONFIGURATION.md).
 
 ### In Docker
 

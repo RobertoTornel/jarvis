@@ -41,6 +41,16 @@
 # copied, backed up or pasted into a bug report). It therefore contains NO
 # inline secret: keys come from EnvironmentFile below, which is 0600 and owned by
 # the user. Never add `Environment=OMNIROUTE_API_KEY=...` here.
+#
+# LOCAL POLICY BELONGS IN A DROP-IN, NOT HERE
+# -------------------------------------------
+# `./start.sh --install-service` re-renders this file from the template, so
+# anything hand-edited into it is lost the next time the installer runs - which
+# is how an `After=`/`Wants=omniroute.service` ordering was lost once already.
+# Machine-specific policy goes in
+#   ~/.config/systemd/user/claire.service.d/*.conf
+# which systemd merges over this unit and the installer never writes to. One
+# real use: ordering Claire after the LLM provider it warms up at startup.
 
 [Unit]
 Description=Claire - always-on Linux voice assistant
@@ -122,6 +132,18 @@ ReadWritePaths=%h/.local/share/claire %h/.config/claire %h/.cache/claire %h/.cac
 # degraded, with nothing in the banner to say so. Pointing the cache at a
 # writable directory fixes it; this was verified under the same sandbox.
 Environment=NUMBA_CACHE_DIR=%h/.cache/numba
+
+# torch's inductor sizes its asynchronous compilation pool to the CPU count, so
+# loading the NeMo Parakeet recogniser leaves one idle `compile_worker` process
+# per core alive for the life of the daemon. On a 12-core machine that measured
+# 13 processes and roughly 4 GB of resident memory held for no further work, and
+# the unit's cgroup peak reached 12.5 GB, which is how it came to be OOM-killed.
+#
+# Setting the pool to one worker disables asynchronous compiling (torch then
+# compiles inline), which drops the whole pool. This only changes how the
+# kernels are *built*, not the kernels themselves, so transcription speed is
+# unaffected; the cost is a slower first compile at startup.
+Environment=TORCHINDUCTOR_COMPILE_THREADS=1
 
 [Install]
 # A user unit is enabled in the user's manager, so the target is default.target

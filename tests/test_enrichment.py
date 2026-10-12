@@ -7,6 +7,7 @@ import pytest
 
 from claire.reply.engine import (
     _build_enrichment_context_hint,
+    _cap_tool_result,
     _match_question,
     _maybe_digest_tool_result,
 )
@@ -1024,3 +1025,46 @@ class TestDigestLoopForMaxTurns:
 
         assert out is None
         mock_llm.assert_not_called()
+
+
+class TestCapToolResult:
+    """A tool result must not be able to inject an unbounded payload.
+
+    Measured 2026-10-13: fetching en.wikipedia.org/wiki/Lisbon returned 50,028
+    characters in a single call, and the digest that would compress it is off
+    for a large chat model, so the raw payload enters the context of every
+    remaining turn of the conversation. The cap keeps a real answer intact and
+    says what it removed instead of letting the model believe it has
+    everything.
+    """
+
+    def test_a_short_result_is_untouched(self):
+        assert _cap_tool_result("1920 by 1080") == "1920 by 1080"
+
+    def test_a_result_exactly_at_the_limit_is_untouched(self):
+        text = "x" * 100
+
+        assert _cap_tool_result(text, limit=100) == text
+
+    def test_an_oversized_result_is_cut_to_the_limit(self):
+        text = "y" * 500
+
+        capped = _cap_tool_result(text, limit=100)
+
+        assert capped.startswith("y" * 100)
+
+    def test_the_marker_names_how_much_was_removed(self):
+        capped = _cap_tool_result("z" * 500, limit=100)
+
+        assert "400 more characters" in capped
+        assert "omitted" in capped
+
+    def test_the_default_limit_keeps_exactly_the_head(self):
+        capped = _cap_tool_result("w" * 9000)
+
+        assert capped[:8000] == "w" * 8000
+        assert capped[8000:8003] == "\n\n["
+
+    def test_a_non_string_is_passed_through(self):
+        """Defensive: a tool that returns None must not raise here."""
+        assert _cap_tool_result(None) is None

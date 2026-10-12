@@ -6,7 +6,10 @@ where a phrase sits. Linux-only, no network, no LLM.
 - File: `src/claire/senses/screen.py`, re-exported by
   `src/claire/senses/__init__.py`.
 - Tests: `tests/test_senses_screen.py` (unit-marked).
-- Related, not edited: `src/claire/tools/builtin/screenshot.py` (upstream).
+- Related: `src/claire/tools/builtin/screenshot.py` — the `screenshot` tool now
+  delegates to this module's `read_screen()` (lazy import, same pattern as
+  `tools/builtin/senses.py`) and converts its named errors into an honest
+  `success=False` result. Tests: `tests/test_screenshot_tool.py` (unit-marked).
 
 ## Measured facts about this machine (2026-02, Linux Mint 22.3)
 
@@ -21,11 +24,14 @@ where a phrase sits. Linux-only, no network, no LLM.
 
 ## Why this module exists
 
-Upstream's `ScreenshotTool` only knows macOS. It looks for `screencapture`,
-finds nothing on Linux, skips its `tesseract` branch, and returns
-`ToolExecutionResult` with `ocr_text = ""`. On this machine that is a
-*permanent* silent-empty success: the tool reports success and the text is
+Upstream's `ScreenshotTool` only knew macOS. It looked for `screencapture`,
+found nothing on Linux, skipped its `tesseract` branch, and returned
+`ToolExecutionResult` with `ocr_text = ""`. On this machine that was a
+*permanent* silent-empty success: the tool reported success and the text was
 empty, which is byte-for-byte identical to "the screen has no words on it".
+**Fixed:** `screenshot.py` now calls this module's `read_screen()` through a
+lazy `_screen_module()` helper; a raised `ScreenError` becomes
+`success=False` with the error's own message, and success is never empty.
 
 So the rules are:
 
@@ -65,9 +71,9 @@ find_phrase_on_screen(phrase, ...) -> PhraseLocation
    `gnome-screenshot -f`, `xfce4-screenshooter -f -s`,
    `imagemagick-import` (`import -window root`), `maim`, `scrot`.
 3. On Darwin only: `screencapture -x`, reusing upstream's binary discovery via
-   a lazy `import` of `claire.tools.builtin.screenshot`. Upstream's own logic is
-   not reusable *as a mechanism* - it runs `screencapture -i` (interactive),
-   consumes the text and deletes the PNG - so it cannot produce a capture path.
+   a lazy `import` of `claire.tools.builtin.screenshot`. (The upstream tool's
+   own capture logic was replaced by a call into *this* module, so nothing
+   here depends on it as a mechanism — it cannot produce a capture path.)
 
 Capture files are **kept**, not deleted: `capture_path` is part of the result.
 

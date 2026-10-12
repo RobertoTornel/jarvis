@@ -12,7 +12,7 @@ import sys
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any, NamedTuple, Optional, Callable
 from urllib.parse import urlparse
 
 from ..debug import debug_log
@@ -27,6 +27,25 @@ from ..utils.audio_lock import portaudio_lock
 PIPER_DEFAULT_VOICE = "en_GB-alan-medium"
 _PIPER_DOWNLOAD_MAX_RETRIES = 4
 PIPER_VOICE_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0"
+
+
+class _SpeechItem(NamedTuple):
+    """One queued utterance together with the callbacks that belong to it.
+
+    These callbacks used to live on the engine as shared attributes, which
+    broke as soon as two utterances could be in flight: Claire now speaks a
+    short acknowledgement while the reply is still being generated, and the
+    reply is enqueued behind it. With shared state the acknowledgement's
+    completion fired the *reply's* callback and then cleared it, so the reply
+    finished without its own completion ever running (the thing that frees the
+    hot window). Pairing the callbacks with the text removes the race; FishTTS
+    already carried them per item for the same reason.
+    """
+
+    text: str
+    completion_callback: Optional[Callable[[], None]] = None
+    duration_callback: Optional[Callable[[float], None]] = None
+
 
 
 def _get_piper_models_dir() -> Path:
@@ -393,13 +412,11 @@ class ChatterboxTTS:
         self.cfg_weight = cfg_weight
 
         # Threading and queue setup (same as TextToSpeech)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: "queue.Queue[_SpeechItem]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
         self._should_interrupt = threading.Event()
 
         # Chatterbox model (eagerly loaded during initialization)
@@ -504,12 +521,12 @@ class ChatterboxTTS:
             self.start()
         if not self.enabled:
             return
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
         # Preprocess text for speech (convert links to readable descriptions)
         processed_text = _preprocess_for_speech(text)
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(
+                _SpeechItem(processed_text, completion_callback, duration_callback)
+            )
         except Exception:
             pass
 
@@ -520,17 +537,19 @@ class ChatterboxTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                item = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if not item:
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(item if isinstance(item, _SpeechItem)
+                                 else _SpeechItem(str(item)))
             except Exception:
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _speak_once(self, item: _SpeechItem) -> None:
+        text = item.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -564,9 +583,9 @@ class ChatterboxTTS:
             debug_log(f"Chatterbox TTS synthesis complete: {exact_duration:.2f}s", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if item.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    item.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Chatterbox TTS duration callback error: {e}", "tts")
 
@@ -608,13 +627,12 @@ class ChatterboxTTS:
             # Signal speaking stopped to face widget
             self._notify_speaking_state(False)
             
-            # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            # Call this utterance's completion callback if set and not interrupted
+            if item.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    item.completion_callback()
                 except Exception:
                     pass
-                self._completion_callback = None
     
     def _notify_speaking_state(self, is_speaking: bool) -> None:
         """Notify the face widget of speaking state changes.
@@ -676,13 +694,11 @@ class PiperTTS:
         self.sentence_silence = sentence_silence
 
         # Threading and queue setup (same pattern as other TTS engines)
-        self._q: queue.Queue[str] = queue.Queue()
+        self._q: "queue.Queue[_SpeechItem]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._is_speaking = threading.Event()
         self._last_spoken_text: str = ""
-        self._completion_callback: Optional[Callable[[], None]] = None
-        self._duration_callback: Optional[Callable[[float], None]] = None
         self._should_interrupt = threading.Event()
 
         # Piper voice (lazy loaded)
@@ -815,12 +831,12 @@ class PiperTTS:
             self.start()
         if not self.enabled:
             return
-        self._completion_callback = completion_callback
-        self._duration_callback = duration_callback
         # Preprocess text for speech
         processed_text = _preprocess_for_speech(text)
         try:
-            self._q.put_nowait(processed_text)
+            self._q.put_nowait(
+                _SpeechItem(processed_text, completion_callback, duration_callback)
+            )
         except Exception:
             pass
 
@@ -838,18 +854,20 @@ class PiperTTS:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                text = self._q.get(timeout=0.5)
+                item = self._q.get(timeout=0.5)
             except queue.Empty:
                 continue
-            if not text:
+            if not item:
                 continue
             try:
-                self._speak_once(text)
+                self._speak_once(item if isinstance(item, _SpeechItem)
+                                 else _SpeechItem(str(item)))
             except Exception as e:
                 debug_log(f"Piper TTS error in _speak_once: {e}", "tts")
                 continue
 
-    def _speak_once(self, text: str) -> None:
+    def _speak_once(self, item: _SpeechItem) -> None:
+        text = item.text
         self._is_speaking.set()
         self._last_spoken_text = text
         self._should_interrupt.clear()
@@ -913,9 +931,9 @@ class PiperTTS:
             debug_log(f"Piper TTS synthesis complete: {exact_duration:.2f}s, {len(full_audio)} samples", "tts")
 
             # Notify listener of exact duration for precise echo detection
-            if self._duration_callback is not None:
+            if item.duration_callback is not None:
                 try:
-                    self._duration_callback(exact_duration)
+                    item.duration_callback(exact_duration)
                 except Exception as e:
                     debug_log(f"Piper TTS duration callback error: {e}", "tts")
 
@@ -983,13 +1001,12 @@ class PiperTTS:
             self._is_speaking.clear()
             self._notify_speaking_state(False)
 
-            # Call completion callback if set and not interrupted
-            if self._completion_callback is not None and not interrupted:
+            # Call this utterance's completion callback if set and not interrupted
+            if item.completion_callback is not None and not interrupted:
                 try:
-                    self._completion_callback()
+                    item.completion_callback()
                 except Exception as e:
                     print(f"  ⚠️ Piper TTS completion callback error: {e}", flush=True)
-                self._completion_callback = None
 
     def _notify_speaking_state(self, is_speaking: bool) -> None:
         """Notify the face widget of speaking state changes."""
@@ -1070,7 +1087,10 @@ def create_tts_engine(
     """Factory function to create the appropriate TTS engine.
 
     Supported engines (see :data:`SUPPORTED_TTS_ENGINES`):
-    - "piper" (default): Neural TTS with auto-download, exact duration tracking
+    - "piper": Neural TTS with auto-download, exact duration tracking. This is
+      the *signature* default; a fresh install runs "fish", because that is what
+      the shipped config declares and the daemon always passes
+      ``cfg.tts_engine``.
     - "chatterbox": AI voice with emotion control (requires PyTorch)
     - "fish": Fish Audio streaming TTS (needs a key file and a voice id)
 

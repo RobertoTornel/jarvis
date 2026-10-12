@@ -207,13 +207,27 @@ class GeminiEmbeddingBackend(LLMBackend):
         task_type: Optional[str] = None,
     ) -> Optional[List[float]]:
         """Embed one text via ``:embedContent``."""
+        return self.embed_with_reason(text, model, timeout_sec, task_type)[0]
+
+    def embed_with_reason(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
+    ) -> tuple[Optional[List[float]], str]:
+        """Embed, keeping the status line and the server's message on failure.
+
+        Only those two are kept: an exception string can carry the URL, and the
+        URL is where a key would leak if the query-string form were ever used.
+        """
         if not self._api_key:
             debug_log(
                 "Gemini embeddings are configured but no API key is present "
                 "(set embedding_api_key or GEMINI_API_KEY); skipping the request",
                 "llm",
             )
-            return None
+            return None, "no Gemini API key is configured"
         try:
             resp = requests.post(
                 f"{self.base_url}/models/{model}:embedContent",
@@ -221,20 +235,49 @@ class GeminiEmbeddingBackend(LLMBackend):
                 headers=self._headers(),
                 timeout=timeout_sec,
             )
-            resp.raise_for_status()
-            data = resp.json()
         except Exception as exc:  # noqa: BLE001 - reported, never raised
-            # Only the class and status are logged: an exception string can
-            # carry the URL, and the URL is where a key would leak if the
-            # query-string form were ever used.
             debug_log(
                 f"Gemini embedContent failed ({type(exc).__name__}); "
                 "memory search will fall back to keywords",
                 "llm",
             )
-            return None
+            return None, f"{type(exc).__name__} while calling :embedContent"
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int) and status != 200:
+            message = ""
+            try:
+                payload = resp.json()
+                error = payload.get("error") if isinstance(payload, dict) else None
+                if isinstance(error, dict):
+                    message = str(error.get("message") or "")
+                elif isinstance(error, str):
+                    message = error
+            except Exception:
+                message = ""
+            if not message:
+                message = str(getattr(resp, "text", "") or "")
+            message = " ".join(message.split())[:200]
+            debug_log(
+                f"Gemini embedContent failed (HTTP {status}); "
+                "memory search will fall back to keywords",
+                "llm",
+            )
+            return None, f"HTTP {status}" + (f": {message}" if message else "")
+        try:
+            resp.raise_for_status()
+        except Exception:
+            return None, "the request was rejected"
+
+
+        try:
+            data = resp.json()
+        except Exception:
+            return None, "the reply was not readable as an embedding response"
         entry = data.get("embedding") if isinstance(data, dict) else None
-        return self._accept(self._values_from_embedding(entry), model)
+        vector = self._accept(self._values_from_embedding(entry), model)
+        if vector is None:
+            return None, "the reply carried no embedding"
+        return vector, ""
 
     def embed_batch(
         self,

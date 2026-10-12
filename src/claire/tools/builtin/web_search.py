@@ -3,6 +3,7 @@
 import ipaddress
 import re
 import socket
+from datetime import date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -76,6 +77,112 @@ def _is_public_url(url: str) -> bool:
         except Exception:
             return False
     return True
+
+
+# A query asking for something that changes hour to hour cannot be answered
+# from an encyclopaedia. When the primary engine refuses the request and the
+# only content is a Wikipedia extract, that extract must not be offered as the
+# answer: asking for the weather in Lisbon this way returned the city's
+# population and a summary of Europe's heatwaves, and the field trace in
+# reply.spec.md records the same route parroting a film summary as the weather.
+#
+# This is deliberately a small, conservative list of explicit markers rather
+# than a classifier. A false positive costs one honest "I could not search"
+# reply; a false negative repeats the failure the guard exists to prevent, so
+# where the two are close the list includes the marker.
+_TIME_SENSITIVE_WORDS = re.compile(
+    r"\b(?:weather|forecast|temperature|raining|rain|snow|humidity|wind|"
+    r"snowing|sunny|cloudy|"
+    r"news|headline|headlines|breaking|"
+    r"today|tonight|tomorrow|yesterday|currently|latest|nowadays|"
+    r"price|prices|cost|costs|stock|stocks|shares|share|"
+    r"score|scores|standings|fixture|fixtures|"
+    r"traffic|delays|delay)\b"
+)
+
+# Phrases the single-word pattern above cannot express, matched as substrings
+# because they are unambiguous in full.
+_TIME_SENSITIVE_PHRASES = (
+    "right now",
+    "at the moment",
+    "this week",
+    "this weekend",
+    "this month",
+    "how much is",
+    "how much are",
+    "who won",
+    "is it open",
+    "are they open",
+    "still open",
+    "is it closed",
+    "opening hours",
+    "exchange rate",
+    "kick off",
+)
+
+
+# A named, strictly past year dates a question: the answer is settled, so
+# encyclopaedia prose answers it exactly. "who won the 2022 world cup" is a
+# fact; "who won last night" is a live result. This matters because "who won"
+# is itself a live-result marker, so without this rule a dated historical
+# question is refused a search it should have had.
+#
+# The same pattern keeps the title resolver honest: Wikipedia ranks the
+# *current* edition of a recurring event highest, so a question naming 2022
+# must not be answered from the 2026 page.
+_NAMED_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# Markers that pull a dated question back to the present. If one is present,
+# the year does not settle the question ("...and who leads now?").
+_PRESENT_MARKERS = re.compile(
+    r"\b(?:right now|at the moment|currently|today|tonight|tomorrow|now|"
+    r"this (?:week|weekend|month|year|season)|latest|so far|nowadays|"
+    r"still|yet)\b"
+)
+
+
+def _names_a_past_year(text: str) -> bool:
+    """Whether the text names a year strictly before the current one.
+
+    Strictly, so a question about the current year stays live: the answer to
+    "the 2026 season so far" can still change.
+    """
+    years = [int(match) for match in _NAMED_YEAR.findall(text)]
+    return bool(years) and max(years) < date.today().year
+
+
+def _looks_time_sensitive(query: str) -> bool:
+    """Whether a query plainly asks for something that changes hour to hour.
+
+    Used to decide that encyclopaedia prose must not stand in for a search
+    result. See the note above for why this is a marker list, not a model.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return False
+    lowered = query.strip().lower()
+    if _names_a_past_year(lowered) and not _PRESENT_MARKERS.search(lowered):
+        return False
+    if _TIME_SENSITIVE_WORDS.search(lowered):
+        return True
+    return any(phrase in lowered for phrase in _TIME_SENSITIVE_PHRASES)
+
+
+def _wikipedia_provenance_notice(search_query: str) -> str:
+    """The notice prefixed to a Wikipedia fallback that stood in for a search.
+
+    The model sees the extract behind an UNTRUSTED WEB EXTRACT fence and is
+    otherwise free to relay it as the answer to a question that was never
+    actually searched. This says, in the payload itself, that no search ran.
+    """
+    return (
+        f"NOTE FOR YOUR REPLY: the web search did not run for "
+        f"'{search_query}'. DuckDuckGo refused the request with its "
+        f"bot-protection challenge, and the content below comes from Wikipedia, "
+        f"an encyclopaedia, not from a search. It can describe a subject, but it "
+        f"cannot answer anything about current conditions, news, prices or "
+        f"scores. Tell the user where the information came from, and do not "
+        f"present it as the result of a search.\n\n"
+    )
 
 
 def _fetch_page_content(url: str, max_chars: int = 1500,
@@ -396,6 +503,30 @@ def _wikipedia_request_timeout(deadline: Optional[float]) -> Optional[float]:
     return min(_WIKIPEDIA_REQUEST_TIMEOUT_SEC, remaining)
 
 
+def _title_naming_a_named_year(titles: List[str], query: str) -> Optional[str]:
+    """The first candidate title that names a year the query named.
+
+    Wikipedia ranks the current edition of a recurring event highest, so
+    "who won the 2022 FIFA World Cup" resolved to the 2026 knockout stage and
+    that extract was relayed as the answer to a question about 2022. When the
+    query names a year, a candidate whose title carries that year is the one
+    the user meant.
+
+    Returns None when the query names no year, or when no candidate matches
+    one, so the caller keeps its own relevance ordering.
+    """
+    years = _NAMED_YEAR.findall((query or "").lower())
+    if not years:
+        return None
+    for title in titles:
+        if not isinstance(title, str) or not title.strip():
+            continue
+        lowered = title.lower()
+        if any(year in lowered for year in years):
+            return title
+    return None
+
+
 def _resolve_wikipedia_title(
     query: str,
     search_url: str,
@@ -423,7 +554,7 @@ def _resolve_wikipedia_title(
         params={
             "action": "opensearch",
             "search": query,
-            "limit": 1,
+            "limit": 8,
             "namespace": 0,
             "format": "json",
         },
@@ -443,6 +574,15 @@ def _resolve_wikipedia_title(
     # one-letter title that flows all the way to the REST summary fetch).
     raw_titles = payload[1] if len(payload) > 1 else []
     titles: List[str] = raw_titles if isinstance(raw_titles, list) else []
+    # A query that names a year outranks opensearch's own ordering: an exact
+    # prefix match may not include the year at all.
+    preferred = _title_naming_a_named_year(titles, query)
+    if preferred:
+        debug_log(
+            f"Wikipedia opensearch preferred '{preferred}' for a year-named query",
+            "web",
+        )
+        return preferred
     if titles and isinstance(titles[0], str) and titles[0].strip():
         return titles[0]
 
@@ -456,7 +596,7 @@ def _resolve_wikipedia_title(
             "action": "query",
             "list": "search",
             "srsearch": query,
-            "srlimit": 1,
+            "srlimit": 8,
             "srnamespace": 0,
             "format": "json",
         },
@@ -473,8 +613,15 @@ def _resolve_wikipedia_title(
     hits = raw_search if isinstance(raw_search, list) else []
     if not hits:
         return None
-    first = hits[0] if isinstance(hits[0], dict) else {}
-    title = first.get("title")
+    hit_titles = [
+        hit.get("title") for hit in hits if isinstance(hit, dict)
+    ]
+    # Relevance ranking puts the current edition of a recurring event first;
+    # a year the user named is a stronger signal than that ranking.
+    title = _title_naming_a_named_year(hit_titles, query)
+    if title is None:
+        first = hits[0] if isinstance(hits[0], dict) else {}
+        title = first.get("title")
     if not isinstance(title, str) or not title.strip():
         return None
     debug_log(
@@ -929,7 +1076,38 @@ class WebSearchTool(Tool):
             # challenged). If we were blocked AND have no instant answer
             # AND no fetched content, emit an honest envelope that tells
             # the model to admit the block rather than paper over it.
-            if ddg_rate_limited and not instant_results and not fetched_content:
+            # The primary engine refused the request and the only content we
+            # have came from the Wikipedia fallback. Encyclopaedia prose is not
+            # a search result, so for a query that plainly asks for something
+            # live it must not be offered as the answer at all; for anything
+            # else it is still usable, but the payload has to say where it came
+            # from so the model does not present it as a search.
+            degraded_to_wikipedia = bool(
+                used_source == "wikipedia" and ddg_rate_limited
+            )
+
+            if degraded_to_wikipedia and _looks_time_sensitive(search_query):
+                debug_log(
+                    f"web search blocked and Wikipedia fallback is not an "
+                    f"answer to a time-sensitive query: '{search_query}'",
+                    "web",
+                )
+                reply_text = (
+                    f"Web search for '{search_query}' could not run: "
+                    f"DuckDuckGo's bot-protection challenge blocked it, and the "
+                    f"only source available was Wikipedia, an encyclopaedia, "
+                    f"which cannot say what the current conditions are. Your "
+                    f"reply must: (1) tell the user the search engine blocked "
+                    f"the request, so nothing current could be retrieved; (2) "
+                    f"suggest they try again shortly or search manually. Your "
+                    f"reply must NOT contain any current value or headline — a "
+                    f"temperature, a price, a score, a result — even if you "
+                    f"recall one, because nothing was actually retrieved. If you "
+                    f"state any such value, you have failed. Keep the reply to "
+                    f"two short sentences at most."
+                )
+
+            elif ddg_rate_limited and not instant_results and not fetched_content:
                 reply_text = (
                     f"Web search for '{search_query}' was blocked by DuckDuckGo's "
                     f"bot-protection challenge, so no results could be retrieved "
@@ -998,6 +1176,11 @@ class WebSearchTool(Tool):
                         f"Use this information to reply to the user's query:\n\n"
                     )
                 reply_text = envelope + "\n".join(all_results)
+                if degraded_to_wikipedia:
+                    # The extract is usable for a descriptive query, but the
+                    # model must not relay it as the result of a search that
+                    # never happened.
+                    reply_text = _wikipedia_provenance_notice(search_query) + reply_text
             else:
                 reply_text = (
                     f"The web search for '{search_query}' returned no results. "
@@ -1020,7 +1203,10 @@ class WebSearchTool(Tool):
                     )
                 elif used_source == "wikipedia":
                     context.user_print(
-                        "✅ Answered via Wikipedia fallback."
+                        "⚠️ Web search was blocked; answered from the Wikipedia "
+                        "fallback instead."
+                        if degraded_to_wikipedia
+                        else "✅ Answered via Wikipedia fallback."
                     )
                 elif count_results > 0:
                     context.user_print(f"✅ Found {count_results} results.")

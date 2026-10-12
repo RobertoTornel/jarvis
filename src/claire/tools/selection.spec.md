@@ -28,6 +28,23 @@ Controlled by `tool_selection_strategy` in config:
 Regardless of strategy, these tools are **always** included:
 - `stop` — needed so the user can dismiss the assistant at any time.
 
+### The "no tools" Verdict
+
+`none_verdict()` returns the allow-list for a query that needs no tools at all: the always-included tools that are actually registered. Two places reach this verdict by different routes — the LLM router by answering `"none"`, and the reply engine by recognising social filler and skipping the router call entirely (see *Small-talk Short Circuit* below). The helper is public and both callers use it, because a turn's allow-list must not depend on which route it took. The list is sorted, so it does not depend on set iteration order.
+
+### Small-talk Short Circuit
+
+The reply engine decides `_is_small_talk()` before calling the router, and when it says yes the router is not consulted at all. Evidence for the default (2026-10-13, this machine): of the 39 turns that reached the router in a fortnight, 33 selected no tools, so 85% of the router's work was a ~1.3 s chat-model call to rediscover what its own prompt already states — `"Return 'none' ONLY for pure greetings/small talk"`. The filter implements that same rule locally.
+
+It is deliberately conservative, because a false positive costs a tool call while a false negative costs one router call. An utterance qualifies only when it is at most six words, contains no digit, and is made up entirely of social filler or matches a whole-utterance social phrase; leading greetings, her name and every wake-word alias are stripped before the phrase retry, taken from the canonical `CLAIRE_WAKE_ALIASES` so the two lists cannot drift. A small set of trailing qualifiers (`again`, `now`, `then`, `today`, `tonight`) is stripped the same way before that retry, because that is how the phrases are actually spoken: the journal has "how are you doing today?" and "are you alive?", and both used to miss the phrase set by one word and pay the router for a verdict that can only be "no tools". The strip is only safe because the remainder must still be a whole social phrase, so "what's the weather today?" and "set a timer now" still reach the router. Imperatives (`stop`, `shut up`, `wait`) are deliberately absent from the filler set, because those select real tools. Anything unrecognised fails closed and takes the ordinary path.
+
+The skip logs `tool router skipped: ... is small talk` and the console shows the selection source as `small-talk` instead of `llm`, so the choice is visible when reading a turn.
+
+- Key: `smalltalk_router_skip_enabled`
+- Type: `bool` (`"false"` as a string is still false)
+- Default: `true`
+- Effect: when false, every turn consults the router as before.
+
 ### Keyword Strategy
 
 1. Build a keyword index per tool from its `name` (camelCase split) and `description` (lowercased, stop-words removed).
@@ -53,7 +70,7 @@ Note: embedding is **not** the default strategy because nomic-embed-text produce
 1. Build a catalogue of `- name: description` lines (descriptions truncated to 120 chars) for every registered tool except always-included ones.
 2. Send through the supplied `llm_backend.direct()` with a system prompt asking for the **top 5 most relevant** tool names as a comma-separated list. The prompt instructs the router to prefer 1–3 tools for narrow queries and to return `"none"` for greetings/small talk.
 3. Parse the response, matching tokens against known tool names (unknowns are dropped silently).
-4. Apply a hard `_LLM_MAX_SELECTED` (5) cap regardless of what the router returned, to guard against chatty routers that echo the whole catalogue.
+4. Apply a hard `_LLM_MAX_SELECTED` (5) cap to the **real** tools regardless of what the router returned, to guard against chatty routers that echo the whole catalogue. System tools (`SYSTEM_TOOL_NAMES`: `stop`, `toolSearchTool`) that the router named are retained on top of that cap — they steer the agent loop rather than do the user's work, so they never consume a real-tool slot.
 5. Append always-included tools.
 6. If the router replies `"none"`, return only the always-included tools.
 7. On timeout, empty response, or parse failure (no token in the response matched a known tool name), fall back to the **keyword strategy** rather than to the full catalogue. Reasoning: the catalogue can grow to 30–40 tools once an MCP server like `chrome-devtools` is enabled, and exposing all of them to a small chat model (gemma4:e2b class) overwhelms tool selection, producing empty replies. Keyword scoring narrows on query/name overlap deterministically, and the engine's `toolSearchTool` escape hatch still lets the chat model widen mid-loop if the keyword pick missed.

@@ -3,7 +3,9 @@
 Honest, current state of the build. Updated at the end of every wave. If
 something here disagrees with the code, the code is right and this file is stale.
 
-Last updated: Wave 0 (scaffold + rename), in progress.
+Last updated: Wave 8 (integration, acceptance demo, final report), together with
+the service-run, version-stamp and documentation-audit corrections recorded in
+the sections that follow.
 
 ## What Claire is
 
@@ -39,9 +41,9 @@ and are **not** part of the per-wave gate.
 | 1 | Voice: recognisers, transcript plumbing, Fish TTS, wake word | **complete** (1a and 1b committed) |
 | 2 | Memory: editable router file beside untouched RAG/graph | **complete** |
 | 3 | Scheduling: calendar, alternative slots, reminders, timers | **complete** |
-| 4 | Senses: screen OCR, camera, browser control | **partial** - OCR blocked: no tesseract binary; no camera exists. Capture, browser and the honest degraded paths are done and verified. |
+| 4 | Senses: screen OCR, camera, browser control | **complete** - OCR and the camera were blocked when this row was written (no `tesseract` binary, no camera device); both are installed now. Capture, browser and the honest degraded paths are done and verified. |
 | 5 | Outreach: urgency ladder, Discord DM, Signal dry-run | **complete** |
-| 6 | Platform: panel, keychain, backup/repair, systemd, Docker | **complete** (the panel is built; nothing is installed as a service) |
+| 6 | Platform: panel, keychain, backup/repair, systemd, Docker | **complete** (the panel is built and the systemd user units are installed and running) |
 | 7 | Phone: token bridge, camera, location | **complete** (bridge + auth + loopback policy; no phone has ever connected) |
 | 8 | Integration, acceptance demo, final report | **complete** |
 
@@ -166,18 +168,26 @@ recorded here rather than quietly reported as a false-positive rate.
     402 as a dead key, rotated the pool, reported the exact reason, redacted the
     key to last-4 plus a fingerprint, kept the voice unchanged, and invented no
     number. Exit status was non-zero.
-- No Parakeet weights are present on this machine, so the authoritative engine has
-  never decoded real audio. Its loaders and named failures are tested with fakes.
-  Until a model is placed at `stt_model_path`, the listener degrades to the
-  whisper path and reports the turn as degraded — verified directly:
-  `create_stt_engine(cfg)` raises `SttModelMissingError` naming the path and the
-  fix rather than returning an empty transcript.
+- Parakeet weights are present at the configured `stt_model_path`
+  (`~/.local/share/claire/models/parakeet-tdt-0.6b-v2/parakeet-tdt-0.6b-v2.nemo`),
+  but no live microphone audio has ever been decoded with them: every recogniser
+  measurement above is from wav files, not the live input device, and the loaders
+  and named failures are otherwise tested with fakes. Whisper is opt-in only and
+  is never a fallback, so a missing or unloadable Parakeet model drops the turn
+  with a degraded reason that names the path and the fix
+  (`create_stt_engine(cfg)` raises `SttModelMissingError`) rather than
+  re-decoding with a second engine or returning an empty transcript.
 - No Discord/Signal message has been sent from Claire.
 - Barge-in has never been heard, because no audio has ever been played.
 
 ## Stale docs
 
-None known yet — docs are updated in the same wave as the code they describe.
+`docs/` line anchors drift as the code moves, because a number is only a snapshot
+of the working tree. An audit re-checked `docs/ARCHITECTURE.md`,
+`docs/llm_contexts.md`, `docs/HANDOVER.md`, `docs/ACCEPTANCE.md` and this file
+against the code and corrected the numbers that had gone stale. Anchors that
+point into `src/claire/listening/listener.py` now name the function instead of a
+line: that file is edited often enough that a bare number would go stale again.
 
 ## Objections register
 
@@ -277,10 +287,13 @@ Recorded so they are not silently re-litigated later.
     a copy of the public k2-fsa bundle so Claire does not depend on another
     project's directory layout. A downloader so a fresh machine can fetch it is
     part of Wave 1b.
-20. **The listener degrades to whisper when no Parakeet model is configured, and
-    says so.** No Parakeet weights exist on this machine, so the alternative would
-    be either a crash at startup or a turn silently labelled as Parakeet. The turn
-    is marked degraded with a reason naming the missing setting, logged once.
+20. **The listener never silently swaps in a second recogniser, and says so.**
+    (Amended: this entry originally read "degrades to whisper when no
+    Parakeet model is configured". Whisper is now opt-in only — decision D4, one
+    listening model — so when the configured engine cannot answer, the turn is
+    dropped and marked degraded with a reason naming the missing setting, logged
+    once, rather than a crash at startup or a turn silently labelled as
+    Parakeet.)
 21. **The owner's Fish voice id lives in the runtime config, not in the repo.**
     The cloned voice is a personal asset; hardcoding it as a repository default
     would put it in every checkout. It is set in `~/.config/claire/config.json`
@@ -556,10 +569,18 @@ different fixes, so they now produce different messages: a 401/403 is reported a
 a credential problem naming `OMNIROUTE_API_KEY`, and a 500 stays a server fault.
 A test pins the distinction in both directions.
 
-**The honest state of the LLM half: reachable, unauthenticated.** OmniRouter is up
-on 20129 and `OMNIROUTE_API_KEY` is not set anywhere on this machine, so Claire
-cannot complete a turn. That is the single blocking item for a working
-conversation, and it is a missing credential rather than a code fault.
+**The honest state of the LLM half at that point: reachable, unauthenticated.**
+OmniRouter was up on 20129 and `OMNIROUTE_API_KEY` was not set, so Claire could
+not complete a turn — a missing credential rather than a code fault. That has
+since changed, and a credential is now stored in two places, both `0600` and
+outside the repository: `llm_api_key` in `~/.config/claire/config.json` (the
+value the probe fingerprints as last four `4f59`) and `OMNIROUTE_API_KEY` in
+`~/.config/claire/claire.env`, a different value (last four `2fd0`) that the
+daemon's unit loads with `EnvironmentFile=`. `config.py` prefers the config
+field and falls back to the env var. A probe run during the documentation audit
+therefore found the credential present and reported the endpoint `BLOCKED` on a
+request timeout rather than a `401`, so what remains open on this route is
+reachability and latency, not authentication.
 
 ### Cleanup disclosed
 
@@ -650,25 +671,28 @@ the opposite.
 
 Wave 1 **is** wired, and properly:
 
-- `listener.py:1680` `_get_authoritative_stt_engine()` builds
+- `_get_authoritative_stt_engine()` in `listener.py` builds
   `create_stt_engine(self.cfg)` lazily and catches every named error into a
   recorded reason.
-- `listener.py:1822` `_decode_utterance()` calls that engine for the
+- `_decode_utterance()` calls that engine for the
   authoritative transcript and returns `(text, language, low_confidence_events,
   source, degraded_reason)`.
-- `listener.py:1830-1845` falls back to Whisper only when the authoritative
-  engine is genuinely unavailable, and marks the turn **degraded** rather than
-  passing the fallback text off as authoritative.
-- `listener.py:486,1739-1803` wires the streaming engine for provisional text
+- The Whisper fallback it originally described is gone: Whisper is opt-in only,
+  and when the configured engine cannot answer the turn is marked **degraded**
+  with a reason naming the setting to fix rather than being passed off as an
+  authoritative transcript.
+- `listener.py` wires the streaming engine for provisional text
   and finalisation.
 
-That is the D3/D4 design, implemented. The 2.4 GB Parakeet model is used.
+That is the D3/D4 design, implemented: the 2.4 GB Parakeet model is the
+configured recogniser, loaded at startup from `stt_model_path`.
 
 **What is actually wrong is much smaller, and I only found it because I made the
 larger false claim and went looking.**
 
-`daemon.py:944` prints `🎤 Using whisper model: medium`, and the daemon eagerly
-warms up a Whisper model in the background at startup. That warmup then fails:
+`daemon.py` used to print `🎤 Using whisper model: medium` unconditionally, and
+the daemon eagerly warmed up a Whisper model in the background at startup. That
+warmup then failed:
 
     ❌ Failed to load Whisper model: OSError
        Read-only file system: '/home/mana/.cache/huggingface'
@@ -746,7 +770,9 @@ Two smaller faults fixed alongside it:
 
 - The startup banner printed `🎤 Using whisper model: medium` unconditionally,
   describing the degraded fallback as though it were the design. It now names
-  the configured authoritative engine and reports Whisper as the fallback.
+  the configured recogniser; the fallback it named was later removed outright
+  (decision D4, one listening model), and the line now ends
+  `(the one listening model; no fallback engine)`.
 - `ProtectHome=read-only` also blocked the HuggingFace cache, so the Whisper
   fallback could not download and the safety net was missing exactly when it was
   needed. `%h/.cache/huggingface` is now writable.
@@ -763,6 +789,10 @@ restarts, and the log shows the whole chain coming up:
     ✅ TTS engine started
     NeMo: Model EncDecRNNTBPEModel was successfully restored from
           ~/.local/share/claire/models/parakeet-tdt-0.6b-v2/parakeet-tdt-0.6b-v2.nemo
+
+That first line is the log as it stood then. Whisper is opt-in only now, so the
+banner names the one listening model and ends `(the one listening model; no
+fallback engine)`.
 
 That is all three halves connected for the first time: she can hear through the
 authoritative Parakeet engine, she can speak through Fish on the free model, and

@@ -26,6 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the Claire version and exit.",
     )
+    parser.add_argument(
+        "--no-tune",
+        action="store_true",
+        help=(
+            "Silence the thinking tune (the pinging pad that plays while Claire "
+            "thinks). Her voice is unaffected. Same as CLAIRE_TUNE_ENABLED=0, "
+            "which is the switch to use for the installed service."
+        ),
+    )
     return parser
 
 
@@ -48,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from .daemon import main as daemon_main
 
-    daemon_main(smoke_test=args.smoke_test)
+    daemon_main(smoke_test=args.smoke_test, no_tune=args.no_tune)
     return 0
 
 

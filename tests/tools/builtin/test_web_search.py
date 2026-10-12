@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import Mock, patch
 import requests
 
+from src.claire.tools.builtin import web_search as web_search_module
 from src.claire.tools.builtin.web_search import WebSearchTool
 from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
@@ -1174,3 +1175,197 @@ class TestLanguagePlumbingEndToEnd:
                 listener._dispatch_query("istanbul")
 
         assert run_reply.call_args.kwargs["language"] == "tr"
+
+
+class TestDegradedWikipediaFallback:
+    """A Wikipedia extract must not stand in for a search that never ran.
+
+    On this machine DuckDuckGo answers every request with its bot-challenge
+    page, so the Wikipedia fallback is the only content the tool ever has.
+    Offering an encyclopaedia extract as the answer is what made "what is the
+    weather in Lisbon" return the city's population, and it is the same route
+    recorded in reply.spec.md, where a film summary was relayed as the weather.
+    """
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.tool = WebSearchTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+        self.context.language = None
+        self.context.cfg = Mock()
+        self.context.cfg.web_search_enabled = True
+        self.context.cfg.voice_debug = False
+        self.context.cfg.brave_search_api_key = ""
+        self.context.cfg.wikipedia_fallback_enabled = True
+
+    def _run_blocked_with_wikipedia(self, mock_get, mock_wiki, query):
+        """Drive the tool down the DDG-blocked, Wikipedia-rescued path."""
+        instant = Mock()
+        instant.status_code = 200
+        instant.json.return_value = {}
+        instant.raise_for_status = Mock()
+        challenge = Mock()
+        challenge.status_code = 400
+        challenge.content = b'<div class="anomaly-modal"></div>'
+        mock_get.side_effect = [instant, challenge]
+        mock_wiki.return_value = (
+            "Lisbon",
+            "https://en.wikipedia.org/wiki/Lisbon",
+            "Lisbon is the capital and largest city of Portugal.",
+        )
+        return self.tool.run({"search_query": query}, self.context)
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_time_sensitive_query_is_not_answered_from_wikipedia(
+        self, mock_get, mock_wiki
+    ):
+        """A blocked search for the weather must not return an encyclopaedia entry."""
+        result = self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "what is the weather in Lisbon right now"
+        )
+
+        text = result.reply_text.lower()
+        # The extract itself must not reach the model as the answer.
+        assert "capital and largest city" not in text
+        # The model is told the search did not run and forbidden to state values.
+        assert "could not run" in text
+        assert "blocked" in text
+        assert "must not contain any current value" in text
+        assert "two short sentences" in text
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_descriptive_query_keeps_wikipedia_and_is_labelled(
+        self, mock_get, mock_wiki
+    ):
+        """An encyclopaedic query keeps the extract, with its provenance stated."""
+        result = self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "who directed Possessor"
+        )
+
+        text = result.reply_text
+        assert "capital and largest city" in text.lower()
+        # The model must be told no search ran and where the text came from.
+        assert "did not run" in text.lower()
+        assert "wikipedia" in text.lower()
+        assert "not from a search" in text.lower()
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_status_line_is_a_warning_not_a_tick(self, mock_get, mock_wiki):
+        """The console must not report a blocked fallback as a success."""
+        self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "who directed Possessor"
+        )
+
+        printed = "\n".join(
+            call.args[0] for call in self.context.user_print.call_args_list
+        )
+        assert "⚠️ Web search was blocked" in printed
+        assert "✅ Answered via Wikipedia fallback." not in printed
+
+    def test_time_sensitive_markers_are_recognised(self):
+        """Explicit markers of a live question are recognised."""
+        for query in (
+            "what is the weather in Lisbon",
+            "will it rain tomorrow",
+            "what is the temperature outside",
+            "any news about the election",
+            "what is the price of bitcoin",
+            "what was the score last night",
+            "how is the traffic right now",
+            "what are the opening hours",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is True, query
+
+    def test_descriptive_queries_are_not_flagged(self):
+        """Encyclopaedic questions keep their Wikipedia answer.
+
+        Word boundaries matter here: "trains in Portugal" must not be flagged
+        for containing the letters of "rain".
+        """
+        for query in (
+            "who directed Possessor",
+            "what is the capital of France",
+            "history of Lisbon",
+            "trains in Portugal",
+            "the open source movement",
+            "when was the Eiffel Tower built",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is False, query
+
+    def test_empty_query_is_not_time_sensitive(self):
+        """A missing or blank query is never flagged."""
+        assert web_search_module._looks_time_sensitive("") is False
+        assert web_search_module._looks_time_sensitive("   ") is False
+        assert web_search_module._looks_time_sensitive(None) is False
+
+    def test_a_named_past_year_makes_a_question_historical(self):
+        """A dated question is settled, so encyclopaedia prose may answer it.
+
+        "who won" is a live-result marker, but a named past year dates the
+        question: the 2022 final has a fixed winner and Wikipedia is the right
+        source for it. Refusing the search there is over-suppression, and it
+        was the behaviour before this rule.
+        """
+        for query in (
+            "who won the 2022 football world cup",
+            "who won the 1998 world cup final",
+            "how many people lived in Lisbon in 1950",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is False, query
+
+    def test_a_present_marker_keeps_a_dated_question_live(self):
+        """A present-tense marker pulls a dated question back to now."""
+        for query in (
+            "who won the 2022 world cup and who leads now",
+            "what is the price of bitcoin in 2021 right now",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is True, query
+
+    def test_the_current_year_is_never_treated_as_past(self):
+        """A question about this year can still change, so it stays live."""
+        from datetime import date
+        this_year = date.today().year
+        assert web_search_module._looks_time_sensitive(
+            f"what is the weather in Lisbon in {this_year}"
+        ) is True
+        assert web_search_module._looks_time_sensitive(
+            f"what was the score in {this_year}"
+        ) is True
+
+    def test_a_title_naming_the_querys_year_outranks_relevance(self):
+        """Wikipedia ranks the current edition first; the year wins.
+
+        Live failure this pins: "who won the 2022 FIFA World Cup" resolved to
+        "2026 FIFA World Cup knockout stage", and that extract was relayed as
+        the answer to a question about 2022. A confidently wrong answer is
+        worse than the refusal it replaced.
+        """
+        titles = [
+            "2026 FIFA World Cup knockout stage",
+            "2022 FIFA World Cup final",
+        ]
+        assert web_search_module._title_naming_a_named_year(
+            titles, "who won the 2022 FIFA World Cup"
+        ) == "2022 FIFA World Cup final"
+
+    def test_no_year_in_the_query_keeps_the_ranking(self):
+        """Without a year in the query there is nothing to prefer."""
+        assert web_search_module._title_naming_a_named_year(
+            ["2026 FIFA World Cup", "FIFA World Cup"], "who won the world cup"
+        ) is None
+
+    def test_no_candidate_carrying_the_year_keeps_the_ranking(self):
+        """A named year that no candidate carries must not pick a stranger."""
+        assert web_search_module._title_naming_a_named_year(
+            ["FIFA World Cup", "FIFA World Cup final"], "the 2022 final"
+        ) is None
+
+    def test_a_non_string_candidate_is_skipped_not_crashed_on(self):
+        """Defensive: a malformed payload must not raise inside the resolver."""
+        assert web_search_module._title_naming_a_named_year(
+            [None, "", "1998 FIFA World Cup"], "who won the 1998 world cup"
+        ) == "1998 FIFA World Cup"

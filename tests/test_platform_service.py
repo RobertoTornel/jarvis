@@ -1030,6 +1030,9 @@ class TestUnauthorisedIsDiagnosedAsACredentialProblem:
             SelfCheck(
                 settings=_fake_settings(**settings),
                 http_get=lambda url, headers, timeout: (status_code, b""),
+                # A 5xx sends the probe on to a real turn; answer that here so
+                # these tests stay hermetic (and never touch the network).
+                http_post=lambda url, headers, payload, timeout: (500, b""),
                 now=lambda: "T",
             )
             .run(order=("llm_endpoint",))
@@ -1078,3 +1081,215 @@ class TestUnauthorisedIsDiagnosedAsACredentialProblem:
         assert check.status == STATUS_PROBLEM
         assert "500" in check.detail
         assert "credential" not in check.detail.lower()
+
+
+# --------------------------------------------------------------------------- #
+# 7. The other two units: the panel is a service, the tray app is a session
+# --------------------------------------------------------------------------- #
+#
+# Splitting the panel and the tray out of claire.service is what makes "Claire
+# starts on startup" true for all three parts: a panel bug no longer takes the
+# voice assistant down, and the tray app - the one GUI - is started by the
+# session instead of being enabled at boot where it would fail for want of a
+# display and then be left permanently failed by StartLimitBurst.
+
+PANEL_UNIT_FILE = DEPLOY_DIR / "claire-panel.service"
+DESKTOP_UNIT_FILE = DEPLOY_DIR / "claire-desktop.service"
+DESKTOP_AUTOSTART_FILE = DEPLOY_DIR / "claire-desktop.desktop"
+
+
+@pytest.fixture(scope="module")
+def panel_unit() -> UnitFile:
+    assert PANEL_UNIT_FILE.is_file(), f"missing deployment unit: {PANEL_UNIT_FILE}"
+    return _parse_unit(PANEL_UNIT_FILE.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def desktop_unit() -> UnitFile:
+    assert DESKTOP_UNIT_FILE.is_file(), f"missing deployment unit: {DESKTOP_UNIT_FILE}"
+    return _parse_unit(DESKTOP_UNIT_FILE.read_text(encoding="utf-8"))
+
+
+def test_panel_and_desktop_units_have_the_required_sections(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    for unit in (panel_unit, desktop_unit):
+        assert set(unit.sections) == {"Unit", "Service", "Install"}
+        assert unit.sections["Unit"], "[Unit] must not be empty"
+        assert unit.sections["Service"], "[Service] must not be empty"
+        assert unit.sections["Install"], "[Install] must not be empty"
+
+
+def test_panel_unit_starts_the_panel_and_restarts_it(panel_unit: UnitFile) -> None:
+    assert panel_unit.one("Service", "ExecStart").endswith("-m claire.panel.server")
+    assert panel_unit.one("Service", "Type") == "simple"
+    assert panel_unit.one("Service", "Restart") == "on-failure"
+    assert int(panel_unit.one("Unit", "StartLimitBurst")) >= 1
+    assert int(panel_unit.one("Unit", "StartLimitIntervalSec")) >= 60
+
+
+def test_desktop_unit_starts_the_tray_app_and_restarts_it(desktop_unit: UnitFile) -> None:
+    assert desktop_unit.one("Service", "ExecStart").endswith("-m desktop_app")
+    assert desktop_unit.one("Service", "Type") == "simple"
+    assert desktop_unit.one("Service", "Restart") == "on-failure"
+    assert int(desktop_unit.one("Unit", "StartLimitBurst")) >= 1
+
+
+def test_only_the_panel_is_enabled_at_default_target(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    """The panel is a headless HTTP server, so being up early is free.
+
+    The tray app needs a display, so enabling it at default.target is the trap
+    this test exists to prevent: with linger that target is reached at boot,
+    before any session, and the failures spend the start-limit burst.
+    """
+    assert panel_unit.one("Install", "WantedBy") == "default.target"
+    assert desktop_unit.one("Install", "WantedBy") == "graphical-session.target"
+    assert desktop_unit.one("Unit", "PartOf") == "graphical-session.target"
+
+
+def test_new_units_use_an_environment_file_not_inline_secrets(panel_unit: UnitFile, desktop_unit: UnitFile) -> None:
+    for unit in (panel_unit, desktop_unit):
+        env_file = unit.one("Service", "EnvironmentFile")
+        assert env_file.rstrip().endswith(".env")
+        assert ".config/claire/" in env_file
+        for value in unit.values("Service", "Environment"):
+            assert not re.search(r"(?i)(API_?KEY|TOKEN|SECRET|PASSWORD)", value), value
+
+
+def test_new_units_carry_no_bind_port_of_their_own(panel_unit: UnitFile) -> None:
+    """The port belongs to the panel's source and its environment, not to a unit
+    that would silently disagree with it after a change."""
+    assert "8765" not in PANEL_UNIT_FILE.read_text(encoding="utf-8")
+    assert "--port" not in panel_unit.one("Service", "ExecStart")
+
+
+def test_autostart_entry_asks_systemd_and_is_portable() -> None:
+    text = DESKTOP_AUTOSTART_FILE.read_text(encoding="utf-8")
+    directives = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("["):
+            continue
+        key, _, value = line.partition("=")
+        directives[key.strip()] = value.strip()
+
+    assert directives["Type"] == "Application"
+    assert directives["Exec"] == "systemctl --user start claire-desktop.service"
+    assert directives["X-GNOME-Autostart-enabled"] == "true"
+    # No checkout path reaches the Exec line: the unit owns the interpreter.
+    assert "@CLAIRE_REPO_ROOT@" not in directives["Exec"]
+
+
+# ---------------------------------------------------------------------------
+# A 5xx from the model list is settled by a real turn
+# ---------------------------------------------------------------------------
+
+def _five_hundred_models(url, headers, timeout):
+    """What OmniRouter answers while it builds a 9,508-entry catalogue."""
+    return 503, json.dumps({"error": {"message": "catalog_build_timeout"}}).encode()
+
+
+def test_a_503_catalogue_with_a_working_turn_is_ready() -> None:
+    """Measured on this machine: /models answers 503 catalog_build_timeout
+    while /chat/completions answers 200 in ~1 s. Calling that a PROBLEM sent
+    the owner to check a URL that was perfectly correct."""
+    turn_calls = []
+
+    def chat(url, headers, payload, timeout):
+        turn_calls.append((url, payload))
+        return 200, json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_READY, check.detail
+    assert check.data["models_list_unavailable"] is True
+    assert "chat turn" in check.detail
+    assert turn_calls and turn_calls[0][0].endswith("/chat/completions")
+    assert turn_calls[0][1]["max_tokens"] == 1, "the probe must stay minimal"
+
+
+def test_a_503_catalogue_and_a_failing_turn_is_a_problem() -> None:
+    def chat(url, headers, payload, timeout):
+        return 400, b'{"error": {"message": "model not found"}}'
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "400" in check.detail and "chat turn" in check.detail
+
+
+def test_a_transport_failure_on_the_turn_is_a_problem_not_a_crash() -> None:
+    def chat(url, headers, payload, timeout):
+        raise URLError("connection refused")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "chat turn" in check.detail
+
+
+def test_a_503_is_not_settled_by_a_turn_when_no_model_is_configured() -> None:
+    """Without a model there is nothing to prove readiness with, so the
+    endpoint's own explanation stands rather than being replaced by a guess."""
+    def chat(url, headers, payload, timeout):  # pragma: no cover - must not run
+        raise AssertionError("no turn can be sent without a model")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(llm_chat_model=""),
+            http_get=_five_hundred_models,
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "503" in check.detail
+
+
+def test_a_404_model_list_is_still_a_problem_without_a_turn_probe() -> None:
+    """Only 5xx means "the list is temporarily unavailable"; a 404 is the
+    endpoint saying it has no such route, and must not be papered over."""
+    def chat(url, headers, payload, timeout):  # pragma: no cover - must not run
+        raise AssertionError("a 404 must not trigger a turn probe")
+
+    check = (
+        SelfCheck(
+            settings=_fake_settings(),
+            http_get=lambda url, headers, timeout: (404, b""),
+            http_post=chat,
+            now=lambda: "T",
+        )
+        .run(order=("llm_endpoint",))
+        .get("llm_endpoint")
+    )
+
+    assert check.status == STATUS_PROBLEM
+    assert "404" in check.detail

@@ -22,6 +22,16 @@ def _is_debug_enabled() -> bool:
     return bool(_cached_voice_debug)
 
 
+def debug_enabled() -> bool:
+    """Whether debug output is on right now.
+
+    ``debug_log`` checks this itself, but it only ever sees the *message*, by
+    which point an f-string argument has already been evaluated. A caller whose
+    message is expensive to build - reading a percentile of the ambient level
+    history, say - should ask first and build nothing when this is ``False``.
+    """
+    return _is_debug_enabled()
+
 def debug_log(message: str, category: str = "debug") -> None:
     """Unified debug logging function for Claire.
 

@@ -50,7 +50,15 @@ Examples of what the probes emit:
 | `audio_device` | `sounddevice.query_devices(kind="input")` | `sudo apt-get install -y libportaudio2`, check `pactl list short sources`, and **run under the user unit** — a system unit has no session bus and never sees the microphone |
 | `tesseract` | `claire.senses.screen.diagnose()` | the diagnosis's own `fix_command` (`sudo apt-get install -y tesseract-ocr`) |
 | `browser` | `claire.senses.browser.probe_chromium_binary()` | `playwright install chromium` |
-| `llm_endpoint` | `GET <llm_base_url>/models` (2s budget) | start the model server that owns the endpoint; `curl -sS <url>/models` |
+| `llm_endpoint` | `GET <llm_base_url>/models` (2s budget), then `POST <llm_base_url>/chat/completions` when the list answers 5xx | start the model server that owns the endpoint; `curl -sS <url>/models` |
+
+A **5xx from the model list** does not settle readiness, because it is not the same claim as "this endpoint cannot serve Claire". Measured on this machine: OmniRouter answers `/models` with HTTP 503 `catalog_build_timeout` while it assembles a 9,508-entry catalogue, and answers `/chat/completions` 200 in about a second. So a 5xx is followed by a minimal real turn (`max_tokens: 1`) through `http_post`:
+
+* turn 200 -> READY, saying the model list was unavailable and that this does not stop Claire answering, with `models_list_unavailable: true` in the data;
+* turn non-200, or a transport failure -> PROBLEM, naming **both** statuses so the original observation is never lost;
+* no chat model configured -> no turn is attempted, and the endpoint's own explanation stands rather than being replaced by a guess.
+
+401 and 403 keep their dedicated credential diagnosis (they are an answer about the key, not about availability), and a 404 on `/models` is still a PROBLEM: only 5xx means "temporarily unavailable".
 
 Where a project error already knows its fix (`OcrEngineMissingError.command`,
 `SttModelMissingError.hint`, …) the guard reuses it: `_fix_from_exception` reads
@@ -162,6 +170,57 @@ Other facts worth knowing about the unit:
 * `KillSignal=SIGINT` and `TimeoutStopSec=20`: SIGINT is what Claire handles as
   "finish the turn, close the audio stream, exit", which is what keeps the
   microphone out of a wedged state.
+
+### `deploy/claire-panel.service` — the web panel, on its own
+
+The panel is a separate process, so it gets a separate unit. That is not tidiness:
+
+* a panel bug can no longer take the voice assistant down with it, and
+  restarting the panel no longer cuts off a spoken reply;
+* the panel needs **no** session — no microphone, no speakers, no display — so it
+  is the one component that may legitimately be up before anyone logs in, which
+  is what makes `http://127.0.0.1:<port>/` reachable from a phone early;
+* therefore it is `WantedBy=default.target`, unlike the tray app (below).
+
+It reads `EnvironmentFile=-%h/.config/claire/claire.env` for the same reason the
+daemon does, and it carries **no** port of its own: `--host`/`--port` default to
+`${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` inside `claire.panel.server`, so the
+unit, `start.sh` and a hand-run panel cannot disagree about where the panel
+listens. The loopback-only guard applies to the environment exactly as it does to
+a flag.
+
+### `deploy/claire-desktop.service` + `deploy/claire-desktop.desktop` — the tray app, on the session
+
+`python -m desktop_app` is the only GUI, so it must start with the *desktop
+session*, and this is the trap worth writing down: enabling it at
+`default.target` looks right and is worse than not enabling it. With
+`loginctl enable-linger`, `default.target` is reached at boot with no display;
+PyQt6 aborts; `Restart=on-failure` retries; the `StartLimitBurst=5` window is
+spent in well under a minute; systemd gives up and the unit is left permanently
+failed by the time the user actually logs in. So:
+
+* the unit is `PartOf=graphical-session.target`, `After=graphical-session.target`
+  and `WantedBy=graphical-session.target`, which is correct on GNOME and KDE;
+* **not every desktop activates that target.** On the reference machine
+  (Cinnamon/Muffin) `systemctl --user is-active graphical-session.target` reports
+  `inactive` and the only active targets are `basic`, `default`, `paths`,
+  `sockets`, `timers`, so the ordering above is inert and the tray would simply
+  never start by itself. `deploy/claire-desktop.desktop` is therefore installed
+  into `~/.config/autostart` and asks systemd to start the unit once the session
+  is genuinely up. Both mechanisms ship on purpose: they cover different desktops
+  and are harmless together, because starting an already-active unit is a no-op;
+* the autostart entry's `Exec` is `systemctl --user start claire-desktop.service`,
+  never the interpreter directly, so the tray stays supervised
+  (`Restart=on-failure`) and its output lands in the journal. That also means the
+  entry needs no checkout path, and it shows up in the desktop's own "Startup
+  Applications" panel where the owner can disable it without touching the repo;
+* the app takes a single-instance lock, so autostart, the target and a manual
+  launch cannot produce two trays.
+
+`./start.sh --install-service` renders and installs all four artifacts (three
+units plus the autostart entry), reloads systemd, **enables** all three units and
+then starts them, so "starts on startup" is delivered by one command rather than
+by a paragraph of instructions.
 
 ### `deploy/Dockerfile` — text/tool half only
 

@@ -1,0 +1,36 @@
+# Claire - start the tray icon and the on-screen face with the desktop session.
+#
+# This file is a TEMPLATE: it carries @CLAIRE_REPO_ROOT@ only for the icon path,
+# and ./start.sh --install-service renders it into
+# ~/.config/autostart/claire-desktop.desktop.
+#
+# WHY A DESKTOP-AUTOSTART FILE EXISTS AT ALL
+# ------------------------------------------
+# On desktops that activate `graphical-session.target` (GNOME, KDE) the tray
+# app is started by systemd itself and this file changes nothing - starting an
+# already-active unit is a no-op, so having both is safe.
+#
+# On desktops that do not activate that target (Cinnamon/Muffin, the reference
+# machine, where `systemctl --user is-active graphical-session.target` is
+# `inactive`) a systemd unit has no "the session is up" event to hang off. The
+# desktop's own autostart directory is the mechanism such desktops provide for
+# GUI programs, and it runs with the session's environment - DISPLAY, the
+# session bus and the tray - already in place.
+#
+# It deliberately does not exec the app directly: it asks systemd to start
+# claire-desktop.service, so the tray is supervised (Restart=on-failure) and its
+# logs land in the journal instead of nowhere. `Exec` therefore needs no
+# checkout path, which is why this file is portable as written.
+#
+# The entry is visible in the desktop's own "Startup Applications" settings, so
+# it can be switched off there without editing anything in this repository.
+
+[Desktop Entry]
+Type=Application
+Name=Claire
+GenericName=Voice assistant
+Comment=Claire's tray icon and on-screen face
+Exec=systemctl --user start claire-desktop.service
+Icon=@CLAIRE_REPO_ROOT@/src/desktop_app/desktop_assets/icon_idle_64.png
+Terminal=false
+X-GNOME-Autostart-enabled=true

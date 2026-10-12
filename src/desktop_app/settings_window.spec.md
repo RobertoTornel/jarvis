@@ -98,6 +98,7 @@ dedicated page:
 - `wikipedia_fallback_enabled`
 - `low_power_mode`
 - `tune_enabled`
+- `ack_enabled`
 - `dictation_enabled`
 - `dictation_hotkey`
 - `dictation_filler_removal`

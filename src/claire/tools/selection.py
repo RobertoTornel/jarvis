@@ -36,6 +36,15 @@ class ToolSelectionStrategy(Enum):
 # Tools that must always be available regardless of selection strategy.
 _ALWAYS_INCLUDED = {"stop"}
 
+# Tools that exist to steer the agent loop rather than to do the user's work:
+# the termination sentinel, and the escape hatch that widens an allow-list the
+# router drew too narrowly. Both are appended to every allow-list, so the tool
+# router can name them for a query that needs no tool at all. A verdict made up
+# only of these names therefore still carries a positive signal ("no real tool
+# is needed"), and callers must not read it as a failed or empty routing pass.
+# Defined here, beside `_ALWAYS_INCLUDED`, so the set has one home.
+SYSTEM_TOOL_NAMES = frozenset({"stop", "toolSearchTool"})
+
 # Minimum number of tools to return from similarity-based strategies.
 # Prevents overly aggressive filtering that would leave the model with nothing useful.
 _MIN_SELECTED = 3
@@ -102,6 +111,22 @@ def _tool_summary(name: str, description: str) -> str:
     """One-line summary used as embedding input for a tool."""
     readable_name = _CAMEL_RE.sub(" ", name).lower()
     return f"{readable_name}: {description}"
+
+
+def none_verdict(
+    builtin_tools: Dict[str, "Tool"],
+    mcp_tools: Dict[str, "ToolSpec"],
+) -> List[str]:
+    """The allow-list for "this query needs no tools at all".
+
+    Public because two places reach this verdict by different routes: the LLM
+    router answers ``none``, and the reply engine recognises social filler and
+    skips the call. They must agree, so neither owns the shape. Sorted, so the
+    verdict does not depend on set iteration order.
+    """
+    return sorted(
+        t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools
+    )
 
 
 def _ensure_always_included(
@@ -364,7 +389,7 @@ def _select_llm(
     resp_lower = resp.strip().lower()
     if resp_lower == "none":
         debug_log("LLM tool selection returned 'none' — including only mandatory tools", "planning")
-        return [t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools]
+        return none_verdict(builtin_tools, mcp_tools)
 
     known = set(builtin_tools.keys()) | set(mcp_tools.keys())
     selected: List[str] = []
@@ -378,9 +403,16 @@ def _select_llm(
             selected.append(clean)
 
     # Hard cap — a chatty router that ignores the prompt cap must not bloat
-    # the downstream tool list. Preserve order (model's ranking).
-    if len(selected) > _LLM_MAX_SELECTED:
-        selected = selected[:_LLM_MAX_SELECTED]
+    # the downstream tool list. The cap bounds the REAL tools only, keeping
+    # their model ranking; system tools (SYSTEM_TOOL_NAMES) steer the agent
+    # loop rather than do the user's work, and the router names them in
+    # almost every verdict — letting them eat real slots shrank the actual
+    # routing verdict (e.g. "stop, toolSearchTool, w0, w1, w2" crowded out
+    # two of the five real picks). System tools are retained on top of the
+    # `_LLM_MAX_SELECTED` real-tool budget.
+    system_selected = [t for t in selected if t in SYSTEM_TOOL_NAMES]
+    real_selected = [t for t in selected if t not in SYSTEM_TOOL_NAMES]
+    selected = system_selected + real_selected[:_LLM_MAX_SELECTED]
 
     selected = _ensure_always_included(selected, builtin_tools, mcp_tools)
 

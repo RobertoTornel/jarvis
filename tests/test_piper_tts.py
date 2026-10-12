@@ -223,8 +223,8 @@ class TestPiperTTSWithMocking:
         tts = PiperTTS(enabled=True)
         delivered = []
         completed = threading.Event()
-        def synthesise(text):
-            delivered.append(text)
+        def synthesise(item):
+            delivered.append(item.text)
             completed.set()
         with patch.object(tts, "_ensure_initialized", return_value=True), \
              patch.object(tts, "_speak_once", side_effect=synthesise):
@@ -234,6 +234,41 @@ class TestPiperTTSWithMocking:
                 assert delivered == ["Hello world"]
             finally:
                 tts.stop()
+
+    @pytest.mark.unit
+    def test_each_queued_utterance_keeps_its_own_callbacks(self):
+        """Two utterances in flight must not share completion callbacks.
+
+        Claire speaks a short acknowledgement while the reply is still being
+        generated, so the reply is enqueued *behind* the acknowledgement. When
+        the callbacks lived on the engine as shared attributes, the
+        acknowledgement's completion ran the reply's callback and cleared it:
+        the reply then finished without the callback that frees the hot window.
+        """
+        from src.claire.output.tts import PiperTTS
+
+        tts = PiperTTS(enabled=True)
+        items = []
+        second_seen = threading.Event()
+        def capture(item):
+            items.append(item)
+            if len(items) == 2:
+                second_seen.set()
+        first_done, second_done = threading.Event(), threading.Event()
+        with patch.object(tts, "_ensure_initialized", return_value=True), \
+             patch.object(tts, "_speak_once", side_effect=capture):
+            try:
+                tts.speak("On it.", completion_callback=first_done.set)
+                tts.speak("Sunny tomorrow.", completion_callback=second_done.set)
+                assert second_seen.wait(timeout=1)
+            finally:
+                tts.stop()
+
+        assert [item.text for item in items] == ["On it.", "Sunny tomorrow."]
+        assert items[0].completion_callback != items[1].completion_callback
+        items[0].completion_callback()
+        items[1].completion_callback()
+        assert first_done.is_set() and second_done.is_set()
 
     def test_speak_does_nothing_when_disabled(self):
         """PiperTTS.speak should do nothing when disabled."""

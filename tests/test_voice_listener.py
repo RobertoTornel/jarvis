@@ -52,6 +52,10 @@ def _create_mock_config(**kwargs):
     mock_cfg.vad_frame_ms = kwargs.get("vad_frame_ms", 20)
     from claire.config import get_default_config
     defaults = get_default_config()
+    # Mirror the real gate levels: an unset attribute on a MagicMock floatifies
+    # to 1.0 (full scale), which used to silence the gate in these tests and
+    # hid a regression that made the floor unusable in the same way.
+    mock_cfg.noise_gate_min_rms = kwargs.get("noise_gate_min_rms", defaults["noise_gate_min_rms"])
     mock_cfg.max_utterance_ms = kwargs.get("max_utterance_ms", defaults["max_utterance_ms"])
     mock_cfg.tts_max_utterance_ms = kwargs.get("tts_max_utterance_ms", defaults["tts_max_utterance_ms"])
     mock_cfg.tune_enabled = kwargs.get("tune_enabled", False)
@@ -1720,7 +1724,9 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.return_value = [0.1, 0.2, 0.3]
+            # embed_with_reason is the contract: it answers (vector, why not) so a
+            # failure can be reported in the provider's own words.
+            mock_embed_backend.embed_with_reason.return_value = ([0.1, 0.2, 0.3], "")
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1729,7 +1735,10 @@ class TestLlmWarmup:
 
         assert len(threads) == 3
         assert chat_warm.call_args.args[1] == "llama3.1"
-        assert mock_embed_backend.embed.call_args.args == ("ping", "nomic-embed-text")
+        assert mock_embed_backend.embed_with_reason.call_args.args == (
+            "ping",
+            "nomic-embed-text",
+        )
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", True)
 
     def test_skips_embed_warmup_when_empty(self):
@@ -1753,7 +1762,7 @@ class TestLlmWarmup:
         assert "embed" not in listener._llm_warmup_results
 
     def test_embed_warmup_records_failure(self):
-        """None from embed() surfaces in the results dict as False."""
+        """No vector surfaces in the results dict as False."""
         listener = _make_listener_for_warmup(
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
@@ -1765,7 +1774,10 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.return_value = None
+            mock_embed_backend.embed_with_reason.return_value = (
+                None,
+                'HTTP 404: model "nomic-embed-text" not found, try pulling it first',
+            )
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1773,6 +1785,7 @@ class TestLlmWarmup:
                 t.join(timeout=2.0)
 
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
+        assert "not found, try pulling it first" in listener._llm_warmup_reasons["embed"]
 
     def test_embed_warmup_stores_failure_on_backend_init_exception(self):
         """An exception in get_embedding_backend is caught and stored as False."""
@@ -1795,7 +1808,7 @@ class TestLlmWarmup:
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
 
     def test_embed_warmup_stores_failure_on_embed_exception(self):
-        """An exception in embed() is caught and stored as False."""
+        """An exception in the probe is caught and stored as False."""
         listener = _make_listener_for_warmup(
             chat_model="llama3.1", embed_model="nomic-embed-text"
         )
@@ -1807,7 +1820,7 @@ class TestLlmWarmup:
             "claire.listening.listener.get_embedding_backend"
         ) as mock_get_embed:
             mock_embed_backend = MagicMock()
-            mock_embed_backend.embed.side_effect = ConnectionError("server down")
+            mock_embed_backend.embed_with_reason.side_effect = ConnectionError("server down")
             mock_get_embed.return_value = mock_embed_backend
 
             threads = listener._start_llm_warmup()
@@ -1815,6 +1828,7 @@ class TestLlmWarmup:
                 t.join(timeout=2.0)
 
         assert listener._llm_warmup_results["embed"] == ("nomic-embed-text", False)
+        assert listener._llm_warmup_reasons["embed"] == "ConnectionError: server down"
 
     def test_low_power_mode_skips_llm_warmup(self):
         """Low-power sessions do not pre-load LLMs at listener startup."""
@@ -2134,3 +2148,64 @@ def cached_whisper_files(monkeypatch):
     """Model-loading tests use synthetic local files and never access the Hub."""
     monkeypatch.setattr("claire.listening.model_download.prepare_faster_whisper_model",
                         lambda name: name)
+
+
+class TestAVadThatCannotStartIsNotSilent:
+    """A VAD that fails to initialise changes where utterances end.
+
+    The failure used to be swallowed by a bare `except Exception: self._vad =
+    None`, so Claire kept listening with energy-based endpointing and the only
+    symptom was transcripts that clipped or ran on - with nothing in the journal
+    to connect the two. Falling back is right; doing it silently is not.
+    """
+
+    def _listener_with_vad(self, vad_stub):
+        with patch("claire.listening.listener.FASTER_WHISPER_AVAILABLE", True):
+            with patch("claire.listening.listener.MLX_WHISPER_AVAILABLE", False):
+                with patch("claire.listening.listener.WhisperModel"):
+                    with patch("claire.listening.listener.webrtcvad", vad_stub):
+                        from claire.listening.listener import VoiceListener
+
+                        mock_cfg = MagicMock()
+                        mock_cfg.sample_rate = 16000
+                        mock_cfg.vad_enabled = True
+                        mock_cfg.vad_aggressiveness = 2
+                        mock_cfg.echo_tolerance = 0.3
+                        mock_cfg.echo_energy_threshold = 2.0
+                        mock_cfg.hot_window_seconds = 3.0
+                        mock_cfg.voice_collect_seconds = 2.0
+                        mock_cfg.voice_max_collect_seconds = 60.0
+                        mock_cfg.tune_enabled = False
+
+                        return VoiceListener(
+                            MagicMock(), mock_cfg, MagicMock(), MagicMock()
+                        )
+
+    def test_it_falls_back_and_says_so(self, capsys):
+        class _BrokenVad:
+            @staticmethod
+            def Vad(aggressiveness):  # noqa: N802 - mirrors webrtcvad's API
+                raise ValueError("Failed to initialize VAD")
+
+        listener = self._listener_with_vad(_BrokenVad)
+
+        assert listener._vad is None, "the listener must still come up"
+        printed = capsys.readouterr().out
+        assert "Voice activity detection unavailable" in printed
+        assert "ValueError" in printed
+        assert "energy-based endpointing" in printed
+
+    def test_a_working_vad_is_still_used_and_says_nothing(self, capsys):
+        started = []
+
+        class _GoodVad:
+            @staticmethod
+            def Vad(aggressiveness):  # noqa: N802
+                started.append(aggressiveness)
+                return object()
+
+        listener = self._listener_with_vad(_GoodVad)
+
+        assert listener._vad is not None
+        assert started == [2]
+        assert "Voice activity detection unavailable" not in capsys.readouterr().out

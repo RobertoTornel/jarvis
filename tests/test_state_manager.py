@@ -497,3 +497,128 @@ class TestThreadSafety:
 
         assert len(errors) == 0, f"Thread safety errors: {errors}"
         sm.stop()
+
+# -- silence window anchored on the voice, not on the transcript ----------
+
+
+class TestCollectionWindowRunsDuringTranscription:
+    """The follow-up window must run while the transcript is decoding.
+
+    Voice turns used to stamp the silence window when the transcript arrived,
+    so the decode (p50 0.96 s against a 2.0 s window) was *added* to the
+    follow-up window instead of running inside it.
+    """
+
+    def test_voice_stopped_before_transcript_still_collecting_one_second_later(self):
+        """Win: voice stopped 0.65 s before start_collection still collects.
+
+        The window is anchored on the voice moment T, so at T+1.65 there is
+        only 1.65 s of silence (1.65 < 2.0, still collecting) and it expires
+        at T+2.0 -- two seconds of real silence after the voice stopped, not
+        two seconds after the transcript arrived (T+2.65).
+        """
+        sm = StateManager(voice_collect_seconds=2.0)
+        voice_stopped = time.time()
+        sm.note_voice_heard(voice_stopped)
+        time.sleep(0.65)  # transcription latency
+        sm.start_collection("remind me to", last_voice_time=voice_stopped)
+        assert sm.is_collecting()
+
+        one_second_later = voice_stopped + 1.65
+        while time.time() < one_second_later:
+            time.sleep(0.02)
+        # Guard: a poll past the deadline would make the next assert vacuous.
+        assert time.time() - voice_stopped < 1.9
+        assert sm.check_collection_timeout() is False
+
+        expiry = voice_stopped + 2.0
+        while time.time() < expiry:
+            time.sleep(0.02)
+        assert sm.check_collection_timeout() is True
+        sm.stop()
+
+    def test_transcription_slower_than_the_window_keeps_half_the_window(self):
+        """A decode longer than the window still leaves at least half of it.
+
+        The voice stopped 2.32 s ago (the slowest observed decode) and the
+        transcript has just arrived: credited silence is capped at half a
+        window (floor = now - w/2 = now - 1.0), so the first poll is not a
+        timeout (1.0 < 2.0) and the turn keeps a further 1.0 s of follow-up
+        window -- but never a window longer than one window in total.
+        """
+        sm = StateManager(voice_collect_seconds=2.0)
+        voice_stopped = time.time() - 2.32
+        sm.note_voice_heard(voice_stopped)
+        sm.start_collection("remind me to", last_voice_time=voice_stopped)
+        opened = time.time()
+
+        assert sm.check_collection_timeout() is False  # half the window remains
+        assert time.time() - opened < 0.5  # the poll really happened at open
+
+        expiry = opened + 1.0  # floor(open) + w = open + w/2
+        while time.time() < expiry:
+            time.sleep(0.02)
+        assert sm.check_collection_timeout() is True
+        # Capped: measured from the transcript's arrival the turn never got
+        # a window longer than one window.
+        assert time.time() - opened < 1.5
+        sm.stop()
+
+    def test_transcription_shorter_than_half_the_window_is_credited_in_full(self):
+        """A quick decode is credited in full, not truncated by the floor.
+
+        Voice stopped 0.4 s before the transcript arrived (0.4 < w/2):
+        the anchor stays at the voice moment, so the window ends at
+        voice + 2.0 = arrival + 1.6 -- after half a window of follow-up
+        (1.6 > 1.0) and short of a full window from arrival (1.6 < 2.0).
+        """
+        sm = StateManager(voice_collect_seconds=2.0)
+        voice_stopped = time.time()
+        sm.note_voice_heard(voice_stopped)
+        time.sleep(0.4)  # short transcription
+        sm.start_collection("remind me to", last_voice_time=voice_stopped)
+        opened = time.time()
+
+        assert sm.check_collection_timeout() is False
+
+        halfway = voice_stopped + 1.0
+        while time.time() < halfway:
+            time.sleep(0.02)
+        assert sm.check_collection_timeout() is False  # more than half left
+
+        expiry = voice_stopped + 2.0
+        while time.time() < expiry:
+            time.sleep(0.02)
+        assert sm.check_collection_timeout() is True
+        credit = time.time() - opened
+        assert 1.4 < credit < 1.8  # arrival + 1.6, not arrival + 2.0
+        sm.stop()
+
+    def test_start_collection_without_a_timestamp_starts_the_window_now(self):
+        """The old call behaves exactly as it does today.
+
+        start_collection(text) with no last_voice_time and no noted voice
+        anchors the window at *now*: half a window later it is still open,
+        a full window later it has expired.
+        """
+        sm = StateManager(voice_collect_seconds=0.5)
+        sm.start_collection("hello")
+        time.sleep(0.3)  # between half (0.25 s) and full (0.5 s)
+        assert sm.check_collection_timeout() is False
+        time.sleep(0.25)  # 0.55 s of silence in total
+        assert sm.check_collection_timeout() is True
+        sm.stop()
+
+    def test_a_stale_voice_note_does_not_rewind_the_anchor(self):
+        """note_voice_heard only ever moves forward.
+
+        An out-of-order capture (a late queued transcript) must not push the
+        window back to an older moment, or a fresh continuation would inherit
+        a window that has already run down.
+        """
+        sm = StateManager(voice_collect_seconds=2.0)
+        recent = time.time()
+        sm.note_voice_heard(recent)
+        sm.note_voice_heard(recent - 5.0)  # stale, must not win
+        assert sm._last_voice_heard_at == recent
+        sm.stop()

@@ -33,6 +33,7 @@ nothing".
 from __future__ import annotations
 
 import importlib
+import threading
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -154,6 +155,19 @@ class _ParakeetEngineBase:
         self.model_path = str(model_path)
         self.raw_model: Any = None
         self._detail: dict[str, Any] = dict(detail or {})
+        # NeMo's transcription path is not re-entrant. It freezes modules and
+        # restores their gradients from a snapshot that the *next* call clears
+        # (nemo/core/classes/module.py: "the snapshot is cleared in both cases"),
+        # so two overlapping calls race and the loser dies with
+        #     ValueError: Cannot unfreeze partially without first freezing the
+        #     module with `freeze()`
+        # Reproduced on this machine: 3 of 18 transcribes run concurrently on one
+        # loaded model failed exactly that way. It is reachable in normal use -
+        # the voice loop and the phone walkie-talkie route share this one engine
+        # (`bridge.transcriber` is the voice loop's engine, by design, so both
+        # produce the same text) - and a decode is a CPU-bound second or two, so
+        # there is nothing to gain from overlapping them.
+        self._decode_lock = threading.Lock()
 
     # -- contract ---------------------------------------------------------
     def identity(self) -> SttIdentity:
@@ -170,7 +184,10 @@ class _ParakeetEngineBase:
         samples = _validate_audio(audio, sample_rate)
         samples = _resample(samples, sample_rate, _TARGET_SAMPLE_RATE)
         started = time.perf_counter()
-        text = self._transcribe_samples(samples)
+        # Serialised: see _decode_lock. The lock spans only the decode, so the
+        # resampling above stays parallel-safe and a failure still releases it.
+        with self._decode_lock:
+            text = self._transcribe_samples(samples)
         elapsed = time.perf_counter() - started
         if not isinstance(text, str):
             raise SttDecodeError(

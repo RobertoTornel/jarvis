@@ -16,6 +16,64 @@ from ...types import ToolExecutionResult
 # Shared generation room includes reasoning and the structured or coaching answer.
 _NUTRITION_TOKEN_BUDGET = 1024
 
+#: Escalation ladder for the extractor. The gateway charges the model's
+#: reasoning tokens against ``max_tokens`` as well as the answer, and this
+#: model's reasoning for a meal it has to do arithmetic for runs to several
+#: thousand tokens, so a single budget cannot serve both a simple meal and a
+#: detailed one. The extractor tries each budget in turn and stops at the first
+#: usable object, so a meal that finishes inside the first budget pays for one
+#: call only.
+#:
+#: Measured on the live configuration 2026-10-13. Before the system prompt asked
+#: for one aggregate estimate, a seven-item breakfast was truncated at 1024, 2048
+#: and once at 8192, completing only at 4096 on one run (3051 reasoning tokens).
+#: With the aggregate instruction the same meal completes at 4096 (2112 reasoning
+#: tokens). A larger cap makes this model reason for longer rather than finish
+#: sooner, which is why the ladder starts at the cheap budget and climbs only when
+#: the cheaper attempt proved unusable.
+_NUTRITION_RETRY_TOKEN_BUDGET = 4096
+_NUTRITION_FINAL_TOKEN_BUDGET = 8192
+_NUTRITION_BUDGET_LADDER = (
+    _NUTRITION_TOKEN_BUDGET,
+    _NUTRITION_RETRY_TOKEN_BUDGET,
+    _NUTRITION_FINAL_TOKEN_BUDGET,
+)
+
+#: Rung to start from when the description names several foods. A listed meal
+#: needs more reasoning than a short description even with the aggregate
+#: instruction, and the cheap rung is known in advance to be too small for it.
+#: Measured 2026-10-13 with the aggregate method: a seven-item breakfast was
+#: truncated at 2048 and completed at 4096 (2112 reasoning tokens), so that is
+#: where a listed meal starts. The count is deliberately crude, because it only
+#: has to tell "two eggs and a coffee" apart from a listed meal.
+_NUTRITION_ITEMISED_START = _NUTRITION_RETRY_TOKEN_BUDGET
+
+#: Number of named foods from which a description is treated as listed.
+_NUTRITION_ITEMISED_THRESHOLD = 3
+
+#: Phrases a person uses when listing foods, counted to guess the item count.
+_MEAL_ITEM_SEPARATORS = (",", " and ", " with ", " plus ")
+
+
+def _named_item_count(text: str) -> int:
+    """A crude count of the foods named in a meal description.
+
+    Separators are a proxy for the arithmetic the extractor will have to do,
+    which is what drives its reasoning length. It over-counts phrases like
+    "salt and pepper" and under-counts a bare list without punctuation, which
+    is acceptable: both directions only move the starting rung, and the ladder
+    still climbs from wherever it starts.
+    """
+    lowered = (text or "").lower()
+    return 1 + sum(lowered.count(separator) for separator in _MEAL_ITEM_SEPARATORS)
+
+
+def _first_budget_for(text: str) -> int:
+    """The cheapest rung that can plausibly hold this meal's reasoning."""
+    if _named_item_count(text) >= _NUTRITION_ITEMISED_THRESHOLD:
+        return _NUTRITION_ITEMISED_START
+    return _NUTRITION_TOKEN_BUDGET
+
 
 def call_llm_direct(*, cfg, chat_model, system_prompt, user_content,
                     timeout_sec=10.0, thinking=False, num_ctx=4096,
@@ -36,8 +94,18 @@ NUTRITION_SYS = (
     "produce a compact JSON object with fields: description (string), calories_kcal (number), protein_g (number), "
     "carbs_g (number), fat_g (number), fiber_g (number), sugar_g (number), sodium_mg (number), potassium_mg (number), "
     "micros (object with a few notable micronutrients), and confidence (0-1). If no meal is described, return the string NONE. "
-    "IMPORTANT: Include ALL food items mentioned and sum their nutritional values into the total. "
-    "The description field must list ALL items (e.g., 'scrambled eggs with toast' not just 'eggs'). "
+    # The aggregate instruction is a latency fix with a measured cause, not a
+    # style preference. Asking the model to sum every item's values made it work
+    # through the arithmetic one item at a time and spend thousands of reasoning
+    # tokens, which the gateway charges against max_tokens: a seven-item
+    # breakfast measured 2026-10-13 spent 3051 reasoning tokens on one run and
+    # 6133 on another, truncating at 1024, 2048 and (once) 8192 and taking
+    # 45-110 s. Asking for one aggregate estimate in a single pass cut the same
+    # meal to 2112 reasoning tokens, completing inside 4096 in 22.6 s with every
+    # field still present.
+    "Estimate the whole meal as one aggregate in a single pass: do NOT enumerate the items "
+    "or calculate them one at a time. "
+    "The description field must list ALL items mentioned. "
     "Estimate realistically based on typical portions; prefer conservative estimates when uncertain."
 )
 
@@ -84,27 +152,70 @@ def extract_and_log_meal(db: Database, cfg: Any, original_text: str, source_app:
         + "\n<<<END UNTRUSTED USER TEXT>>>\n\n"
         "Return ONLY JSON or the exact string NONE."
     )
-    raw = call_llm_direct(
-        cfg=cfg,
-        chat_model=cfg.llm_chat_model,
-        system_prompt=NUTRITION_SYS,
-        user_content=user_prompt,
-        timeout_sec=cfg.llm_chat_timeout_sec,
-        thinking=getattr(cfg, 'llm_thinking_enabled', False),
-        max_tokens=_NUTRITION_TOKEN_BUDGET,
-    ) or ""
-    text = (raw or "").strip()
-    if text.upper() == "NONE":
-        debug_log(f"logMeal extractor returned NONE for text={original_text[:120]!r}", "nutrition")
-        return None
-    data: Dict[str, Any]
-    try:
-        data = json.loads(_strip_code_fence(text))
-    except Exception as e:
-        debug_log(f"logMeal extractor JSON parse failed: {e!r}; raw={text[:200]!r}", "nutrition")
-        return None
-    if not isinstance(data, dict):
-        debug_log("⚠️ logMeal extractor returned a non-object payload", "nutrition")
+    def _extract(budget: int) -> str:
+        """One extraction attempt at a given token budget."""
+        return (call_llm_direct(
+            cfg=cfg,
+            chat_model=cfg.llm_chat_model,
+            system_prompt=NUTRITION_SYS,
+            user_content=user_prompt,
+            timeout_sec=cfg.llm_chat_timeout_sec,
+            thinking=getattr(cfg, 'llm_thinking_enabled', False),
+            max_tokens=budget,
+        ) or "").strip()
+
+    def _parse(candidate: str) -> Optional[Dict[str, Any]]:
+        """The extracted object, or None when the model did not return one."""
+        if not candidate or candidate.upper() == "NONE":
+            return None
+        try:
+            parsed = json.loads(_strip_code_fence(candidate))
+        except Exception as e:
+            debug_log(
+                f"logMeal extractor JSON parse failed: {e!r}; "
+                f"raw={candidate[:200]!r}",
+                "nutrition",
+            )
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    data: Optional[Dict[str, Any]] = None
+    text = ""
+    start = _first_budget_for(original_text)
+    ladder = tuple(budget for budget in _NUTRITION_BUDGET_LADDER if budget >= start)
+    for budget in ladder:
+        text = _extract(budget)
+        if text.upper() == "NONE":
+            debug_log(f"logMeal extractor returned NONE for text={original_text[:120]!r}", "nutrition")
+            return None
+        data = _parse(text)
+        if data is not None:
+            break
+        # The gateway charges the model's reasoning tokens against
+        # ``max_tokens``, and this model reasons past the first budget on any
+        # meal it has to do arithmetic for, so the answer is either never
+        # emitted or cut off mid-object. Measured 2026-10-13 on the live
+        # configuration: three of three realistic detailed meals failed this
+        # way at 1024 (empty content, ``finish_reason`` "length", all 1024
+        # tokens charged as reasoning), and a simple meal failed with a
+        # partial object that ``json.loads`` rejected. Retrying at the same
+        # budget cannot succeed, so each step up the ladder buys room to
+        # finish. Reasoning gets longer when more room is offered, which is
+        # why the ladder starts cheap and only climbs when the cheaper attempt
+        # proved unusable. The system prompt's aggregate instruction removes
+        # most of this reasoning, so the ladder is now a safety net rather
+        # than the normal path.
+        debug_log(
+            f"logMeal extraction unusable at {budget} tokens (reasoning "
+            f"exhausted the budget); escalating",
+            "nutrition",
+        )
+    if data is None:
+        debug_log(
+            f"logMeal extractor unusable at every budget in its ladder "
+            f"({ladder}); raw={text[:200]!r}",
+            "nutrition",
+        )
         return None
     numeric_fields = (
         'calories_kcal', 'protein_g', 'carbs_g', 'fat_g', 'fiber_g',
@@ -161,6 +272,16 @@ def extract_and_log_meal(db: Database, cfg: Any, original_text: str, source_app:
     confirmation = f"Logged meal #{meal_id}: {description}: {approx}{conf_str}."
     # Coaching is optional after the database commit. Its failure cannot retry
     # the extraction/write or turn a saved meal into a reported failure.
+    #
+    # It is off by default because it is the second of two model calls and the
+    # less reliable one: measured 2026-10-13 on the live configuration it took
+    # 16.6-18.0 s and came back with empty content (reasoning consumed its
+    # whole 1024-token budget, exactly as the extractor's did before the ladder
+    # was added) on two calls out of three. That is 16-18 s added to every
+    # meal log for text that usually never arrives. Set
+    # ``nutrition_coaching_enabled`` to true to buy it back.
+    if not getattr(cfg, "nutrition_coaching_enabled", False):
+        return confirmation
     try:
         follow_text = generate_followups_for_meal(cfg, description, approx)
     except Exception as exc:
@@ -255,4 +376,10 @@ class LogMealTool(Tool):
 
         debug_log("logMeal: failed", "nutrition")
         context.user_print("⚠️ I couldn't log that meal automatically.")
-        return ToolExecutionResult(success=False, reply_text="Failed to log meal")
+        return ToolExecutionResult(
+            success=False,
+            reply_text=(
+                "Could not work out the nutrition for that meal. Ask the user "
+                "to name one or two specific items and try again."
+            ),
+        )

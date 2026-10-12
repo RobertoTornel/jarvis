@@ -87,7 +87,10 @@ def start_next(worker_cls, args):
     if isinstance(state["worker"], DaemonThread):
         state["worker"].finished.connect(lambda: start_next(worker_cls, args))
     else:
-        state["worker"].check_done.connect(lambda ok: start_next(worker_cls, args))
+        # `*_` because the probes do not all emit the same payload: the two
+        # Ollama workers emit a bare verdict, _LLMReachWorker emits
+        # (verdict, reason).
+        state["worker"].check_done.connect(lambda *_: start_next(worker_cls, args))
     state["worker"].start()
 
 

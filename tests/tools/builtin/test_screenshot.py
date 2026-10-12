@@ -1,12 +1,10 @@
 """Tests for screenshot tool."""
 
 import pytest
-from unittest.mock import Mock, patch
-import sys
+from unittest.mock import Mock
 
 from src.claire.tools.builtin.screenshot import ScreenshotTool
 from src.claire.tools.base import ToolContext
-from src.claire.tools.types import ToolExecutionResult
 
 # The unit gate deselects any test that is not marked `unit`; a module-level
 # pytestmark makes this whole file visible to it.
@@ -29,74 +27,10 @@ class TestScreenshotTool:
         assert self.tool.inputSchema["type"] == "object"
         assert self.tool.inputSchema["required"] == []
 
-    @patch('shutil.which')
-    @patch('subprocess.run')
-    def test_run_success(self, mock_run, mock_which):
-        """Test successful screenshot capture with inlined OCR logic."""
-        # Lightweight stubs so dynamic imports succeed without heavy deps.
-        # Saved and restored so the stubs don't leak into later tests that
-        # import the real pytesseract / PIL modules.
-        _saved_modules = {name: sys.modules.get(name) for name in
-                          ("pytesseract", "PIL", "PIL.Image")}
-        class _StubImgCtx:
-            def __enter__(self):
-                return self
-            def __exit__(self, *a):
-                return False
-        class _StubImage:
-            @staticmethod
-            def open(*a, **k):
-                return _StubImgCtx()
-
-        sys.modules['pytesseract'] = type('StubTess', (), {
-            'image_to_string': staticmethod(lambda *a, **k: 'Sample OCR text')
-        })
-        sys.modules['PIL'] = type('StubPIL', (), {'Image': _StubImage})
-        sys.modules['PIL.Image'] = _StubImage
-
-        # Indicate tools exist
-        def which_side_effect(name):
-            return f"/usr/bin/{name}" if name in ("screencapture", "tesseract") else None
-        mock_which.side_effect = which_side_effect
-
-        mock_proc = Mock()
-        mock_proc.returncode = 0
-        mock_run.return_value = mock_proc
-
-        try:
-            with patch('tempfile.mkdtemp', return_value='/tmp/claire_ocr_test'), \
-                 patch('os.path.exists', return_value=True), \
-                 patch('os.remove'), \
-                 patch('os.rmdir'):
-                result = self.tool.run({}, self.context)
-        finally:
-            for _name, _saved in _saved_modules.items():
-                if _saved is None:
-                    sys.modules.pop(_name, None)
-                else:
-                    sys.modules[_name] = _saved
-
-        assert isinstance(result, ToolExecutionResult)
-        assert result.success is True
-        assert result.reply_text == 'Sample OCR text'
-        self.context.user_print.assert_called()
-
-    @patch('shutil.which')
-    @patch('subprocess.run')
-    def test_run_empty_ocr(self, mock_run, mock_which):
-        """Test screenshot with empty OCR result (tesseract missing)."""
-        # screencapture present, tesseract missing
-        def which_side_effect(name):
-            if name == 'screencapture':
-                return '/usr/bin/screencapture'
-            return None
-        mock_which.side_effect = which_side_effect
-        mock_proc = Mock(); mock_proc.returncode = 0; mock_run.return_value = mock_proc
-        with patch('tempfile.mkdtemp') as mock_tmp, \
-             patch('os.path.exists') as mock_exists:
-            mock_tmp.return_value = '/tmp/claire_ocr_test'
-            mock_exists.return_value = True
-            result = self.tool.run({}, self.context)
-        assert isinstance(result, ToolExecutionResult)
-        assert result.success is True
-        assert result.reply_text == ''
+    # The run() behaviour used to be tested here against an inlined macOS
+    # `screencapture` + `tesseract` pipeline that existed only on macOS, and one
+    # of those tests asserted `success is True` alongside an empty reply, which
+    # is the silent-empty defect itself. `run()` now delegates to the screen
+    # sense (`claire.senses.screen.read_screen`), and its behaviour including
+    # every failure mode is covered by `tests/test_screenshot_tool.py`, which
+    # injects a fake sense instead of patching deleted internals.

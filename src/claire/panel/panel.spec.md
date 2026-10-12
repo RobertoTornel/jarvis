@@ -152,9 +152,9 @@ letting it be discovered.
    - A credential the panel can only see the *existence* of (a value in `config.json` such as
      `llm_api_key`) is reported as `ConfigCredential` — `present`, no value, no mask — because
      the panel must not read a raw value in order to build a mask of it.
-   - **The page has no key field**, and both write routes — `POST /select` and `POST /chat` —
-      refuse any body carrying one (see 3). Keys are set out-of-band: the key store, or the
-      provider's environment variable (`OMNIROUTE_API_KEY`). The page says so in as many words.
+   - **The page has no key field**, and every write route — `POST /select`, `POST /chat`, `POST /memory/save`
+      and `POST /memory/delete` — refuses any body carrying one (see 3). Keys are set out-of-band: the key
+      store, or the provider's environment variable (`OMNIROUTE_API_KEY`). The page says so in as many words.
    - **No secret is logged.** `PanelHandler.log_message` is overridden so the raw request line
      (which can carry a credential in its query string) is never written to stderr: the panel
      logs the method and the *path* only, scrubbed and truncated. The panel never logs a form
@@ -170,10 +170,21 @@ letting it be discovered.
    then logs a loud `WARNING`: the panel is **plain HTTP — no TLS, no authentication**, readable
    by anyone who can reach the interface. `create_server()` runs the guard *before* it binds, so
    a refused host never opens a socket.
-3. **Both write endpoints are forgery-resistant.** `check_write_origin()` runs before the body is
-   looked at, for `POST /select` and `POST /chat` alike, and refuses with `PanelOriginError`
+   Both bind values are overridable without a command line: `--host`/`--port` default to
+   `${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` when those are set, which is the only way the
+   systemd unit (`deploy/claire-panel.service`, standard input from `claire.env`) can be pointed
+   somewhere else — a service cannot append flags conditionally. A string default is parsed
+   through `--port`'s type, so a malformed `CLAIRE_PANEL_PORT` fails as one clean line instead of
+   a traceback. The loopback guard applies to the environment just as it does to a flag: the
+   variable is a convenience, never a way around the guard.
+3. **Every write endpoint is forgery-resistant.** `check_write_origin()` runs before the body is
+   looked at, for all four POST routes alike, and refuses with `PanelOriginError`
    (`403 origin-refused`) unless:
-   - `Origin` is present (silence is not a same-origin proof),
+   - `Origin` is present and not opaque (`null`) — or, when it is missing or
+     opaque, `Sec-Fetch-Site: same-origin` accompanies it, because a browser sets
+     that header from the request's real initiator and a foreign page cannot
+     forge it. A missing or opaque origin *without* that header is refused:
+     silence is not a same-origin proof,
    - its scheme is `http`,
    - its host is loopback,
    - its host equals the `Host` header's host,
@@ -275,7 +286,7 @@ Two further behaviours worth stating rather than discovering:
 | `create_handler(state)` | A `PanelHandler` subclass bound to `state`; starts nothing. |
 | `create_server(state, host, port, *, allow_remote=False)` | Builds (does not start) the server; guards the host first. |
 | `serve(state, host, port, *, allow_remote=False)` | The only place a socket is opened. |
-| `main(argv)` | CLI: `--host`, `--port`, `--allow-remote-binding`, `--action-log`. Returns an exit code. |
+| `main(argv)` | CLI: `--host`, `--port`, `--allow-remote-binding`, `--action-log`. `--host`/`--port` default from `${CLAIRE_PANEL_HOST}`/`${CLAIRE_PANEL_PORT}` and `--action-log` is passed through as `None` so `RealPanelState` reads `${CLAIRE_ACTION_LOG}` itself. Returns an exit code. |
 | `guard_bind_host`, `is_loopback_host`, `is_mask_shaped`, `parse_target`, `parse_form`, `check_write_origin` | The guards, individually testable. |
 
 Constants: `ROUTE_CHAT`, `ROUTE_MEMORY`, `ROUTE_MEMORY_SAVE`, `ROUTE_MEMORY_DELETE`,

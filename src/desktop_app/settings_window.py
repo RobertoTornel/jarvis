@@ -289,6 +289,16 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("hot_window_seconds", "Hot Window Duration",
       "Duration of follow-up window",
       "timing", "float", min_val=1.0, max_val=30.0, step=0.5, suffix="s")
+    f("hot_window_max_follow_ups", "Follow-up Turns",
+      "Wake-word-free follow-ups allowed per wake word (0 = unlimited)",
+      "timing", "int", min_val=0, max_val=20, step=1)
+    f("hot_window_require_directed", "Strict Follow-ups",
+      "Only accept follow-ups aimed at Claire, not background speech",
+      "timing", "bool")
+    f("hot_window_grace_seconds", "Instant Follow-up Window",
+      "Answer a follow-up this soon after speaking without judging it first "
+      "(0 = judge every follow-up)",
+      "timing", "float", min_val=0.0, max_val=30.0, step=0.5, suffix="s")
     f("transcript_buffer_duration_sec", "Transcript Buffer",
       "Duration of rolling transcript history for intent judging",
       "timing", "float", min_val=10, max_val=600, step=10, suffix="s")
@@ -339,6 +349,22 @@ def _build_field_metadata() -> List[FieldMeta]:
       "features", "bool")
     f("tune_enabled", "Startup Tune",
       "Play startup sound",
+      "features", "bool")
+    f("ack_enabled", "Spoken Acknowledgement",
+      "Say a short \"On it\" as soon as a voice request is understood, instead "
+      "of staying silent until the answer is ready. The phrases themselves "
+      "(ack_phrases) are edited in config.json.",
+      "features", "bool")
+    f("smalltalk_router_skip_enabled", "Skip the Tool Router for Small Talk",
+      "Answer \"yeah\", \"okay\" and \"what's up\" without first spending a "
+      "model call deciding which tools to use. Off means every turn consults "
+      "the router.",
+      "features", "bool")
+    f("nutrition_coaching_enabled", "Nutrition Coaching After a Logged Meal",
+      "Ask for 2-3 healthy follow-ups once a meal has been saved. This is a "
+      "second model call that measured 16.6-18.0 s and returned nothing on two "
+      "calls out of three, so it is off by default and the meal is logged "
+      "without it.",
       "features", "bool")
 
     # --- Advanced ---

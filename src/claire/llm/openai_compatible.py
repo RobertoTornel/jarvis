@@ -34,6 +34,29 @@ from .errors import indicates_tools_unsupported, is_timeout_error
 from .backend import LLMBackend, ToolsNotSupportedError, strip_nonstandard_message_fields
 
 
+def _embedding_error_message(resp, limit: int = 200) -> str:
+    """The server's own one-line explanation of a failed embedding request.
+
+    Kept deliberately narrow: only the status and the message the server sent.
+    Never the request URL or headers, which can carry an API key.
+    """
+    message = ""
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        elif isinstance(error, str):
+            message = error
+    if not message:
+        message = str(getattr(resp, "text", "") or "")
+    message = " ".join(message.split())[:limit]
+    return f"HTTP {resp.status_code}" + (f": {message}" if message else "")
+
+
 @dataclass
 class ServerCapabilities:
     """What an OpenAI-compatible server can actually do, probed with real
@@ -384,6 +407,24 @@ class OpenAICompatibleBackend(LLMBackend):
         ignore or reject unknown body keys, so sending one would be a silent
         no-op at best. The Gemini backend uses its native API and does honour
         it."""
+        return self.embed_with_reason(text, model, timeout_sec, task_type)[0]
+
+    def embed_with_reason(
+        self,
+        text: str,
+        model: str,
+        timeout_sec: float = 15.0,
+        task_type: Optional[str] = None,
+    ) -> tuple[Optional[List[float]], str]:
+        """Embed, keeping the router's own explanation for a failure.
+
+        Which matters here: a routing layer in front of Ollama answers a missing
+        model with ``HTTP 404 model not found, try pulling it first``, a
+        provider without embedding support with ``HTTP 400 Unknown embedding
+        provider``, and an unpaid provider with ``HTTP 402 Insufficient
+        credits``. Swallowed into ``None``, all three used to read as the same
+        unhelpful "check model availability and embedding settings".
+        """
         try:
             resp = requests.post(
                 f"{self._base_url}/embeddings",
@@ -391,16 +432,29 @@ class OpenAICompatibleBackend(LLMBackend):
                 headers=self._headers(),
                 timeout=timeout_sec,
             )
+        except Exception as exc:
+            # Never the exception's text: a request URL can carry a key.
+            return None, f"{type(exc).__name__} while calling /embeddings"
+        # A real requests.Response always carries an integer status; a fake one
+        # in a test need not, and must still take the parse path so the existing
+        # behaviour (raise_for_status) is preserved for such objects.
+        status = getattr(resp, "status_code", None)
+        if isinstance(status, int) and status != 200:
+            return None, _embedding_error_message(resp)
+        try:
             resp.raise_for_status()
+        except Exception:
+            return None, _embedding_error_message(resp)
+        try:
             data = resp.json()
             arr = data.get("data") if isinstance(data, dict) else None
             if isinstance(arr, list) and arr and isinstance(arr[0], dict):
                 vec = arr[0].get("embedding")
                 if isinstance(vec, list):
-                    return [float(x) for x in vec]
+                    return [float(x) for x in vec], ""
         except Exception:
-            return None
-        return None
+            return None, "the reply was not readable as an embedding response"
+        return None, "the reply carried no embedding"
 
     def list_models(self, timeout_sec: float = 5.0) -> List[str]:
         try:

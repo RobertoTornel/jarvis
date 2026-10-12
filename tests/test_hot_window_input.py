@@ -18,6 +18,8 @@ from claire.listening.state_manager import StateManager, ListeningState
 from claire.listening.intent_judge import IntentJudgment
 from claire.listening.listener import POST_TTS_TAIL_GUARD_SECONDS
 
+pytestmark = pytest.mark.unit
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1635,3 +1637,378 @@ def test_hot_window_does_not_collect_an_earlier_tts_fragment_as_new_query(heard)
         assert _accepted_query(listener) == '', 'Earlier assistant speech became a new query'
     finally:
         listener.state_manager.stop()
+
+
+# ---------------------------------------------------------------------------
+# Tests: disabled hot window and strict (directed-only) mode
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestDisabledHotWindowRejectsFollowUp:
+    """With hot_window_enabled False the window must never arm at all.
+
+    This pins listener.activate_hot_window's early return: no delayed
+    activation is scheduled, so an immediate follow-up has no window to
+    land in and needs the wake word like any ambient speech.
+    """
+
+    @patch("builtins.print")
+    def test_disabled_hot_window_rejects_immediate_follow_up(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener.cfg.hot_window_enabled = False
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        # Same entry point the TTS-finished callback uses.
+        listener.activate_hot_window()
+
+        # The disabled branch returns before scheduling anything: waiting past
+        # the echo-tolerance delay must still find no active window.
+        time.sleep(0.1)
+        assert not listener.state_manager.is_hot_window_active()
+
+        _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="background conversation"))
+        _process_transcript(listener, "what time is it", utterance_energy=0.01)
+
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+
+@pytest.mark.unit
+class TestStrictHotWindowRequireDirected:
+    """hot_window_require_directed is the opt-in strict mode.
+
+    False (default) keeps the documented permissive behaviour: all non-echo
+    speech in the hot window counts as a follow-up even when the judge says
+    it was not directed at Claire. True demands directed == True, so
+    background television cannot drive a turn — but a genuine wake word is
+    always accepted.
+    """
+
+    @patch("builtins.print")
+    def test_strict_mode_rejects_not_directed_speech(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener.cfg.hot_window_require_directed = True
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="addressed to someone else in the room"))
+        _process_transcript(listener, "did you see the game last night",
+                             utterance_energy=0.01)
+
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_strict_mode_still_accepts_directed_speech(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener.cfg.hot_window_require_directed = True
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        _install_intent_judge(listener, _make_judgment(
+            directed=True, query="what time is it", confidence="high",
+            reasoning="direct follow-up question"))
+        _process_transcript(listener, "what time is it", utterance_energy=0.01)
+
+        assert _accepted_query(listener) == "what time is it"
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_strict_mode_accepts_a_genuine_wake_word(self, _print):
+        """A wake word bypasses strictness: it is explicit engagement."""
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener.cfg.hot_window_require_directed = True
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="addressed to someone else in the room"))
+        _process_transcript(listener, "claire, did you watch the game",
+                             utterance_energy=0.01)
+
+        assert _accepted_query(listener) == "claire, did you watch the game"
+        listener.state_manager.stop()
+
+
+# ---------------------------------------------------------------------------
+# Tests: intent_judge_skip_on_wake_word
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestIntentJudgeSkipOnWakeWord:
+    """The opt-in fast path that trades the judge's defence for about 3 seconds.
+
+    The judge runs on every turn where a wake word was detected, and on this
+    machine that call measures about 3.2 s at p50. When the utterance itself
+    contains the wake word the query is already unambiguous, so the key lets
+    the deterministic wake-word path take it instead, stripping the wake word
+    with `extract_query_after_wake`. It is off by default, it never applies
+    while TTS is speaking (the judge is what catches a stop command spoken over
+    playback), and it cannot apply without a wake word to key off.
+    """
+
+    def test_wake_word_turn_skips_the_judge_and_strips_the_wake_word(self):
+        """With the key on, the judge is not called and the query is clean."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        judge.judge.assert_not_called()
+        # The deterministic path must strip the wake word itself.
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_a_non_boolean_key_value_does_not_enable_the_fast_path(self):
+        """A mock or string config must not switch the fast path on.
+
+        `_create_listener` builds a `MagicMock` config, whose attributes are
+        truthy, so this is also the default-off case.
+        """
+        listener, _ = _create_listener()
+        judge = _install_intent_judge(listener, _make_judgment(query="what is the weather"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        assert judge.judge.call_count == 1
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_explicit_false_still_calls_the_judge(self):
+        """The documented default keeps today's behaviour exactly."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = False
+        judge = _install_intent_judge(listener, _make_judgment(query="what is the weather"))
+
+        _process_transcript(listener, "claire what is the weather")
+
+        assert judge.judge.call_count == 1
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_judge_still_runs_while_tts_is_speaking(self):
+        """Speech over playback must still reach the judge.
+
+        The utterance is longer than three words so the pre-existing
+        short-utterance-during-TTS shortcut is not what answers this.
+        """
+        listener, _ = _create_listener(tts_speaking=True)
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query=""))
+
+        _process_transcript(listener, "claire turn the music down please")
+
+        assert judge.judge.call_count == 1
+
+    def test_judge_still_runs_for_a_hot_window_follow_up(self):
+        """With no wake word there is nothing to key the fast path off.
+
+        A follow-up inside the window must still reach the judge, which is what
+        decides whether speech in the window is addressed to her.
+        """
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(directed=False))
+
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        _process_transcript(listener, "did you see the game last night")
+
+        assert judge.judge.call_count == 1
+
+    def test_an_alias_wake_word_is_stripped_too(self):
+        """The deterministic extractor must handle aliases, not just the name.
+
+        Aliases are known mishearings ("Jervis", "Jaivis"); the judge normally
+        normalises them. If the fast path left one in the query, the reply
+        engine would receive it as part of the question.
+        """
+        listener, _ = _create_listener()
+        listener.cfg.wake_aliases = ["jervis"]
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "jervis what is the weather")
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "what is the weather"
+
+    def test_a_trailing_wake_word_is_stripped_too(self):
+        """The name can come after the question, and must still be removed."""
+        listener, _ = _create_listener()
+        listener.cfg.intent_judge_skip_on_wake_word = True
+        judge = _install_intent_judge(listener, _make_judgment(query="from the judge"))
+
+        _process_transcript(listener, "what is the weather claire")
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "what is the weather"
+
+
+@pytest.mark.unit
+class TestHotWindowGraceBand:
+    """hot_window_grace_seconds is the opt-in judge-free fast band.
+
+    A follow-up that arrives immediately after Claire stops speaking is the
+    turn a human reply is most likely on, and the intent judge costs about
+    three seconds there. Inside the band the follow-up is accepted without
+    the judge; after it, strict mode applies as before so background
+    television is still gated. 0.0 (the default) judges every follow-up.
+    """
+
+    @patch("builtins.print")
+    def test_grace_band_accepts_without_calling_the_judge(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="addressed to someone else in the room"))
+        _process_transcript(listener, "and what about tomorrow", utterance_energy=0.01)
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "and what about tomorrow"
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_after_the_band_strict_mode_still_judges(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+        # Five seconds into a six-second window: past the band, still inside.
+        listener.state_manager._hot_window_start_time = time.time() - 5.0
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="not addressed to Claire"))
+        _process_transcript(listener, "did you see the game last night", utterance_energy=0.01)
+
+        judge.judge.assert_called()
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_the_band_is_off_by_default(self, _print):
+        """0.0 judges every follow-up, so strict mode keeps its guarantee."""
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 0.0
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high", reasoning="not directed"))
+        _process_transcript(listener, "did you see the game last night", utterance_energy=0.01)
+
+        judge.judge.assert_called()
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+    def test_the_band_never_applies_in_permissive_mode(self):
+        """Permissive mode already accepts without the judge; no band needed."""
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = False
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        assert listener._inside_follow_up_grace() is False
+        listener.state_manager.stop()
+
+    def test_the_band_needs_an_active_window(self):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        assert listener._inside_follow_up_grace() is False
+        listener.state_manager.stop()
+
+# ---------------------------------------------------------------------------
+# Test: a continuation that lands while the first transcript is decoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestContinuationJoinsAcrossTranscription:
+    """A split sentence must survive the transcription wait.
+
+    "Claire, remind me to" ends at t=0, "...call mum at five" ends at t=1.5
+    while the first transcript is still decoding, A's transcript arrives at
+    t=2.0 and B's at t=2.6. The silence window is anchored on the voice
+    moments (not on transcript arrival), so the turn joins instead of
+    splitting: A must not dispatch alone at t=2.0, and B must not become a
+    second turn at t=2.6.
+    """
+
+    @patch("builtins.print")
+    def test_second_utterance_during_decoding_joins_the_turn(self, _print):
+        listener, _ = _create_listener()
+        dispatched = []
+        listener._dispatch_query = lambda q: dispatched.append(q)
+
+        # t=0: first utterance captured; its decode runs for ~2.0 s.
+        t_a_end = time.time()
+        listener.state_manager.note_voice_heard(t_a_end)
+
+        # t=1.5: continuation captured while A is still decoding.
+        time.sleep(1.5)
+        t_b_end = time.time()
+        listener.state_manager.note_voice_heard(t_b_end)
+
+        # t=2.0: A's transcript arrives and opens the collection.
+        time.sleep(0.5)
+        _process_transcript(
+            listener, "claire, remind me to", utterance_end_time=t_a_end
+        )
+        assert listener.state_manager.is_collecting()
+        assert listener.state_manager.get_pending_query() == "remind me to"
+
+        # The main loop polls this every 0.2 s; A must not go out alone.
+        listener._check_query_timeout()
+        assert dispatched == []
+
+        # t=2.6: B's transcript arrives and must join, not start a new turn.
+        time.sleep(0.6)
+        assert listener.state_manager.is_collecting()
+        _process_transcript(
+            listener, "call mum at five", utterance_end_time=t_b_end
+        )
+        assert dispatched == []
+        assert listener.state_manager.get_pending_query() == (
+            "remind me to call mum at five"
+        )
+        assert listener.state_manager.is_collecting()
+
+        # The joined turn still expires. add_to_collection refreshes the
+        # window when B's transcript arrives (today's continuation
+        # semantics), so it closes 2.0 s after that arrival -- which is
+        # never earlier than 2.0 s after B's voice stopped.
+        b_arrived = time.time()
+        deadline = b_arrived + 2.0 + 0.15
+        while time.time() < deadline:
+            time.sleep(0.02)
+            listener._check_query_timeout()
+        assert dispatched == ["remind me to call mum at five"]

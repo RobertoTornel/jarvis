@@ -13,6 +13,8 @@ Selection criteria:
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -83,6 +85,22 @@ CATALOGUE: List[MCPEntry] = [
                     "to launch apps, manage windows, and automate system tasks",
         command="npx",
         args=["-y", "@steipete/macos-automator-mcp"],
+        wizard_featured=True,
+        category="automation",
+    ),
+    # The Linux counterpart of the entry above, shipped inside the `claire`
+    # package: it runs on the daemon's own interpreter, so no install step.
+    # DISPLAY is required — the MCP SDK spawns servers with a safe env subset
+    # that has no DISPLAY, and Xlib cannot connect without one; providing any
+    # env makes Claire pass the full daemon environment through.
+    MCPEntry(
+        name="linux-desktop",
+        display_name="🖱️ Linux Desktop Control",
+        description="Control this computer by voice — move the mouse, click, type, "
+                    "press keys, manage windows and launch apps (X11/Xwayland)",
+        command=sys.executable,
+        args=["-m", "claire.mcp_servers.linux_desktop"],
+        env={"DISPLAY": os.environ.get("DISPLAY", ":0")},
         wizard_featured=True,
         category="automation",
     ),
