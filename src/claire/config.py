@@ -1,7 +1,7 @@
 import os
 import json
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
@@ -97,6 +97,18 @@ def _default_vault_dir() -> str:
     No directory is created as a side effect of asking for the default.
     """
     return str(Path("~") / ".local" / "share" / "claire" / "vault")
+
+
+#: Settings fields whose value must never appear in a log, an error message or a
+#: bug report. Listed by name on purpose — see ``Settings.__repr__`` for why a
+#: substring rule would be wrong (``dialogue_memory_max_tokens`` is a count, not
+#: a credential). A path such as ``fish_key_file`` is not a secret and stays
+#: readable, because it is the first thing worth knowing when Fish fails.
+SECRET_SETTING_FIELDS = frozenset({
+    "llm_api_key",
+    "embedding_api_key",
+    "brave_search_api_key",
+})
 
 
 @dataclass(frozen=True)
@@ -381,6 +393,30 @@ class Settings:
 
     # MCP Integration
     mcps: Dict[str, Any]
+
+    def __repr__(self) -> str:
+        """A repr that never prints a secret.
+
+        This repr is not cosmetic: it is what ends up in a log line, an error
+        message or a pasted-bug report. A TTS factory error that interpolated a
+        Settings object put the live ``llm_api_key`` into the journal on this
+        machine, and the same thing would happen in any traceback that carries
+        settings. Redacting by field name here protects every one of those paths
+        at once, instead of hoping each call site remembers to be careful.
+
+        The names are listed explicitly rather than matched by substring:
+        ``dialogue_memory_max_tokens`` contains "token" and is a harmless count,
+        so a rule like "redact anything with 'token' or 'key' in the name" would
+        hide useful configuration. ``tests/test_config_secret_repr.py`` fails if
+        a new ``*_api_key`` field is added without being listed.
+        """
+        rendered = []
+        for field in dataclass_fields(self):
+            value = getattr(self, field.name)
+            if field.name in SECRET_SETTING_FIELDS and value:
+                value = "<redacted>"
+            rendered.append(f"{field.name}={value!r}")
+        return f"{type(self).__name__}({', '.join(rendered)})"
 
 
 
