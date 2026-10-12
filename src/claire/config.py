@@ -291,6 +291,12 @@ class Settings:
     # it. False (the default) preserves today's behaviour exactly: the judge
     # still runs on every wake-word turn.
     intent_judge_skip_on_wake_word: bool
+    #: Skip the tool router when the query is only social filler ("yeah",
+    #: "okay", "hello Claire", "what's up"). Measured 2026-10-13: 33 of the 39
+    #: router calls in a fortnight's journal selected no tools at all, and the
+    #: router is a ~1.3 s model call. The filter fails closed, so a query that
+    #: might name anything still reaches the router.
+    smalltalk_router_skip_enabled: bool
 
     # Transcript Buffer - ambient speech context for intent judge
     transcript_buffer_duration_sec: float
@@ -769,6 +775,7 @@ def get_default_config() -> Dict[str, Any]:
         # defence against being triggered by speech that merely mentions the
         # assistant's name).
         "intent_judge_skip_on_wake_word": False,
+        "smalltalk_router_skip_enabled": True,
 
         # Transcript Buffer - used for both retention and context passed to intent judge
         # 120s (2 min) provides enough ambient speech context for intent judging
@@ -1184,6 +1191,16 @@ def load_settings() -> Settings:
     else:
         intent_judge_skip_on_wake_word = bool(raw_skip_on_wake)
 
+    raw_smalltalk_skip = merged.get("smalltalk_router_skip_enabled", True)
+    if isinstance(raw_smalltalk_skip, str):
+        # Same quoted-boolean coercion as above: "false" must not become True
+        # the way bool("false") would.
+        smalltalk_router_skip_enabled = raw_smalltalk_skip.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        smalltalk_router_skip_enabled = bool(raw_smalltalk_skip)
+
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
     transcript_buffer_duration_sec = float(merged.get("transcript_buffer_duration_sec", 120.0))
 
@@ -1384,6 +1401,7 @@ def load_settings() -> Settings:
         fast_model=fast_model,
         intent_judge_timeout_sec=intent_judge_timeout_sec,
         intent_judge_skip_on_wake_word=intent_judge_skip_on_wake_word,
+        smalltalk_router_skip_enabled=smalltalk_router_skip_enabled,
 
         # Transcript Buffer
         transcript_buffer_duration_sec=transcript_buffer_duration_sec,

@@ -113,6 +113,22 @@ def _tool_summary(name: str, description: str) -> str:
     return f"{readable_name}: {description}"
 
 
+def none_verdict(
+    builtin_tools: Dict[str, "Tool"],
+    mcp_tools: Dict[str, "ToolSpec"],
+) -> List[str]:
+    """The allow-list for "this query needs no tools at all".
+
+    Public because two places reach this verdict by different routes: the LLM
+    router answers ``none``, and the reply engine recognises social filler and
+    skips the call. They must agree, so neither owns the shape. Sorted, so the
+    verdict does not depend on set iteration order.
+    """
+    return sorted(
+        t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools
+    )
+
+
 def _ensure_always_included(
     selected: List[str],
     builtin_tools: Dict[str, "Tool"],
@@ -373,7 +389,7 @@ def _select_llm(
     resp_lower = resp.strip().lower()
     if resp_lower == "none":
         debug_log("LLM tool selection returned 'none' — including only mandatory tools", "planning")
-        return [t for t in _ALWAYS_INCLUDED if t in builtin_tools or t in mcp_tools]
+        return none_verdict(builtin_tools, mcp_tools)
 
     known = set(builtin_tools.keys()) | set(mcp_tools.keys())
     selected: List[str] = []

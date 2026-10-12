@@ -395,10 +395,13 @@ def test_paraphrased_plan_skips_direct_exec_for_small_models(
     )
 
 
-def test_router_always_runs_and_plan_tools_are_unioned(
+def test_router_runs_for_a_real_query_and_plan_tools_are_unioned(
     mock_config, db, dialogue_memory
 ):
-    """select_tools is the authoritative picker. When the planner picks
+    """select_tools is the authoritative picker for a query that names
+    something. (Small talk skips it entirely — see
+    tests/test_small_talk_routing.py — which is why this test uses a real
+    question rather than a greeting.) When the planner picks
     tools, the names are unioned into the router's allow-list, not used
     to replace it. Small models often pick the most universal tool
     (webSearch) instead of a dedicated one (getTime); the router is
@@ -799,7 +802,11 @@ def test_planner_not_skipped_on_router_fallback_to_all_tools(
             db=db,
             cfg=mock_config,
             tts=None,
-            text="hi",
+            # Must reach the router: "hi" is small talk, and the small-talk
+            # short circuit would skip it and take the "no tools" verdict,
+            # which is a different code path from the fall-open this test is
+            # about.
+            text="search the web for the news",
             dialogue_memory=dialogue_memory,
         )
 

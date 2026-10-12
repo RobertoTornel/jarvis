@@ -28,6 +28,23 @@ Controlled by `tool_selection_strategy` in config:
 Regardless of strategy, these tools are **always** included:
 - `stop` — needed so the user can dismiss the assistant at any time.
 
+### The "no tools" Verdict
+
+`none_verdict()` returns the allow-list for a query that needs no tools at all: the always-included tools that are actually registered. Two places reach this verdict by different routes — the LLM router by answering `"none"`, and the reply engine by recognising social filler and skipping the router call entirely (see *Small-talk Short Circuit* below). The helper is public and both callers use it, because a turn's allow-list must not depend on which route it took. The list is sorted, so it does not depend on set iteration order.
+
+### Small-talk Short Circuit
+
+The reply engine decides `_is_small_talk()` before calling the router, and when it says yes the router is not consulted at all. Evidence for the default (2026-10-13, this machine): of the 39 turns that reached the router in a fortnight, 33 selected no tools, so 85% of the router's work was a ~1.3 s chat-model call to rediscover what its own prompt already states — `"Return 'none' ONLY for pure greetings/small talk"`. The filter implements that same rule locally.
+
+It is deliberately conservative, because a false positive costs a tool call while a false negative costs one router call. An utterance qualifies only when it is at most six words, contains no digit, and is made up entirely of social filler or matches a whole-utterance social phrase; leading greetings, her name and every wake-word alias are stripped before the phrase retry, taken from the canonical `CLAIRE_WAKE_ALIASES` so the two lists cannot drift. Imperatives (`stop`, `shut up`, `wait`) are deliberately absent from the filler set, because those select real tools. Anything unrecognised fails closed and takes the ordinary path.
+
+The skip logs `tool router skipped: ... is small talk` and the console shows the selection source as `small-talk` instead of `llm`, so the choice is visible when reading a turn.
+
+- Key: `smalltalk_router_skip_enabled`
+- Type: `bool` (`"false"` as a string is still false)
+- Default: `true`
+- Effect: when false, every turn consults the router as before.
+
 ### Keyword Strategy
 
 1. Build a keyword index per tool from its `name` (camelCase split) and `description` (lowercased, stop-words removed).

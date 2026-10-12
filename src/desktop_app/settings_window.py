@@ -355,6 +355,11 @@ def _build_field_metadata() -> List[FieldMeta]:
       "of staying silent until the answer is ready. The phrases themselves "
       "(ack_phrases) are edited in config.json.",
       "features", "bool")
+    f("smalltalk_router_skip_enabled", "Skip the Tool Router for Small Talk",
+      "Answer \"yeah\", \"okay\" and \"what's up\" without first spending a "
+      "model call deciding which tools to use. Off means every turn consults "
+      "the router.",
+      "features", "bool")
 
     # --- Advanced ---
     f("echo_energy_threshold", "Echo Energy Threshold",
