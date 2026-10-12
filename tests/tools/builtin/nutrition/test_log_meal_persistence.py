@@ -37,6 +37,9 @@ def test_saved_meal_is_confirmed_once_without_coaching(monkeypatch, meal_context
             raise coaching
         return coaching
     monkeypatch.setattr(log_meal, 'call_llm_direct', direct)
+    # Coaching is opt-in; this test is about what happens when it fails or
+    # returns nothing, so the gate has to be open for it to mean anything.
+    meal_context.cfg.nutrition_coaching_enabled = True
 
     result = log_meal.LogMealTool().run({}, meal_context)
 
@@ -84,6 +87,7 @@ def test_failed_write_can_retry_before_a_meal_is_saved(monkeypatch, meal_context
             raise RuntimeError('synthetic write failure before commit')
         return insert(**fields)
     monkeypatch.setattr(meal_context.db, 'insert_meal', insert_after_recovery)
+    meal_context.cfg.nutrition_coaching_enabled = True
     result = log_meal.LogMealTool().run({}, meal_context)
     assert result.success, result.reply_text
     assert len(saved_meals(meal_context.db)) == 1

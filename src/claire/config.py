@@ -297,6 +297,11 @@ class Settings:
     #: router is a ~1.3 s model call. The filter fails closed, so a query that
     #: might name anything still reaches the router.
     smalltalk_router_skip_enabled: bool
+    # Off by default: the coaching sentence was a second model call that took
+    # 16.6-18.0 s and returned empty content on two calls out of three
+    # (measured 2026-10-13, reasoning consuming its whole 1024-token budget).
+    # Turning it on buys the follow-up text back at that price.
+    nutrition_coaching_enabled: bool
 
     # Transcript Buffer - ambient speech context for intent judge
     transcript_buffer_duration_sec: float
@@ -776,6 +781,7 @@ def get_default_config() -> Dict[str, Any]:
         # assistant's name).
         "intent_judge_skip_on_wake_word": False,
         "smalltalk_router_skip_enabled": True,
+        "nutrition_coaching_enabled": False,
 
         # Transcript Buffer - used for both retention and context passed to intent judge
         # 120s (2 min) provides enough ambient speech context for intent judging
@@ -1201,6 +1207,16 @@ def load_settings() -> Settings:
     else:
         smalltalk_router_skip_enabled = bool(raw_smalltalk_skip)
 
+    raw_nutrition_coaching = merged.get("nutrition_coaching_enabled", False)
+    if isinstance(raw_nutrition_coaching, str):
+        # Same quoted-boolean coercion as above: "false" must not become True
+        # the way bool("false") would.
+        nutrition_coaching_enabled = raw_nutrition_coaching.strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+    else:
+        nutrition_coaching_enabled = bool(raw_nutrition_coaching)
+
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
     transcript_buffer_duration_sec = float(merged.get("transcript_buffer_duration_sec", 120.0))
 
@@ -1402,6 +1418,7 @@ def load_settings() -> Settings:
         intent_judge_timeout_sec=intent_judge_timeout_sec,
         intent_judge_skip_on_wake_word=intent_judge_skip_on_wake_word,
         smalltalk_router_skip_enabled=smalltalk_router_skip_enabled,
+        nutrition_coaching_enabled=nutrition_coaching_enabled,
 
         # Transcript Buffer
         transcript_buffer_duration_sec=transcript_buffer_duration_sec,

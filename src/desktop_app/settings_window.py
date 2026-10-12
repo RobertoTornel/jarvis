@@ -360,6 +360,12 @@ def _build_field_metadata() -> List[FieldMeta]:
       "model call deciding which tools to use. Off means every turn consults "
       "the router.",
       "features", "bool")
+    f("nutrition_coaching_enabled", "Nutrition Coaching After a Logged Meal",
+      "Ask for 2-3 healthy follow-ups once a meal has been saved. This is a "
+      "second model call that measured 16.6-18.0 s and returned nothing on two "
+      "calls out of three, so it is off by default and the meal is logged "
+      "without it.",
+      "features", "bool")
 
     # --- Advanced ---
     f("echo_energy_threshold", "Echo Energy Threshold",

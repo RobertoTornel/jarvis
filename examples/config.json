@@ -104,6 +104,7 @@
   "intent_judge_thinking_enabled": false,
   "intent_judge_skip_on_wake_word": false,
   "smalltalk_router_skip_enabled": true,
+  "nutrition_coaching_enabled": false,
   "transcript_buffer_duration_sec": 120.0,
   "dialogue_memory_timeout": 300.0,
   "dialogue_memory_max_tokens": 8000,
