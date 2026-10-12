@@ -18,6 +18,8 @@ import pytest
 
 from claire.config import Settings, get_default_config, load_settings
 
+pytestmark = pytest.mark.unit
+
 
 def _write_config(tmp_path, monkeypatch, values):
     cfg_path = tmp_path / "config.json"
