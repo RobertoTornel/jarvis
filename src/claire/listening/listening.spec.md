@@ -255,11 +255,11 @@ After TTS finishes, allow wake-word-free follow-up.
 
 **Acoustic tail guard:** audio captured during TTS, or starting inside
 `POST_TTS_TAIL_GUARD_SECONDS` (0.6 s) after TTS ends, is rejected **unless the
-wake word is genuinely present** (`listener.py:880-919`, constants at
-`listener.py:47-67`). The gate uses the acoustic `captured_during_tts` signal,
+wake word is genuinely present** (`listener.py:955-994`, constants at
+`listener.py:48-62`). The gate uses the acoustic `captured_during_tts` signal,
 not recogniser text — text similarity alone (`partial_ratio >= 70`) can never
 catch a mis-transcribed echo. A verified wake word resets the chain
-(`listener.py:738-743`, reusing `is_wake_word_detected`).
+(`listener.py:814-818`, reusing `is_wake_word_detected`).
 
 **Follow-up renewal cap:** at most `MAX_CONSECUTIVE_HOT_WINDOW_TURNS = 1`
 hot-window follow-up per explicit wake word (`state_manager.py:394-408`). A

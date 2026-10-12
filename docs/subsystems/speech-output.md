@@ -120,11 +120,11 @@ tone while a query is being processed.
    branch in `VoiceListener._process_transcript`.
 
 Startup availability is decided by `daemon._initialize_tts_engine`
-(`daemon.py:87`): it passes the whole `cfg` as `config=` so Fish gets its voice
+(`daemon.py:88`): it passes the whole `cfg` as `config=` so Fish gets its voice
 id, key file, latency and model; a failure returns `None`, which
-`daemon.py:1580`–`:1581` converts to `_UnavailableTTS` (`daemon.py:52`). That
+`daemon.py:1599`–`:1600` converts to `_UnavailableTTS` (`daemon.py:53`). That
 object never claims to speak: `speak` logs the dropped reply
-(`daemon.py:68`–`:71`), `is_speaking` is always false. A missing Fish key, an
+(`daemon.py:69`–`:72`), `is_speaking` is always false. A missing Fish key, an
 unknown engine name or a missing local model therefore leaves Claire able to
 listen and to answer in text, but silent — by design, rather than in an
 unrequested voice.
@@ -157,7 +157,7 @@ quiet fails in seconds rather than two minutes; a construction where
 - **A new engine**: implement the interface, add the name to
   `SUPPORTED_TTS_ENGINES` (`tts.py:1038`), wire the branch in
   `create_tts_engine` (`tts.py:1063`), pass its config from
-  `daemon._initialize_tts_engine` (`daemon.py:87`), and add the keys to
+  `daemon._initialize_tts_engine` (`daemon.py:88`), and add the keys to
   `config.py`. `tts.spec.md` must be updated in the same change — it is the
   spec for this package.
 - **Barge-in for another engine**: `flush` is the contract Fish implements;
@@ -186,7 +186,7 @@ quiet fails in seconds rather than two minutes; a construction where
 - **PortAudio missing**: the listener's module-level audio-import guard reports
   the import error and how to fix it; capture, not TTS, is what fails.
 - **An engine that cannot initialise** never starts a worker and never queues
-  speech (`tts.spec.md:23`, realised by `_UnavailableTTS` at `daemon.py:52`).
+  speech (`tts.spec.md:23`, realised by `_UnavailableTTS` at `daemon.py:53`).
 - **Interrupt during synthesis**: `flush` invalidates the generation, so audio
   synthesised for the abandoned utterance is dropped rather than played late.
 
@@ -223,7 +223,7 @@ quiet fails in seconds rather than two minutes; a construction where
 - **`fish_key_file` defaults to a portable path, not a machine-specific one**
   (`src/claire/config.py:640`): the default is the unexpanded
   `~/.config/claire/fish-keys.txt`, which `load_settings()` expands at use time
-  (`:994`, `_default_fish_key_file` at `:1287`), and
+  (`config.py:1020`, `_default_fish_key_file` at `:1325`), and
   `test_examples_config_current.py::test_fish_key_file_default_is_portable` pins
   it as portable. A fresh checkout that does not set the key file is still
   silent, with only the printed reason to explain it. The path is a location,

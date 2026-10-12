@@ -41,7 +41,7 @@ turn, so correcting a file corrects behaviour without a restart
 | `src/claire/memory/graph.py` | node schema, fixed branches, traversal, decay, mutation listeners | `register_graph_mutation_listener` `:38`, `SPLIT_THRESHOLD` `:89`, `FIXED_BRANCHES` `:124`, `FIXED_BRANCH_IDS` `:148`, `_GRAPH_SCHEMA_SQL` `:216`, `GraphMemoryStore` `:241`, `_ensure_root` `:268`, `migrate_legacy_shape` `:308`, `append_to_node` `:552`, `touch_node` `:568`, `get_recent_nodes` `:582`, `get_top_nodes` `:594`, `get_ancestors` `:642`, `search_nodes` `:684`, `get_graph_data` `:754` |
 | `src/claire/memory/graph_ops.py` | extraction, semantic review, placement, merge, split, warm profile | `_review_graph_facts` `:83`, `extract_graph_memories` `:120`, unknown-branch fallback `:313`, `merge_node_data` `:617`, `auto_split_node` `:767`, `update_graph_from_dialogue` `:897`, automatic merge `:1028`, `consolidate_all_populated_nodes` `:1105`, `build_warm_profile` `:1207`, `format_warm_profile_block` `:1235` |
 | `src/claire/memory/notes.py` | vault path resolution, note frontmatter, note read/write/search, dangling-pointer report — no PyYAML | `VAULT_ENV_VAR` `:81`, `ROUTER_FILENAME` `:90`, `ROUTER_BUDGET_BYTES` `:93`, `resolve_vault_dir` `:132`, config-key step `:150`, `resolve_notes_dir` `:216`, `resolve_router_path` `:229`, `parse_frontmatter` `:248`, `normalize_note_name` `:328`, `list_notes` `:501`, `read_note` `:515`, `search_notes` `:585`, `unreferenced_notes` `:688`, `create_note` `:761`, `ensure_notes_dir` `:838`, `update_note` `:880`, `delete_note` `:938` |
-| `src/claire/memory/router.py` | reading, byte-accounting, truncating and rendering `CLAIRE.md`; template creation | `MEMORY_HEADER` `:82`, `router_template` `:115`, `_truncate_body` `:195`, `MemoryRouter` `:221`, `budget_bytes` `:238`, `reload` `:262`, `render_for_prompt` `:278`, `ensure_router` `:303`, `load_router` `:344` |
+| `src/claire/memory/router.py` | reading, byte-accounting, truncating and rendering `CLAIRE.md`; template creation | `MEMORY_HEADER` `router.py:82`, `router_template` `:115`, `_truncate_body` `:195`, `MemoryRouter` `:221`, `budget_bytes` `:238`, `reload` `:262`, `render_for_prompt` `:278`, `ensure_router` `:303`, `load_router` `:344` |
 | `src/claire/memory/recall_gate.py` | deterministic pre-flight check that can skip enrichment | `should_recall` `:50`, `min_coverage` `:54`, coverage computation `:83` |
 | `src/claire/memory/obsidian.py` | Obsidian-compatible vault *shape* — `.obsidian/`, wiki links, document validation, conventions — not a store. Library-only from the reply path's point of view; wired into the panel's vault browser | `VaultLayout` `:99`, `OBSIDIAN_DIRNAME` `:82`, `describe_vault` `:132`, `is_obsidian_vault` `:151`, `ensure_vault` `:157`, `wiki_link` `:189`, `extract_wiki_links` `:209`, `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`, `validate_note_document` `:260`, `vault_conventions` `:331` |
 
@@ -77,9 +77,9 @@ is stored. Tool messages from the current conversation are re-recorded by
 when there are unsaved messages and either the user has been inactive for the
 window or the oldest unsaved message has reached `MAX_UNSAVED_AGE_SEC`. The
 daemon polls this every 60 s while it can take the chat-query lock
-(`daemon.py:1720`–`:1726`, `:1730`–`:1736`) and forces a final flush at shutdown
-(`daemon.py:1777`). `_check_and_update_diary` (`daemon.py:820`) resolves
-`source_app` to `"stdin"` or `"voice"` (`:884`).
+(`daemon.py:1739`–`:1745`, `:1749`–`:1755`) and forces a final flush at shutdown
+(`daemon.py:1796`). `_check_and_update_diary` (`daemon.py:821`) resolves
+`source_app` to `"stdin"` or `"voice"` (`:885`).
 
 **3. Pending work is snapshotted.** `update_diary_from_dialogue_memory`
 (`conversation.py:2128`) takes `_diary_flush_lock` non-blocking, so flushes on
@@ -119,16 +119,16 @@ an unknown branch label defaults to User (`:313`). Each surviving fact is
 placed with a branch-pinned traversal, then each destination node is rewritten
 by `merge_node_data` (`:617`, called at `:1028`) or, if that merge fails,
 plainly appended via `append_to_node` (`graph.py:552`). A node past
-`SPLIT_THRESHOLD` tokens is passed to `auto_split_node` (`:767`). Graph
+`SPLIT_THRESHOLD` tokens is passed to `auto_split_node` (`graph_ops.py:767`). Graph
 extraction is wrapped so a failure cannot lose the diary write
 (`conversation.py:2209`).
 
 **8. The vault is written only by a human path.** Nothing in the flush or the
 reply engine calls `create_note` / `update_note`. The panel's memory editor is
-the writer (`panel/server.py:2201` `save_note`, `:2242` `delete_note`), and
+the writer (`panel/server.py:2207` `save_note`, `:2248` `delete_note`), and
 `router.ensure_router` (`router.py:303`) creates `CLAIRE.md` from
-`router_template` (`:115`) when it is absent. There is no note-writing tool in
-the tool registry under `src/claire/tools/`.
+`router_template` (`router.py:115`) when it is absent. There is no note-writing
+tool in the tool registry under `src/claire/tools/`.
 
 ### What is read, and where it enters the prompt
 
@@ -147,7 +147,8 @@ Order inside one `run_reply_engine` turn:
    and Directives subtrees and returns a `{"user", "directives"}` dict; the
    rendered block is cached on the `DialogueMemory` hot cache for the
    conversation and invalidated by a graph mutation listener registered in the
-   daemon (`engine.py:1202`–`:1246`, `daemon.py:1509`–`:1538`).
+   daemon (`engine.py:1202`–`:1246`, `_invalidate_wp_on_graph_mutation` in
+   `daemon.main`).
 4. **Extractor.** When memory is needed, an LLM pass turns the query into
    `keywords` and implicit `questions`, and it gets its own short ceiling,
    `llm_extractor_timeout_sec` (`engine.py:962`–`:965`, default `8.0`), rather
@@ -211,14 +212,14 @@ change memory behaviour. Every value is overridable per key in the config file.
 | `dialogue_memory_max_tokens` | `8000` (`:745`) | ceiling on history sent to the model; `0` disables the dimension |
 | `dialogue_memory_max_messages` | `40` (`:746`) | second ceiling on that history |
 | `memory_enrichment_max_results` | `3` (`:747`) | diary hits passed to the prompt |
-| `memory_enrichment_source` | `"all"` (`:748`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1077`–`:1079`) |
+| `memory_enrichment_source` | `"all"` (`:748`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1105`–`:1107`) |
 | `tool_carryover_max_turns` | `2` (`:750`) | prior tool turns re-injected into the hot window |
 | `tool_carryover_per_entry_chars` | `1200` (`:751`) | per-entry cap on that carryover |
 | `memory_digest_enabled` | `None` (`:753`) | `None` = auto (on for small models), `true`/`false` force it |
 | `tool_result_digest_enabled` | `None` (`:759`) | same tri-state for distilling raw tool results |
 | `llm_extractor_timeout_sec` | `8.0` (`:613`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:962`–`:965`) |
-| `embedding_provider` | `""` (`:585`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
-| `embedding_model` | provider-aware (`:922`–`:944`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
+| `embedding_provider` | `""` (`config.py:585`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
+| `embedding_model` | provider-aware (`:948`–`:970`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
 | `embedding_base_url` | `""` (`:586`) | per-provider override; the Gemini default is `https://generativelanguage.googleapis.com/v1beta` |
 | `embedding_api_key` | `""` (`:587`) | empty on the Gemini path reads `GEMINI_API_KEY`, then `GOOGLE_API_KEY`; the chat key is never reused |
 
@@ -260,7 +261,8 @@ overridable per file by the router's own `budget_bytes` frontmatter
 - **Reacting to graph writes.** `register_graph_mutation_listener`
   (`graph.py:38`) is the observer seam; callbacks get `action`, `node_id` and
   `branch`, and listener exceptions are swallowed. The only production listener
-  is the warm-profile cache invalidation in `daemon.py:1509`–`:1538`.
+  is the warm-profile cache invalidation in `_invalidate_wp_on_graph_mutation`,
+  wired in `daemon.main`.
 - **Serving a router into a prompt.** Anything exposing
   `render_for_prompt() -> str` can be passed to `build_system_prompt`
   (`system_prompt.py:330`); `load_default_router=True` forces the vault read,
@@ -271,15 +273,15 @@ overridable per file by the router's own `budget_bytes` frontmatter
   (`:157`), wiki-link helpers (`wiki_link` `:189`, `extract_wiki_links` `:209`,
   `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`) and
   `validate_note_document` (`:260`). It is wired into the panel, which calls
-  `describe_vault` for the vault tab (`panel/server.py:1976`), the wiki-link
-  helpers and validator when reading a note (`:2077`–`:2082`), `ensure_vault`
-  before a write (`:2221`) and `link_targets_in_text` for backlinks (`:3518`).
+  `describe_vault` for the vault tab (`panel/server.py:1982`), the wiki-link
+  helpers and validator when reading a note (`:2083`–`:2088`), `ensure_vault`
+  before a write (`:2227`) and `link_targets_in_text` for backlinks (`:3524`).
   Nothing on the reply path imports it. `unreferenced_notes`
   (`notes.py:688`) counts `[[name]]`, `notes/name.md` and `name.md` pointers
-  (`:674`, `:699`), which is what keeps the Obsidian-shaped vault and the
+  (`notes.py:674`, `:699`), which is what keeps the Obsidian-shaped vault and the
   router-honesty report agreeing.
-- **Panel surfaces.** `PanelState.router_status` (`panel/server.py:1725`),
-  `.diary` (`:1886`), `.memory_notes` (`:1965`) and `.memory_search` (`:2104`)
+- **Panel surfaces.** `PanelState.router_status` (`panel/server.py:1731`),
+  `.diary` (`:1892`), `.memory_notes` (`:1971`) and `.memory_search` (`:2110`)
   expose the vault and diary read-only to the browser; the graph explorer and
   the maintenance sweeps live in `src/desktop_app/memory_viewer.py`
   (`get_graph_store`, and `diary_scrub_deflections` / `diary_optimise_topics`
@@ -294,7 +296,7 @@ Only behaviours the code actually implements are listed.
 
 - **SQLite is busy or locked.** The writer lock is an in-process `RLock`
   (`db.py:115`); cross-process contention is left to SQLite. The daemon only
-  starts a diary flush when it holds the chat-query lock (`daemon.py:1721`), so
+  starts a diary flush when it holds the chat-query lock (`daemon.py:1740`), so
   a user reply is never serialised behind a multi-minute summarisation; a
   skipped tick is retried on the next 60 s cycle. A failed write rolls back
   (`db.py:353`).
@@ -302,7 +304,7 @@ Only behaviours the code actually implements are listed.
   connection and re-raises if `_init_schema` fails (`db.py:145`–`:149`), so the
   daemon fails at start-up rather than running with a half-built store. The
   graph store is opened separately and any boot failure there is logged as
-  non-fatal (`daemon.py:1548`–`:1556`).
+  non-fatal (`daemon.py:1567`–`:1575`).
 - **sqlite-vss is missing or fails to load.** The flag simply stays false and a
   FAISS or Python store at 768 dimensions is used instead (`db.py:119`–`:135`,
   `:152`); `has_vector_store` reports which. If no store exists at all, the
@@ -318,7 +320,7 @@ Only behaviours the code actually implements are listed.
 - **A legacy graph shape.** `migrate_legacy_shape` (`graph.py:308`) wipes and
   re-seeds the whole `memory_nodes` table when root has a non-fixed child or
   root's own `data` is non-empty. It runs only from daemon start-up
-  (`daemon.py:1551`); the viewer and reply engine open the same store without
+  (`daemon.py:1570`); the viewer and reply engine open the same store without
   triggering it. The diary is untouched, so the graph is rebuilt by
   "Import from Diary" in the memory viewer.
 - **The vault is missing.** The reply engine passes

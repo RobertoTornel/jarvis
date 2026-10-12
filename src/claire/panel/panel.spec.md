@@ -152,9 +152,9 @@ letting it be discovered.
    - A credential the panel can only see the *existence* of (a value in `config.json` such as
      `llm_api_key`) is reported as `ConfigCredential` — `present`, no value, no mask — because
      the panel must not read a raw value in order to build a mask of it.
-   - **The page has no key field**, and both write routes — `POST /select` and `POST /chat` —
-      refuse any body carrying one (see 3). Keys are set out-of-band: the key store, or the
-      provider's environment variable (`OMNIROUTE_API_KEY`). The page says so in as many words.
+   - **The page has no key field**, and every write route — `POST /select`, `POST /chat`, `POST /memory/save`
+      and `POST /memory/delete` — refuses any body carrying one (see 3). Keys are set out-of-band: the key
+      store, or the provider's environment variable (`OMNIROUTE_API_KEY`). The page says so in as many words.
    - **No secret is logged.** `PanelHandler.log_message` is overridden so the raw request line
      (which can carry a credential in its query string) is never written to stderr: the panel
      logs the method and the *path* only, scrubbed and truncated. The panel never logs a form
@@ -177,8 +177,8 @@ letting it be discovered.
    through `--port`'s type, so a malformed `CLAIRE_PANEL_PORT` fails as one clean line instead of
    a traceback. The loopback guard applies to the environment just as it does to a flag: the
    variable is a convenience, never a way around the guard.
-3. **Both write endpoints are forgery-resistant.** `check_write_origin()` runs before the body is
-   looked at, for `POST /select` and `POST /chat` alike, and refuses with `PanelOriginError`
+3. **Every write endpoint is forgery-resistant.** `check_write_origin()` runs before the body is
+   looked at, for all four POST routes alike, and refuses with `PanelOriginError`
    (`403 origin-refused`) unless:
    - `Origin` is present and not opaque (`null`) — or, when it is missing or
      opaque, `Sec-Fetch-Site: same-origin` accompanies it, because a browser sets

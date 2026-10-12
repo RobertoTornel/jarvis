@@ -47,17 +47,17 @@ config sets `transport` to anything but `"stdio"` is rejected with
 | [`src/claire/tools/external/mcp_runtime.py`](../../src/claire/tools/external/mcp_runtime.py) | The process-wide singleton runtime (`get_runtime` at `:99`, `shutdown_runtime` at `:108`), one background asyncio loop on the thread named `ClaireMCPRuntime` (`:154`–`:157`), one `_ServerWorker` per server (`:321`), per-server serialisation, idle reaping, invoke timeouts, and the retry-once-on-death policy. |
 | [`src/claire/tools/registry.py`](../../src/claire/tools/registry.py) | Discovery at startup (`initialize_mcp_tools` at `:56`, `discover_mcp_tools` at `:126`), the in-memory tools cache, namespacing as `<server>__<tool>` at `:149`, schema/description generation for the model (`generate_tools_json_schema` at `:177`, `generate_tools_description` at `:236`), and dispatch (`run_tool_with_retries` at `:313`, the MCP branch at `:329`–`:344`). |
 | [`src/claire/reply/engine.py`](../../src/claire/reply/engine.py) | Loads the MCP catalog into the turn (`:886`–`:893`), refreshes it on a new conversation (`:876`–`:883`), feeds it to the tool router (`select_tools` at `:1017`), and to the planner schema (`:1083`). |
-| [`src/claire/daemon.py`](../../src/claire/daemon.py) | Startup discovery before the voice loop (`:1451`–`:1481`) and runtime teardown (`shutdown_runtime` on the smoke-test path at `:1627`–`:1628` and in the main `finally` at `:1787`–`:1788`). |
+| [`src/claire/daemon.py`](../../src/claire/daemon.py) | Startup discovery before the voice loop (`:1470`–`:1481`) and runtime teardown (`shutdown_runtime` on the smoke-test path at `:1646`–`:1647` and in the main `finally` at `:1806`–`:1807`). |
 
 ## Data and control flow
 
 1. **Config.** `load_settings()` reads `config.json` and normalises the `mcps`
-   value to a dict (`config.py:1117`, `mcps = _ensure_dict(...)`). The default is
+   value to a dict (`config.py:1145`, `mcps = _ensure_dict(...)`). The default is
    empty (`config.py:788`, `"mcps": {}`). `Settings.mcps` is declared at
    `config.py:343`.
 2. **Startup discovery.** `daemon.main` reads `cfg.mcps` and, when non-empty,
-   calls `initialize_mcp_tools(mcps, verbose=False)` (`daemon.py:1456`,
-   `initialize_mcp_tools` imported at `daemon.py:45`). This caches the server
+   calls `initialize_mcp_tools(mcps, verbose=False)` (`daemon.py:1475`,
+   `initialize_mcp_tools` imported at `daemon.py:46`). This caches the server
    config globally and calls `discover_mcp_tools` (`registry.py:71`).
    `discover_mcp_tools` constructs one `MCPClient(mcps_config)`
    (`registry.py:136`) and calls `client.list_tools(server_name)` once per
@@ -122,8 +122,8 @@ config sets `transport` to anything but `"stdio"` is rejected with
    `MCPServerSessionError` — becomes a failed `ToolExecutionResult` with the
    error text (`registry.py:342`–`:344`).
 9. **Teardown.** The runtime is a singleton for the daemon's lifetime. The daemon
-   calls `shutdown_runtime()` on both exit paths (`daemon.py:1627`–`:1628` for
-   the smoke-test path, `daemon.py:1787`–`:1788` in the main `finally`).
+   calls `shutdown_runtime()` on both exit paths (`daemon.py:1646`–`:1647` for
+   the smoke-test path, `daemon.py:1806`–`:1807` in the main `finally`).
    `shutdown_runtime()` clears the singleton and calls `instance.shutdown()`
    (`mcp_runtime.py:108`–`:118`). `_PersistentMCPRuntime.shutdown` marks itself
    closed, shuts every worker down, stops the loop with
@@ -135,7 +135,7 @@ config sets `transport` to anything but `"stdio"` is rejected with
 ## Configuration keys
 
 The `mcps` key is a dict of server name → server dict. It has no defaults
-(`config.py:788`) and is normalised with `_ensure_dict` (`config.py:1117`), so a
+(`config.py:788`) and is normalised with `_ensure_dict` (`config.py:1145`), so a
 non-dict value becomes `{}`. Per-server keys, from `mcp_client.py` and
 `mcp_runtime.py`:
 
@@ -160,16 +160,16 @@ Fixed internal timeouts, not configurable:
 Two config keys outside `mcps` affect MCP behaviour:
 
 - `tool_selection_strategy` (default `"llm"`, `config.py:763`, validated at
-  `config.py:1095`–`:1097`) decides whether all tools, including MCP tools, are
+  `config.py:1123`–`:1125`) decides whether all tools, including MCP tools, are
   offered to the model or only a routed subset.
-- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:863`) gates the `debug_log`
+- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:889`) gates the `debug_log`
   lines tagged `"mcp"` (see `debug.py:25`–`:35`).
 
 ## Extension points
 
 - **Add an MCP server.** Add an entry under `mcps` in `config.json` with at least
   `command` (and `args`). No code change is needed: the daemon discovers it at
-  the next start (`daemon.py:1451`–`:1481`). A running daemon does not pick up a
+  the next start (`daemon.py:1470`–`:1481`). A running daemon does not pick up a
   newly added server until restart or an explicit `refreshMCPTools` call, because
   the catalog is cached in `registry.py` and refreshed only at startup and on a
   new conversation (`engine.py:876`–`:883`).

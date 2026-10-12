@@ -105,8 +105,8 @@ Order matters, and the echo decision is deliberately **acoustic**, not textual.
    `IntentJudgment` (`intent_judge.py:122`)
    plus a failure reason (`:241`). It is skipped for utterances of three words
    or fewer during TTS (in `listener.py`'s `_process_transcript`), which are
-   handled as stop commands. After a directed verdict, `query_is_prior_echo`
-   (`:100`) re-checks the extracted query against the last TTS text.
+   handled as stop commands. After a directed verdict, `echo_detection.query_is_prior_echo`
+   (`echo_detection.py:100`) re-checks the extracted query against the last TTS text.
 7. **Wake word** (`listener.py` `_wake_word_seen` ->
    `wake_detection.is_wake_word_detected`, `wake_detection.py:140`). Detection is
    text-based over the live transcript, whole-word, with phonetic folding and a
