@@ -89,7 +89,7 @@ The consequence is stated on the page rather than papered over: the daemon's liv
 | `CLAIRE_ACTION_LOG` | `src/claire/panel/server.py:260` | The action journal path; default `~/.config/claire/actions.jsonl` (`DEFAULT_ACTION_LOG`, `:261`). |
 | `CLAIRE_PANEL_HOST`, `CLAIRE_PANEL_PORT` | `src/claire/panel/server.py:269`, `:270` | Bind overrides; the panel reads them as the defaults for `--host`/`--port` (`:4161`, `:4167`), and `start.sh` reads the same two variables (`start.sh:431`, `:437`) and passes them as flags (`start.sh:590-591`). |
 | `llm_provider`, `llm_base_url`, `llm_chat_model`, `ollama_base_url`, `ollama_chat_model` | `src/claire/config.py` | Read through `claire.config` for the provider/model card and for chat. |
-| `vault_dir` | `src/claire/config.py:565`, `:896-897` | The markdown memory vault; default `~/.local/share/claire/vault`. Overridable per run by `CLAIRE_VAULT_DIR` (`src/claire/memory/notes.py:81`), resolved by `notes.resolve_vault_dir`. |
+| `vault_dir` | `src/claire/config.py:570`, `:896-897` | The markdown memory vault; default `~/.local/share/claire/vault`. Overridable per run by `CLAIRE_VAULT_DIR` (`src/claire/memory/notes.py:81`), resolved by `notes.resolve_vault_dir`. |
 | `llm_api_key`, `embedding_api_key`, `brave_search_api_key` | `src/claire/panel/server.py:1539` | Not read for value: `RealPanelState` reports only whether each is present. Values live in the OS keychain or a `0600` file outside the repository. |
 
 ## Data and control flow

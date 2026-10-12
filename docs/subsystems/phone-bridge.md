@@ -97,7 +97,7 @@ The daemon warms the recogniser at startup with one dummy transcribe so the mode
 | `PHONE_BRIDGE_TOKEN` | `src/claire/phone/bridge.py:230` | The **name** the bearer token is stored under in the OS keychain / `0600` key store. The value is generated with `secrets` on first use (`_generate_token`, `src/claire/phone/bridge.py:1442`) and is never printed except by the explicit `keys show --reveal` branch (`src/claire/phone/__main__.py:250`). |
 | `CLAIRE_PHONE_BRIDGE` | `src/claire/daemon.py:1319` | `0`/`false`/`no` disables starting the bridge in the daemon; unset means on. |
 | `CLAIRE_PHONE_ALLOW_PUBLIC` | `src/claire/daemon.py:1327` | `1` permits a non-loopback bind from the daemon; anything else keeps the bridge on loopback. |
-| `OMNIROUTE_API_KEY`, `llm_*` | `src/claire/config.py` | Not read by the bridge directly; they reach it only through `load_settings()` when the recogniser is resolved, and through the daemon's LLM stack. The key value is never written to a repository or config file (`src/claire/config.py:48`; the shipped `llm_api_key` default is empty, `:581`). |
+| `OMNIROUTE_API_KEY`, `llm_*` | `src/claire/config.py` | Not read by the bridge directly; they reach it only through `load_settings()` when the recogniser is resolved, and through the daemon's LLM stack. The key value is never written to a repository or config file (`src/claire/config.py:48`; the shipped `llm_api_key` default is empty, `:586`). |
 
 ### Where to put them
 

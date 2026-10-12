@@ -227,11 +227,11 @@ literal) and its coercion block.
 - **`listener.py` fallback defaults differ from the config defaults** for the
   wake ratio, the voice-energy floor and the LLM warmup probe:
   `getattr(self.cfg, "wake_fuzzy_ratio", 0.78)` versus
-  `"wake_fuzzy_ratio": 0.82` at `src/claire/config.py:672`;
+  `"wake_fuzzy_ratio": 0.82` at `src/claire/config.py:677`;
   `getattr(self.cfg, "voice_min_energy", 0.0045)` versus
-  `"voice_min_energy": 0.02` at `src/claire/config.py:656`; and
+  `"voice_min_energy": 0.02` at `src/claire/config.py:661`; and
   `getattr(self.cfg, "llm_tools_timeout_sec", 8.0)` versus
-  `"llm_tools_timeout_sec": 15.0` at `src/claire/config.py:608`. The config
+  `"llm_tools_timeout_sec": 15.0` at `src/claire/config.py:613`. The config
   value wins in practice because `Settings` always carries the attribute; the
   stale fallbacks only show themselves in a hand-built settings object.
 - **`reply.spec.md` names `src/claire/system_prompt.py` as the single unified

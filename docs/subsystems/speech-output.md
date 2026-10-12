@@ -22,7 +22,7 @@ interrupts. Three engines sit behind one interface
 
 `SUPPORTED_TTS_ENGINES = ("piper", "chatterbox", "fish")`
 (`src/claire/output/tts.py:1038`). The factory is `create_tts_engine`
-(`tts.py:1063`). An unrecognised engine name raises `ValueError` (`tts.py:1151`)
+(`tts.py:1063`). An unrecognised engine name raises `ValueError` (`tts.py:1154`)
 rather than substituting a different voice.
 
 `FishTTS` is exposed lazily through the module's `__getattr__` (`tts.py:1048`)
@@ -141,8 +141,8 @@ unrequested voice.
 | `fish_key_file` | `~/.config/claire/fish-keys.txt` | File holding the Fish API keys, one per line, comments allowed. The default is a portable `~` path, expanded at use time. Must not be group- or world-readable. |
 | `fish_latency` | `"low"` | `low` or `normal`; anything else falls back to `low`. |
 | `fish_model` | `"s1"` | Fish model id sent in the `model` header. |
-| `tts_piper_model_path`, `tts_piper_speaker`, `tts_piper_length_scale`, `tts_piper_noise_scale`, `tts_piper_noise_w`, `tts_piper_sentence_silence` | see `config.py:645`–`:650` | Piper voice and prosody. |
-| `tts_chatterbox_device`, `tts_chatterbox_audio_prompt`, `tts_chatterbox_exaggeration`, `tts_chatterbox_cfg_weight` | see `config.py:633`–`:636` | Chatterbox voice and emotion. |
+| `tts_piper_model_path`, `tts_piper_speaker`, `tts_piper_length_scale`, `tts_piper_noise_scale`, `tts_piper_noise_w`, `tts_piper_sentence_silence` | see `config.py:650`–`:655` | Piper voice and prosody. |
+| `tts_chatterbox_device`, `tts_chatterbox_audio_prompt`, `tts_chatterbox_exaggeration`, `tts_chatterbox_cfg_weight` | see `config.py:638`–`:641` | Chatterbox voice and emotion. |
 | `tts_max_utterance_ms` | `3000` | Shorter capture ceiling while Claire speaks, so a stop command is heard quickly. |
 
 Fish's own HTTP budgets are constructor defaults, not config keys:
@@ -205,7 +205,7 @@ quiet fails in seconds rather than two minutes; a construction where
 - **The factory's parameter default disagrees with the product default.**
   `create_tts_engine(engine: str = "piper", ...)` (`src/claire/output/tts.py:1064`)
   and its docstring (`:1090`) both say `piper` is the default, while the shipped
-  configuration default is `"fish"` (`src/claire/config.py:630`). Behaviour is
+  configuration default is `"fish"` (`src/claire/config.py:635`). Behaviour is
   correct because `daemon._initialize_tts_engine` always passes `cfg.tts_engine`;
   only a bare `create_tts_engine()` call would build Piper. The docstring matches
   the signature, so this is a signature/product-default mismatch, not a stale
@@ -221,9 +221,9 @@ quiet fails in seconds rather than two minutes; a construction where
   ignore it; the echo detector falls back to `_estimate_tts_duration`
   (`tts.py:203`).
 - **`fish_key_file` defaults to a portable path, not a machine-specific one**
-  (`src/claire/config.py:640`): the default is the unexpanded
+  (`src/claire/config.py:645`): the default is the unexpanded
   `~/.config/claire/fish-keys.txt`, which `load_settings()` expands at use time
-  (`config.py:1020`, `_default_fish_key_file` at `:1325`), and
+  (`config.py:1027`, `_default_fish_key_file` at `:1345`), and
   `test_examples_config_current.py::test_fish_key_file_default_is_portable` pins
   it as portable. A fresh checkout that does not set the key file is still
   silent, with only the printed reason to explain it. The path is a location,

@@ -141,9 +141,9 @@ a spoken error:
   `reply.spec.md:9` lists "the pluggable backend abstraction (`LLMBackend` ABC +
   `OllamaBackend` impl, factory at `get_llm_backend(settings)`)", but does not
   say which provider ships as the default. The shipped default is
-  `"llm_provider": "openai_compatible"` (`src/claire/config.py:575`) pointing at
+  `"llm_provider": "openai_compatible"` (`src/claire/config.py:580`) pointing at
   OmniRouter (`config.py:47`), with the key read from `OMNIROUTE_API_KEY`
-  (`config.py:48`, `:581`). Ollama remains a supported provider, and
+  (`config.py:48`, `:586`). Ollama remains a supported provider, and
   `_resolve_provider` still falls back to it for an unknown value
   (`src/claire/llm/factory.py:65`–`:70`).
 - **`reply.spec.md` calls `src/claire/system_prompt.py` the single unified
@@ -154,7 +154,7 @@ a spoken error:
 - **Two ceiling figures differ between the config defaults and the reply
   engine's `getattr` fallbacks.** The config defaults are
   `llm_tools_timeout_sec = 15.0` and `llm_embedding_timeout_sec = 5.0`
-  (`src/claire/config.py:608`, `:617`), while the engine's `getattr` fallbacks
+  (`src/claire/config.py:613`, `:622`), while the engine's `getattr` fallbacks
   are `8.0` for the tool router and tool execution
   (`src/claire/reply/engine.py:1024`) and `10.0` for the embedding probe
   (`engine.py:1027`, `:1343`). The memory extractor is no longer on that list:

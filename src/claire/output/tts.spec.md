@@ -2,7 +2,7 @@
 
 Synthesis runs through one of three engines: `piper`, `chatterbox` or `fish`
 (`SUPPORTED_TTS_ENGINES`, `src/claire/output/tts.py:1038`). The configured
-default is `fish` (declared at `src/claire/config.py:630`, read at `:986`), so the cloud path below
+default is `fish` (declared at `src/claire/config.py:635`, read at `:993`), so the cloud path below
 is what a fresh install takes.
 
 Piper and Chatterbox synthesise locally. Piper loads a local ONNX voice and its

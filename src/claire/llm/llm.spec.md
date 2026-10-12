@@ -5,7 +5,7 @@ The `claire.llm` package owns every LLM HTTP call Claire makes and lets the same
 ## Goals
 
 1. **Pluggable.** New backends drop in by subclassing `LLMBackend` and being registered in `factory.get_llm_backend` (chat) or `factory.get_embedding_backend` (embeddings-only, as Gemini is). Call sites stay unchanged.
-2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. The shipped default is `llm_provider = "openai_compatible"` against OmniRouter at `http://127.0.0.1:20129/v1` (`src/claire/config.py:47`, `:559`); the Ollama route falls back to `127.0.0.1:11434`. Both are loopback.
+2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. The shipped default is `llm_provider = "openai_compatible"` against OmniRouter at `http://127.0.0.1:20129/v1` (`src/claire/config.py:47`, `:564`); the Ollama route falls back to `127.0.0.1:11434`. Both are loopback.
 3. **Single source of truth.** Every call site dispatches through `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. The `Settings` object carries provider, base URL, API key, and model fields; the factory reads them.
 
 ## Public surface

@@ -205,10 +205,10 @@ change memory behaviour. Every value is overridable per key in the config file.
 
 | Key | Default | Effect |
 |---|---|---|
-| `db_path` | `~/.local/share/claire/claire.db` (`config.py:83`, `:561`) | the single SQLite file holding the diary *and* the graph |
+| `db_path` | `~/.local/share/claire/claire.db` (`config.py:83`, `:566`) | the single SQLite file holding the diary *and* the graph |
 | `sqlite_vss_path` | `None` (`:562`) | optional sqlite-vss extension; when absent a FAISS or Python store is used (`db.py:119`–`:135`) |
-| `vault_dir` | `~/.local/share/claire/vault` (`config.py:89`, `:565`) | the markdown vault; the router and `notes/` live here |
-| `dialogue_memory_timeout` | `300.0` (`config.py:742`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
+| `vault_dir` | `~/.local/share/claire/vault` (`config.py:89`, `:570`) | the markdown vault; the router and `notes/` live here |
+| `dialogue_memory_timeout` | `300.0` (`config.py:749`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
 | `dialogue_memory_max_tokens` | `8000` (`:745`) | ceiling on history sent to the model; `0` disables the dimension |
 | `dialogue_memory_max_messages` | `40` (`:746`) | second ceiling on that history |
 | `memory_enrichment_max_results` | `3` (`:747`) | diary hits passed to the prompt |
@@ -218,7 +218,7 @@ change memory behaviour. Every value is overridable per key in the config file.
 | `memory_digest_enabled` | `None` (`:753`) | `None` = auto (on for small models), `true`/`false` force it |
 | `tool_result_digest_enabled` | `None` (`:759`) | same tri-state for distilling raw tool results |
 | `llm_extractor_timeout_sec` | `8.0` (`:613`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:962`–`:965`) |
-| `embedding_provider` | `""` (`config.py:585`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
+| `embedding_provider` | `""` (`config.py:590`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
 | `embedding_model` | provider-aware (`:948`–`:970`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
 | `embedding_base_url` | `""` (`:586`) | per-provider override; the Gemini default is `https://generativelanguage.googleapis.com/v1beta` |
 | `embedding_api_key` | `""` (`:587`) | empty on the Gemini path reads `GEMINI_API_KEY`, then `GOOGLE_API_KEY`; the chat key is never reused |
@@ -391,7 +391,7 @@ it stands. Both sides are given.
    diary system remains the primary memory system for now; the graph is a v2
    system being built in parallel". The same file records the default flipping
    to include graph recall (`graph.spec.md:190`), and the shipped default is
-   `"memory_enrichment_source": "all"` (`src/claire/config.py:748`), with the
+   `"memory_enrichment_source": "all"` (`src/claire/config.py:755`), with the
    warm profile injected on every turn (`src/claire/reply/engine.py:1608`).
 
 3. **The vault-shape comments point at `docs/OBSIDIAN.md`.** `src/claire/config.py:110`,

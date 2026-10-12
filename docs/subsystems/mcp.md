@@ -52,9 +52,9 @@ config sets `transport` to anything but `"stdio"` is rejected with
 ## Data and control flow
 
 1. **Config.** `load_settings()` reads `config.json` and normalises the `mcps`
-   value to a dict (`config.py:1145`, `mcps = _ensure_dict(...)`). The default is
-   empty (`config.py:788`, `"mcps": {}`). `Settings.mcps` is declared at
-   `config.py:343`.
+   value to a dict (`config.py:1164`, `mcps = _ensure_dict(...)`). The default is
+   empty (`config.py:795`, `"mcps": {}`). `Settings.mcps` is declared at
+   `config.py:348`.
 2. **Startup discovery.** `daemon.main` reads `cfg.mcps` and, when non-empty,
    calls `initialize_mcp_tools(mcps, verbose=False)` (`daemon.py:1475`,
    `initialize_mcp_tools` imported at `daemon.py:46`). This caches the server
@@ -135,7 +135,7 @@ config sets `transport` to anything but `"stdio"` is rejected with
 ## Configuration keys
 
 The `mcps` key is a dict of server name → server dict. It has no defaults
-(`config.py:788`) and is normalised with `_ensure_dict` (`config.py:1145`), so a
+(`config.py:795`) and is normalised with `_ensure_dict` (`config.py:1164`), so a
 non-dict value becomes `{}`. Per-server keys, from `mcp_client.py` and
 `mcp_runtime.py`:
 
@@ -159,11 +159,11 @@ Fixed internal timeouts, not configurable:
 
 Two config keys outside `mcps` affect MCP behaviour:
 
-- `tool_selection_strategy` (default `"llm"`, `config.py:763`, validated at
-  `config.py:1123`–`:1125`) decides whether all tools, including MCP tools, are
+- `tool_selection_strategy` (default `"llm"`, `config.py:770`, validated at
+  `config.py:1142`–`:1144`) decides whether all tools, including MCP tools, are
   offered to the model or only a routed subset.
-- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:889`) gates the `debug_log`
-  lines tagged `"mcp"` (see `debug.py:25`–`:35`).
+- `voice_debug` (env `CLAIRE_VOICE_DEBUG`, `config.py:896`) gates the `debug_log`
+  lines tagged `"mcp"` (see `debug.py:35`–`:45`).
 
 ## Extension points
 
