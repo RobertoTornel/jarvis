@@ -309,6 +309,7 @@ specs beside their code:
 | `schedule` | `add`, `list`, `move`, `cancel`, `due` against Claire's own calendar |
 | `logMeal`, `fetchMeals`, `deleteMeal` | Nutrition log: estimate macros for a described meal, list or delete entries |
 | `getTime` | Current date and time |
+| `getWeather` | Current weather via Open-Meteo (no API key): temperature, feels-like, conditions, humidity, wind, three-day outlook |
 | `screenshot` | Native screenshot capture |
 | `toolSearchTool` | Escape hatch that widens the tool allow-list mid-conversation by re-running the router |
 | `refreshMCPTools` | Re-discover tools from configured MCP servers |
@@ -442,11 +443,20 @@ rotating backups.
 
 ### Weather
 
-There is no dedicated conditions tool. Weather, climate, temperature and
-"what is it like outside" are answered through `webSearch`: the prompt tells the
-model to call the search tool in the same turn for any current-conditions
-request, direct or indirect, and forbids answering from training data, which
-cannot know today's temperature anywhere.
+`getWeather` answers current conditions and a three-day outlook through
+Open-Meteo, which needs no API key. A place the user names goes in the tool's
+`location` argument; with no place named it falls back to the configured
+`location_city`, so the common "what is it like outside" needs no clarifying
+question. Every failure — no place resolvable, the service unreachable, a
+response that carries no temperature — is reported as a failure rather than
+guessed at, and the prompt forbids answering from training data, which cannot
+know today's temperature anywhere.
+
+The tool was removed from the product on 7 October 2026 in favour of routing
+weather to `webSearch`. It is back because that route is what produced the
+parroted film-summary answer that motivated the tool carry-over guard (see
+`src/claire/reply/reply.spec.md`), and because a general web search cannot give
+a current reading on a host whose search engine refuses requests.
 
 ### Location
 
