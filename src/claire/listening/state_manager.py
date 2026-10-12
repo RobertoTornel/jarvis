@@ -117,6 +117,11 @@ class StateManager:
             if self.is_collecting() and self._last_voice_heard_at > self._last_voice_time:
                 self._last_voice_time = self._last_voice_heard_at
 
+    @property
+    def last_voice_heard_at(self) -> float:
+        """Newest moment voice was heard (``time.time()``); 0.0 when none yet."""
+        return self._last_voice_heard_at
+
     def start_collection(self, initial_text: str = "", last_voice_time: Optional[float] = None) -> None:
         """
         Start query collection mode.

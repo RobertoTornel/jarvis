@@ -29,6 +29,7 @@ from ..utils.audio_capture import mono_capture, open_input_stream, resolve_input
 from .wake_detection import is_wake_word_detected, extract_query_after_wake, is_stop_command, is_stop_command_echo
 from .transcript_buffer import TranscriptBuffer
 from .transcript import SOURCE_STREAMING_FALLBACK, TurnTranscript
+from .latency import format_turn_line, measured_stt_seconds
 from .turn import TurnAssembler
 from .intent_judge import (
     IntentJudge,
@@ -567,6 +568,12 @@ class VoiceListener(threading.Thread):
         self._should_stop = False
         self._capture_generation = 0
         self._first_utterance = True  # Suppress turn separator before the very first transcription
+        # Journal-only instrumentation state: the disabled hot-window notice in
+        # activate_hot_window() prints at most once per process, and the
+        # per-turn latency line reads the decode duration recorded with the
+        # newest authoritative transcript.
+        self._hot_window_disabled_reported = False
+        self._turn_stt_seconds: Optional[float] = None
         # The listener loop applies each worker result's detected language
         # before processing its transcript, so dispatched queries keep their
         # own locale even while later utterances are being transcribed.
@@ -792,6 +799,17 @@ class VoiceListener(threading.Thread):
 
         if not self.cfg.hot_window_enabled:
             debug_log("hot window disabled in config, skipping", "voice")
+            # The armed path prints 👂 … unconditionally, but this early
+            # return used to leave no journal trace unless debug logging was
+            # on — so a window that never arms was completely invisible and
+            # the owner could only conclude she never answers follow-ups.
+            # Say it plainly, once per process, not once per turn.
+            if not getattr(self, "_hot_window_disabled_reported", False):
+                self._hot_window_disabled_reported = True
+                try:
+                    print('🔒 Follow-up window is off (hot_window_enabled=false) — she will only answer after "Claire".', flush=True)
+                except Exception:
+                    pass
             return
 
         # Track TTS finish time for echo detection
@@ -1641,6 +1659,13 @@ class VoiceListener(threading.Thread):
         # A dispatch that arrives after shutdown has nothing to speak into.
         if self._should_stop:
             return
+        # Per-turn latency stamps. Instrumentation only: this records when the
+        # dispatch began and takes this turn's measured decode duration before
+        # anything below can wait or reorder — it never gates or delays the
+        # turn (see .latency for what each value means).
+        dispatched_at = time.time()
+        stt_seconds = getattr(self, "_turn_stt_seconds", None)
+        self._turn_stt_seconds = None
         debug_log(f"dispatching query: '{query}'", "voice")
 
         # Clear audio buffers to prevent stale audio from next query.
@@ -1684,10 +1709,12 @@ class VoiceListener(threading.Thread):
                     debug_log("discarded voice dispatch after waiting for query lock", "voice")
                     self._stop_thinking_tune()
                     return
+                reply_started_at = time.monotonic()
                 reply = run_reply_engine(
                     self.db, self.cfg, None, query, self.dialogue_memory,
                     language=self._last_detected_language,
                 )
+                reply_seconds = time.monotonic() - reply_started_at
         except Exception as e:
             # Log the error visibly - this should never happen silently
             print(f"\n  ❌ Reply engine error: {e}", flush=True)
@@ -1702,6 +1729,12 @@ class VoiceListener(threading.Thread):
             debug_log("discarded voice reply after voice generation invalidation", "voice")
             self._stop_thinking_tune()
             return
+
+        # The reply engine returned and this turn is still the current one:
+        # print where the turn's seconds went. Discarded turns print nothing —
+        # the line is for turns she actually answers, and every number in it
+        # was measured for this turn or renders as "-".
+        self._log_turn_latency(dispatched_at, stt_seconds, reply_seconds, query)
 
         # Handle TTS with proper callbacks
         if reply and self.tts and self.tts.enabled:
@@ -1734,6 +1767,35 @@ class VoiceListener(threading.Thread):
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
+
+    def _log_turn_latency(self, dispatched_at: float, stt_seconds: Optional[float],
+                          reply_seconds: float, query: str) -> None:
+        """Print the one journal line that says where a turn's seconds went.
+
+        ``silence`` and ``total`` run from the newest moment voice was heard
+        (``StateManager.last_voice_heard_at``); a turn with no voice moment
+        shows both as "-", as does a decode that was not measured for this
+        turn (``stt_seconds``) — a dash is honest, a zero would be a
+        plausible-looking lie. Called only after the reply engine returned
+        for a still-current turn, so only turns she answers are logged, and
+        only once per dispatch. Instrumentation only: a failure here must
+        never touch the turn itself.
+        """
+        state_manager = getattr(self, "state_manager", None)
+        voice_heard_at = getattr(state_manager, "last_voice_heard_at", 0.0) if state_manager else 0.0
+        if not isinstance(voice_heard_at, (int, float)) or voice_heard_at <= 0:
+            voice_heard_at = None  # no voice moment was ever noted for this turn
+        silence = dispatched_at - voice_heard_at if voice_heard_at is not None else None
+        total = time.time() - voice_heard_at if voice_heard_at is not None else None
+        try:
+            print(format_turn_line(
+                silence=silence, stt=stt_seconds, reply=reply_seconds,
+                total=total, query=query,
+            ), flush=True)
+        except Exception:
+            # The journal line is instrumentation: if it cannot be printed,
+            # the turn it describes has already succeeded.
+            debug_log("turn latency line could not be printed", "voice")
 
     def _calculate_audio_energy(self, frames: list) -> float:
         """Calculate RMS energy from audio frames."""
@@ -2626,6 +2688,12 @@ class VoiceListener(threading.Thread):
                 f"divergent={turn.divergent}",
                 "voice",
             )
+        # Remember how long this turn's authoritative decode took so the
+        # latency line printed at dispatch can report a measured duration —
+        # or None, rendered as "-", when this turn had no authoritative
+        # decode (see latency.measured_stt_seconds). Recording it here keeps
+        # the newest transcript's decode with the utterance the turn acts on.
+        self._turn_stt_seconds = measured_stt_seconds(turn)
         provisional_text = getattr(result, "provisional_text", "") or ""
         if not text or not text.strip():
             self.state_manager.check_hot_window_expiry(self.cfg.voice_debug)
