@@ -280,8 +280,11 @@ def test_cold_start_does_not_trigger_carryover(
         "src.claire.reply.engine.select_tools",
         return_value=["webSearch"],
     ):
+        # Must reach the router: "hi" is small talk, and the small-talk short
+        # circuit skips the router and returns the "no tools" verdict, so the
+        # tool list under test would never be built.
         run_reply_engine(db=db, cfg=cfg, tts=None,
-                         text="hi", dialogue_memory=dm)
+                         text="search the web for the news", dialogue_memory=dm)
 
     tool_names = _tool_names_from_chat_call(mock_chat.call_args_list[-1])
     assert "webSearch" in tool_names
