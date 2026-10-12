@@ -62,7 +62,11 @@ from .planner import (
     is_search_memory_step,
     resolve_next_tool_call as _resolve_plan_step,
 )
-from ..tools.selection import select_tools, ToolSelectionStrategy
+from ..tools.selection import (
+    select_tools,
+    SYSTEM_TOOL_NAMES,
+    ToolSelectionStrategy,
+)
 import json
 import re
 import uuid
@@ -1099,18 +1103,23 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     # like "hello" / "how are you" / "tell me a joke", it adds a CHAT-tier
     # LLM round-trip whose only output is "Reply to the user." — pure overhead.
     #
-    # Gate: the router returned only system tools (just "stop"), meaning it
-    # positively decided no tools are needed. The router's "fall open to all
-    # tools" path (timeout / empty / no-match) is NOT treated as tool-free
-    # because it carries no signal — the router gave up rather than ruling
-    # tools out. We also require the query to be short (< 8 words) so
-    # longer tool-free queries that might need memory still reach the
-    # planner for a `searchMemory` directive. Language-agnostic: word count
-    # splits on whitespace, which works for every script-separated language.
+    # Gate: every name the router returned is a system tool, meaning it
+    # positively decided no real tool is needed. The router names the
+    # termination sentinel and the `toolSearchTool` escape hatch even for a
+    # query that needs nothing, so a verdict of `{"stop", "toolSearchTool"}`
+    # is the ordinary no-tool answer and must not defeat this gate — an
+    # earlier `len(routed_tools) <= 1` form did exactly that, and every short
+    # conversational turn paid a planner round-trip for the reply-only plan.
+    # The router's "fall open to all tools" path (None on timeout / give-up)
+    # is NOT treated as tool-free because it carries no signal — the router
+    # gave up rather than ruling tools out. We also require the query to be
+    # short (< 8 words) so longer tool-free queries that might need memory
+    # still reach the planner for a `searchMemory` directive.
+    # Language-agnostic: word count splits on whitespace, which works for
+    # every script-separated language.
     _router_said_no_tools = (
         routed_tools is not None
-        and len(routed_tools) <= 1
-        and ("stop" in routed_tools or not routed_tools)
+        and {str(_name) for _name in routed_tools} <= SYSTEM_TOOL_NAMES
     )
     _query_word_count = len(redacted.split()) if redacted else 0
     _skip_planner = (

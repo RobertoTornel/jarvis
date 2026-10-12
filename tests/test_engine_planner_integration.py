@@ -621,6 +621,65 @@ def test_planner_skipped_when_router_returns_no_tools_and_query_is_short(
     )
 
 
+def test_planner_skipped_when_router_returns_only_system_tools(
+    mock_config, db, dialogue_memory
+):
+    """Router returns ['stop', 'toolSearchTool'] → the planner must not run.
+
+    This is the shape the live tool router actually returns for a short
+    conversational query such as "what's up": it names the termination
+    sentinel ``stop`` *and* the ``toolSearchTool`` escape hatch. Both are
+    system tools that do the loop's bookkeeping rather than the user's work,
+    so a verdict made up only of them is still a positive "no real tool is
+    needed" answer and the reply-only fast path must fire.
+
+    Regression: the gate once required ``len(routed_tools) <= 1``, which two
+    system tools defeat. Every short conversational turn then paid a planner
+    round-trip whose only output was "Reply to the user." — several seconds on
+    a voice turn — while the unit test that covered this path stubbed the
+    router with ``['stop']`` alone, a value the real router does not return.
+    """
+    from claire.reply import engine as engine_mod
+
+    mock_config.ollama_chat_model = "gpt-oss:20b"
+    mock_config.llm_chat_model = "gpt-oss:20b"
+
+    plan_query_calls = []
+
+    def fake_plan_query(*args, **kwargs):
+        plan_query_calls.append(1)
+        # Deliberately not the reply-only plan, so a fast path that consumed a
+        # planner result would be visible rather than accidentally correct.
+        return ["searchMemory topic='must not be used'", "Reply to the user."]
+
+    def fake_chat(*args, **kwargs):
+        return {"message": {"role": "assistant", "content": "Not much!"}}
+
+    with patch.object(engine_mod, "chat_with_messages", side_effect=fake_chat), \
+         patch.object(engine_mod, "select_tools",
+                       return_value=["stop", "toolSearchTool"]), \
+         patch.object(
+             engine_mod,
+             "extract_search_params_for_memory",
+             return_value={"keywords": []},
+         ), \
+         patch.object(engine_mod, "plan_query", side_effect=fake_plan_query):
+        reply = engine_mod.run_reply_engine(
+            db=db,
+            cfg=mock_config,
+            tts=None,
+            text="what's up",
+            dialogue_memory=dialogue_memory,
+        )
+
+    assert reply, "a router verdict of only system tools still answers the turn"
+    assert plan_query_calls == [], (
+        f"a verdict made up only of system tools means no real tool is needed, "
+        f"so the planner must be skipped rather than spending a round-trip on "
+        f"the reply-only plan; it ran {len(plan_query_calls)}×"
+    )
+
+
 def test_planner_runs_when_router_returns_real_tools(
     mock_config, db, dialogue_memory
 ):

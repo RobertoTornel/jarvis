@@ -36,6 +36,15 @@ class ToolSelectionStrategy(Enum):
 # Tools that must always be available regardless of selection strategy.
 _ALWAYS_INCLUDED = {"stop"}
 
+# Tools that exist to steer the agent loop rather than to do the user's work:
+# the termination sentinel, and the escape hatch that widens an allow-list the
+# router drew too narrowly. Both are appended to every allow-list, so the tool
+# router can name them for a query that needs no tool at all. A verdict made up
+# only of these names therefore still carries a positive signal ("no real tool
+# is needed"), and callers must not read it as a failed or empty routing pass.
+# Defined here, beside `_ALWAYS_INCLUDED`, so the set has one home.
+SYSTEM_TOOL_NAMES = frozenset({"stop", "toolSearchTool"})
+
 # Minimum number of tools to return from similarity-based strategies.
 # Prevents overly aggressive filtering that would leave the model with nothing useful.
 _MIN_SELECTED = 3
