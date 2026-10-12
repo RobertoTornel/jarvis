@@ -52,6 +52,14 @@ REAL_SMALL_TALK = [
     "But",
     "And",
     "So",
+    # The spoken forms of the phrases above: a trailing qualifier is how
+    # people actually say them, and it used to defeat the match entirely.
+    "How are you doing today?",
+    "How are you today?",
+    "Are you alive?",
+    "Are you okay now?",
+    "How's it going?",
+    "How are things?",
 ]
 
 # Utterances that need the router, including near-misses of the shapes above.
@@ -76,6 +84,14 @@ MUST_REACH_THE_ROUTER = [
     "Do what up?",
     "What do you mean by the weather tomorrow?",
     "Track 4",
+    # Near-misses of the trailing-qualifier shape: dropping the qualifier
+    # must still leave a social phrase, or the router must run.
+    "What's the weather today?",
+    "Set a timer now",
+    "Turn it off now",
+    "Remind me again",
+    "Play it again",
+    "Call mum now",
 ]
 
 
@@ -105,6 +121,26 @@ def test_a_digit_makes_a_short_utterance_contentful():
 
 def test_the_wake_word_does_not_hide_a_request():
     assert _is_small_talk("Claire, what's the weather") is False
+
+
+def test_a_trailing_qualifier_does_not_hide_a_social_phrase():
+    """The journal has "Are you alive?" and "how are you doing today?".
+
+    Both are a social phrase with a word hung off the end. Before the
+    trailing-qualifier strip neither matched the phrase set, so each one paid
+    a router round trip — measured at 1.14 s — that could only answer
+    "no tools", and the answer was then written as though nothing had been
+    consulted.
+    """
+    assert _is_small_talk("How are you doing today?") is True
+    assert _is_small_talk("Are you okay now?") is True
+
+
+def test_dropping_a_qualifier_never_invents_a_social_phrase():
+    """The strip is only safe while what remains is a social phrase."""
+    assert _is_small_talk("What's the weather today?") is False
+    assert _is_small_talk("Set a timer now") is False
+    assert _is_small_talk("Remind me again") is False
 
 
 def test_punctuation_and_case_do_not_matter():

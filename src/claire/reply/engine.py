@@ -572,9 +572,11 @@ _SMALL_TALK_FILLERS = frozenset({
 #: Whole-utterance social phrases. Checked before and after lead-in removal so
 #: that "I don't know", which opens with a filler, still matches.
 _SMALL_TALK_PHRASES = frozenset({
-    "are you listening", "are you there", "can you hear me", "good afternoon",
-    "good evening", "good morning", "good night", "how are you",
-    "how are you doing", "i dont know", "i dont know yet", "i see",
+    "are you alive", "are you listening", "are you ok", "are you okay",
+    "are you there", "can you hear me", "good afternoon",
+    "good evening", "good morning", "good night", "how are things",
+    "how are you", "how are you doing", "how is it going", "hows it going",
+    "i dont know", "i dont know yet", "i see",
     "is that so", "never mind", "no idea", "no problem", "not much",
     "nothing much", "of course", "thank you", "thanks a lot", "thats it",
     "there we go", "what do you mean", "what is up", "whats up", "you there",
@@ -595,6 +597,17 @@ _SMALL_TALK_LEAD_INS = frozenset({
     "please", "right", "so", "sure", "uh", "um", "well", "yeah", "yep",
     "yes", "you",
 }) | {"claire"} | set(CLAIRE_WAKE_ALIASES)
+
+#: Speech hangs qualifiers off the end of a social phrase without changing
+#: what it asks for. The journal corpus has "how are you doing today?"; the
+#: phrase underneath is what decides the routing, and only these benign
+#: qualifiers may be dropped to reveal it. Every entry must be unable to
+#: carry a request on its own: "what's the weather today?" still reaches the
+#: router, because "whats the weather" is not a social phrase once the
+#: qualifier is gone.
+_SMALL_TALK_TRAILING = frozenset({
+    "again", "now", "then", "today", "tonight",
+})
 
 
 def _is_small_talk(text: str) -> bool:
@@ -622,9 +635,18 @@ def _is_small_talk(text: str) -> bool:
         return True
     if " ".join(tokens) in _SMALL_TALK_PHRASES:
         return True
+    # A qualifier on the end ("how are you doing today") hides the phrase
+    # underneath it, exactly as a lead-in does at the front. Drop the trailing
+    # qualifiers first and retry, so the spoken form of a social phrase is
+    # recognised as the phrase it is instead of paying for a router call that
+    # can only return "no tools".
+    core = list(tokens)
+    while core and core[-1] in _SMALL_TALK_TRAILING:
+        core.pop()
+    if core and " ".join(core) in _SMALL_TALK_PHRASES:
+        return True
     # Drop the opening lead-ins and retry, so a leading "hey Claire," or
     # "okay so" cannot hide a social phrase underneath it.
-    core = list(tokens)
     while core and core[0] in _SMALL_TALK_LEAD_INS:
         core.pop(0)
     return bool(core) and " ".join(core) in _SMALL_TALK_PHRASES
