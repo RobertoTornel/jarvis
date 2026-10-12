@@ -6,6 +6,7 @@ Coordinates audio capture, speech recognition, echo detection, and state managem
 
 from __future__ import annotations
 import functools
+import math
 import os
 import threading
 import time
@@ -35,7 +36,7 @@ from .intent_judge import (
     create_intent_judge,
     warm_up_chat_model,
 )
-from ..debug import debug_log
+from ..debug import debug_enabled, debug_log
 from ..llm import get_embedding_backend
 from ..utils.location import get_configured_city, is_location_available
 from ..utils.redact import redact as redact_secrets
@@ -83,6 +84,14 @@ _AMBIENT_WINDOW_FRAMES = 1500
 
 # The percentile of the ambient history treated as the noise floor. A low
 # percentile ignores speech, which is a minority of frames even in a busy room.
+#: Level floor for the speech gate. Speech measured on a real microphone
+#: (47% input volume) sat at 0.00226-0.00926 while the converter's dither - which
+#: a recogniser answers with "Yeah.", "Okay.", "Uh." - sat at 0.0002-0.0015.
+_AUDIBLE_FLOOR_DEFAULT = 0.002
+#: Above half of full scale no voice can clear the floor, so a value up there is
+#: a mistake (or a test double) rather than a stricter gate.
+_AUDIBLE_FLOOR_CEILING = 0.5
+
 _AMBIENT_FLOOR_PERCENTILE = 20.0
 
 
@@ -1727,6 +1736,29 @@ class VoiceListener(threading.Thread):
         except Exception:
             return 0.0
 
+    def _audible_floor(self) -> float:
+        """``noise_gate_min_rms`` as a usable level, or the shipped default.
+
+        The gate decides by *level*, so a floor that comes back wrong does not
+        fail loudly - it fails as silence. A ``MagicMock`` config (test doubles
+        hand one back) floatifies to exactly 1.0, full scale: no real voice
+        clears that, so the assistant stops transcribing anything at all. Any
+        value that cannot be a voice level is therefore replaced by the default
+        rather than trusted.
+        """
+        raw = getattr(self.cfg, "noise_gate_min_rms", _AUDIBLE_FLOOR_DEFAULT)
+        try:
+            floor = float(raw)
+        except (TypeError, ValueError):
+            return _AUDIBLE_FLOOR_DEFAULT
+        if floor < 0.0:
+            # `config.py` clamps a negative floor to 0.0, so agree with it:
+            # negative means "no floor", not "the default floor".
+            return 0.0
+        if not math.isfinite(floor) or floor >= _AUDIBLE_FLOOR_CEILING:
+            return _AUDIBLE_FLOOR_DEFAULT
+        return floor
+
     def _speech_gate_reason(self) -> Optional[str]:
         """Why the buffered utterance is not worth transcribing, else ``None``.
 
@@ -1752,10 +1784,19 @@ class VoiceListener(threading.Thread):
                 return f"speech too short ({speech_ms:.0f} ms < {min_speech_ms:.0f} ms)"
 
         if bool(getattr(self.cfg, "noise_gate_enabled", True)) and voice_frames > 0:
+            speech_rms = self._utterance_speech_rms_sum / voice_frames
+            # Absolute floor first: when the room itself is near-silent its
+            # 20th-percentile floor is ~0, which makes the relative test below
+            # compare dither against nothing and pass it. A recogniser fed
+            # dither answers with its priors - "Yeah.", "Okay.", "Uh." - so the
+            # level has to be pinned to something absolute as well.
+            min_rms = self._audible_floor()
+            if min_rms > 0.0 and speech_rms < min_rms:
+                return (f"speech below the audible floor "
+                        f"({speech_rms:.5f} < {min_rms:.5f})")
             floor = self._ambient_noise_floor()
             margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
             if floor > 0.0 and margin > 0.0:
-                speech_rms = self._utterance_speech_rms_sum / voice_frames
                 if speech_rms < floor * margin:
                     return (f"speech below room noise floor "
                             f"({speech_rms:.5f} < {floor * margin:.5f})")
@@ -1779,10 +1820,12 @@ class VoiceListener(threading.Thread):
         floor = self._ambient_noise_floor()
         margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
         speech_rms = (self._utterance_speech_rms_sum / voice_frames) if voice_frames else 0.0
+        min_rms = self._audible_floor()
         return (
             f"buffered {buffered_frames * per_frame_ms:.0f} ms, "
             f"vad speech {voice_frames * per_frame_ms:.0f} ms "
-            f"(floor {floor:.5f} x{margin:.1f} = {floor * margin:.5f}, "
+            f"(audible floor {min_rms:.5f}, "
+            f"room floor {floor:.5f} x{margin:.1f} = {floor * margin:.5f}, "
             f"speech rms {speech_rms:.5f})"
         )
 
@@ -3456,10 +3499,14 @@ class VoiceListener(threading.Thread):
                                 if reason is not None:
                                     self._discard_noisy_utterance(reason)
                                 else:
-                                    debug_log(
-                                        f"utterance accepted: {self._speech_evidence()}",
-                                        "voice",
-                                    )
+                                    if debug_enabled():
+                                        # Assembling the evidence reads the
+                                        # ambient history, so it is only worth
+                                        # doing when someone will read it.
+                                        debug_log(
+                                            f"utterance accepted: {self._speech_evidence()}",
+                                            "voice",
+                                        )
                                     self._finalize_utterance()
                             self._pre_roll.clear()
                     # The streaming recogniser is fed frame by frame for

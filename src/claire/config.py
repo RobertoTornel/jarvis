@@ -238,6 +238,11 @@ class Settings:
     # gate keeps working with a television or conversation in the background.
     noise_gate_enabled: bool
     noise_gate_margin: float
+    # Absolute level floor for the speech gate. The relative test above cannot
+    # catch a room whose own noise floor is near zero: dither then clears
+    # `floor * margin` trivially, and a recogniser fed near-silence answers with
+    # its priors ("Yeah.", "Okay.", "Uh."). 0.0 disables the test.
+    noise_gate_min_rms: float
 
     # UI/UX Features
     tune_enabled: bool
@@ -708,6 +713,8 @@ def get_default_config() -> Dict[str, Any]:
         # room's background without demanding the speaker raise their voice.
         "noise_gate_enabled": True,
         "noise_gate_margin": 2.0,
+        # ~-54 dBFS: below this the input is the converter, not a voice.
+        "noise_gate_min_rms": 0.002,
 
         # UI/UX Features
         "tune_enabled": True,
@@ -1066,6 +1073,18 @@ def load_settings() -> Settings:
     min_speech_ms = float(merged.get("min_speech_ms", 250.0))
     noise_gate_enabled = bool(merged.get("noise_gate_enabled", True))
     noise_gate_margin = float(merged.get("noise_gate_margin", 2.0))
+    raw_min_rms = merged.get("noise_gate_min_rms", 0.002)
+    try:
+        # `float(True)` is 1.0, i.e. a floor at full scale: honoring a stray
+        # boolean here would leave the assistant permanently unable to hear
+        # anything, so a boolean falls back like any other value nobody meant.
+        if isinstance(raw_min_rms, bool):
+            raise TypeError("a level is not a boolean")
+        noise_gate_min_rms = float(raw_min_rms)
+    except (TypeError, ValueError):
+        noise_gate_min_rms = 0.002
+    if noise_gate_min_rms < 0.0:
+        noise_gate_min_rms = 0.0
     sample_rate = int(merged.get("sample_rate", 16000))
     tune_enabled = _env_flag(
         "CLAIRE_TUNE_ENABLED", default=bool(merged.get("tune_enabled", True))
@@ -1275,6 +1294,7 @@ def load_settings() -> Settings:
         min_speech_ms=min_speech_ms,
         noise_gate_enabled=noise_gate_enabled,
         noise_gate_margin=noise_gate_margin,
+        noise_gate_min_rms=noise_gate_min_rms,
 
         # UI/UX Features
         tune_enabled=tune_enabled,

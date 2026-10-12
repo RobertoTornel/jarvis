@@ -81,6 +81,7 @@
   "min_speech_ms": 250.0,
   "noise_gate_enabled": true,
   "noise_gate_margin": 2.0,
+  "noise_gate_min_rms": 0.002,
   "tune_enabled": true,
   "ack_enabled": true,
   "ack_phrases": [

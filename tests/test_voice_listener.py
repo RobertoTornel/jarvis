@@ -52,6 +52,10 @@ def _create_mock_config(**kwargs):
     mock_cfg.vad_frame_ms = kwargs.get("vad_frame_ms", 20)
     from claire.config import get_default_config
     defaults = get_default_config()
+    # Mirror the real gate levels: an unset attribute on a MagicMock floatifies
+    # to 1.0 (full scale), which used to silence the gate in these tests and
+    # hid a regression that made the floor unusable in the same way.
+    mock_cfg.noise_gate_min_rms = kwargs.get("noise_gate_min_rms", defaults["noise_gate_min_rms"])
     mock_cfg.max_utterance_ms = kwargs.get("max_utterance_ms", defaults["max_utterance_ms"])
     mock_cfg.tts_max_utterance_ms = kwargs.get("tts_max_utterance_ms", defaults["tts_max_utterance_ms"])
     mock_cfg.tune_enabled = kwargs.get("tune_enabled", False)

@@ -34,13 +34,37 @@ component that wires listening to replying and speaking.
 | Framing and VAD | `listener.py` `_consume_audio_frames`, `_is_speech_frame` | Blocks are cut into configured 10/20/30 ms frames; `webrtcvad` (aggressiveness from config) classifies each frame, with a resample to 16 kHz for the VAD. |
 | Pre-roll | `listener.py` `_consume_audio_frames` (`vad_pre_roll_ms`) | `vad_pre_roll_ms` (default 240) of audio before the first speech frame is retained, so the utterance does not start mid-word. |
 | Endpointing | `listener.py` `_consume_audio_frames` (`endpoint_silence_ms`, `max_utterance_ms`, `tts_max_utterance_ms`) | Speech ends after `endpoint_silence_ms` (default 800) of non-speech, or at `max_utterance_ms` (default 12000), shortened to `tts_max_utterance_ms` (default 3000) while Claire is speaking. |
-| Speech gate | `listener.py` `_speech_gate_reason`, `_discard_noisy_utterance` | Two language-agnostic tests before any recogniser runs: at least `min_speech_ms` (default 250 ms) of VAD-positive audio, and speech RMS above the room's own noise floor times `noise_gate_margin`. A buffer that fails is dropped without a transcription and without a "Heard:" line. |
+| Speech gate | `listener.py` `_speech_gate_reason`, `_discard_noisy_utterance` | Three language-agnostic tests before any recogniser runs: at least `min_speech_ms` (default 250 ms) of VAD-positive audio, and speech RMS that clears **both** an absolute floor (`noise_gate_min_rms`, default 0.002) and the room's own noise floor times `noise_gate_margin`. A buffer that fails is dropped without a transcription and without a "Heard:" line. |
 | Utterance finalisation | `listener.py` `_finalize_utterance` | The buffered audio and its timing metadata become a transcription job on `_transcription_jobs_q`, tagged with the capture generation. |
 | Authoritative STT | `listener.py` `_run_transcription_worker`, `_decode_utterance`, `_get_authoritative_stt_engine` | A worker thread decodes the turn with the authoritative recogniser (Parakeet by default). A job whose capture generation is stale is discarded at both ends of the decode. |
 | Turn construction | `turn.py` (`TurnAssembler`), `listener.py` `_build_turn` | Provisional streaming text and authoritative text are bound into one `TurnTranscript`; the guarded accessors are the only way to reach the text the turn acts on. |
 | Transcript buffer | `transcript_buffer.py` | Completed segments (default `transcript_buffer_duration_sec`: 120 s) are appended for the intent judge's context. |
 | Gates and wake detection | `listener.py` `_process_transcript`, the acoustic echo gate, `_wake_word_seen` | Stop command, acoustic echo gate, text echo checks, intent judge, wake word, collection mode — in that priority order. |
 | Dispatch | `listener.py` `_dispatch_query` | The accepted query is handed to `run_reply_engine` and the reply to the TTS engine (`tts.speak(reply, ...)`). |
+
+### Why the gate has both an absolute and a relative level test
+
+A quiet room and a loud one fail the same gate in opposite directions, so one
+level test cannot cover both.
+
+* **Relative** (`noise_gate_margin`): in a loud room the room's own noise floor
+  is high, and speech has to stand above *it*. This is the test that keeps a
+  television or a conversation in the background from being transcribed.
+* **Absolute** (`noise_gate_min_rms`): in a quiet room the 20th-percentile floor
+  collapses to near zero, so `floor * margin` becomes smaller than the
+  converter's own dither and the relative test passes everything. Measured on a
+  real microphone at 47% input volume: room floor 0.00008, dither 0.0002-0.0015,
+  and a recogniser fed that dither answered with its priors - `"Yeah."` eight
+  times, `"Okay."` four times, plus `"Uh."`, `"Oh."` and `"Mm-hmm."`, 22 such
+  utterances in seven minutes, none of them speech. The same microphone measured
+  real speech at 0.00226-0.00926, so the shipped 0.002 floor sits above every
+  observed hallucination and below the quietest real utterance. A microphone
+  quieter than that floor is what `noise_gate_min_rms: 0.0` is for.
+
+An *accepted* utterance logs the same numbers as a rejected one
+(`utterance accepted: buffered ... ms, vad speech ... ms (audible floor ...,
+room floor ... x..., speech rms ...)`), which is what makes a "she is hearing
+things" report a measurement rather than a guess.
 
 ## The two recognisers
 
@@ -133,6 +157,7 @@ literal) and its coercion block.
 | `vad_pre_roll_ms` | `240` | Audio kept before the first speech frame. |
 | `min_speech_ms` | `250.0` | Minimum VAD-positive audio for an utterance to be transcribed. |
 | `noise_gate_enabled` / `noise_gate_margin` | `True` / `2.0` | Room-noise-floor gate. |
+| `noise_gate_min_rms` | `0.002` | Absolute level floor for the gate: below this the input is the converter, not a voice. `0.0` disables the test; a value that cannot be a voice level (non-finite, or at/above half of full scale) is ignored in favour of the default. |
 | `endpoint_silence_ms` | `800` | Silence that ends an utterance. |
 | `max_utterance_ms` | `12000` | Hard utterance ceiling. |
 | `tts_max_utterance_ms` | `3000` | Shorter ceiling while Claire is speaking. |

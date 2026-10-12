@@ -56,11 +56,19 @@ the recogniser runs, so ambient noise costs neither a transcription nor a
   bar while a VAD blip on noise cannot. An utterance that instead reached
   `max_utterance_ms` is bounded continuous audio, never a padded blip, and is
   transcribed without this test.
-- With `noise_gate_enabled`, speech must also stand `noise_gate_margin` above the
+- With `noise_gate_enabled`, speech must clear `noise_gate_min_rms` (an absolute
+  floor, so near-silence cannot pass merely because the room's own floor is
+  ~0), and must also stand `noise_gate_margin` above the
   room's own noise floor. The floor is a low percentile of a 30-second ambient
   level history, so a television or background conversation raises the bar
-  instead of needing a hand-tuned energy threshold. The gate is inert until that
-  history fills, which leaves it quiet during the first seconds after start-up.
+  instead of needing a hand-tuned energy threshold. Only this relative test is
+  inert until that history fills: the absolute floor does not depend on knowing
+  anything about the room, so it alone applies during the first seconds after
+  start-up.
+- A floor that cannot be a voice level - non-finite, or at or above half of full
+  scale - is replaced by the default instead of being trusted. A gate that
+  silently becomes deaf is worse than one that falls back, and a config object
+  that is not a `Settings` (a test double, say) floatifies to exactly 1.0.
 
 Rejected utterances are discarded with a `discarded utterance:` debug record and
 never enter the transcription queue.

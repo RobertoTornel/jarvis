@@ -825,11 +825,13 @@ def test_speech_reaches_whisper_at_configured_boundary(
 
 
 def speech_gate_listener(min_speech_ms=250.0, noise_gate_enabled=True,
-                         noise_gate_margin=2.0, ambient=None):
+                         noise_gate_margin=2.0, noise_gate_min_rms=0.002,
+                         ambient=None):
     obj = listener(16000)
     obj.cfg = SimpleNamespace(min_speech_ms=min_speech_ms,
                               noise_gate_enabled=noise_gate_enabled,
-                              noise_gate_margin=noise_gate_margin)
+                              noise_gate_margin=noise_gate_margin,
+                              noise_gate_min_rms=noise_gate_min_rms)
     obj._utterance_voice_frames = 0
     obj._utterance_speech_rms_sum = 0.0
     obj._ambient_energy = deque(ambient or [], maxlen=1500)
@@ -858,7 +860,8 @@ def test_accepted_utterances_report_the_evidence_that_cleared_the_gate():
 
     assert "buffered 500 ms" in evidence
     assert "vad speech 500 ms" in evidence
-    assert "floor 0.00100" in evidence
+    assert "audible floor 0.00200" in evidence
+    assert "room floor 0.00100" in evidence
     assert "x2.0 = 0.00200" in evidence
     assert "speech rms 0.01000" in evidence
 
@@ -870,6 +873,95 @@ def test_the_evidence_report_survives_an_utterance_with_no_frames():
 
     assert "vad speech 0 ms" in evidence
     assert "speech rms 0.00000" in evidence
+
+# A near-silent room is the case the relative test cannot see: its own floor is
+# ~0, so `floor * margin` is smaller than the converter's dither and every
+# noise blip clears it. Measured on a real microphone (47% input volume), the
+# room floor was 0.00008 and dither sat at 0.0002-0.0015 - the whole range that
+# cleared the gate and came back from the recogniser as "Yeah.", "Okay." and
+# "Uh.". Real speech on the same microphone measured 0.00226-0.00926.
+
+def test_dither_is_rejected_when_the_room_floor_is_near_zero():
+    obj = _voice(speech_gate_listener(ambient=[0.00008] * 200),
+                 frames=78, rms=0.00038)  # the 1.56 s "Yeah."
+
+    reason = obj._speech_gate_reason()
+
+    assert reason is not None and 'audible floor' in reason
+
+def test_real_speech_clears_the_audible_floor():
+    # "Claire, do you hear me?" - the quietest real utterance measured.
+    obj = _voice(speech_gate_listener(ambient=[0.00008] * 200),
+                 frames=75, rms=0.00226)
+
+    assert obj._speech_gate_reason() is None
+
+def test_the_audible_floor_is_the_highest_dither_that_used_to_pass():
+    # 0.0015 was the loudest hallucination observed: one more hair and the
+    # shipped floor would stop catching it.
+    obj = _voice(speech_gate_listener(ambient=[0.00008] * 200),
+                 frames=25, rms=0.00151)
+
+    reason = obj._speech_gate_reason()
+
+    assert reason is not None and 'audible floor' in reason
+
+def test_the_audible_floor_can_be_disabled():
+    # An escape hatch for a microphone quieter than the shipped floor: 0.0
+    # leaves only the relative test.
+    obj = _voice(speech_gate_listener(noise_gate_min_rms=0.0,
+                                      ambient=[0.00008] * 200),
+                 frames=25, rms=0.0003)
+
+    assert obj._speech_gate_reason() is None
+
+def test_turning_the_gate_off_disables_both_level_tests():
+    obj = _voice(speech_gate_listener(noise_gate_enabled=False,
+                                      ambient=[0.00008] * 200),
+                 frames=25, rms=0.00002)
+
+    assert obj._speech_gate_reason() is None
+
+# The floor is read off whatever config object the listener was handed. Test
+# doubles are `MagicMock`s, and `float(MagicMock())` is 1.0 - full scale - so a
+# floor taken at face value there does not make the gate stricter, it makes it
+# deaf and the assistant transcribes nothing at all. (That was a real
+# regression: it silenced this gate for every mock-config test.)
+
+def test_a_floor_no_voice_could_clear_falls_back_to_the_default():
+    from unittest.mock import MagicMock
+
+    obj = speech_gate_listener()
+    obj.cfg = MagicMock()  # every attribute reads as a Mock, and floatifies to 1.0
+
+    assert obj._audible_floor() == pytest.approx(0.002)
+
+@pytest.mark.parametrize("value,expected", [
+    (0.0, 0.0),            # deliberately disabled
+    (0.004, 0.004),        # a real level
+    ("0.003", 0.003),      # hand-edited config.json
+    (-0.5, 0.0),           # config.py clamps negatives to "disabled" too
+    (float("nan"), 0.002),  # not a level
+    (float("inf"), 0.002),
+    (1.0, 0.002),          # full scale: no voice clears it
+    (0.75, 0.002),         # nor this
+    (None, 0.002),
+    ("loud", 0.002),
+])
+def test_the_floor_is_used_only_when_it_could_be_a_voice_level(value, expected):
+    obj = speech_gate_listener()
+    obj.cfg.noise_gate_min_rms = value
+
+    assert obj._audible_floor() == pytest.approx(expected)
+
+def test_a_config_without_the_key_still_gets_the_default_floor():
+    # A duck-typed config (or an older Settings) must not become a deaf one.
+    obj = _voice(speech_gate_listener(), frames=25, rms=0.1)
+    obj.cfg = SimpleNamespace(min_speech_ms=250.0, noise_gate_enabled=True,
+                              noise_gate_margin=2.0)
+
+    assert obj._audible_floor() == pytest.approx(0.002)
+    assert obj._speech_gate_reason() is None
 
 def test_padded_noise_click_fails_the_speech_gate():
     # One 20 ms blip is 20 ms of speech no matter how much pre-roll precedes it.
@@ -899,8 +991,9 @@ def test_disabling_the_speech_gate_allows_a_single_frame():
 
 
 def test_speech_below_the_room_noise_floor_is_rejected():
-    # A loud room: the floor sits at 1.0e-3, so 1.5e-3 is not speech above it.
-    obj = _voice(speech_gate_listener(ambient=[0.001] * 200), frames=25, rms=0.0015)
+    # A loud room: the floor sits at 1.0e-2, so 1.5e-2 is audible (it clears the
+    # absolute floor) but still does not stand above the room it is in.
+    obj = _voice(speech_gate_listener(ambient=[0.01] * 200), frames=25, rms=0.015)
 
     reason = obj._speech_gate_reason()
 
@@ -914,8 +1007,10 @@ def test_speech_above_the_room_noise_floor_passes():
 
 
 def test_noise_floor_gate_is_inert_until_the_ambient_history_fills():
-    # Start-up: too little history to know the room, so do not reject on level.
-    obj = _voice(speech_gate_listener(ambient=[0.5] * 5), frames=25, rms=0.001)
+    # Start-up: too little history to know the room, so the *relative* level
+    # test must not reject. (The absolute floor still applies - it does not
+    # depend on knowing anything about the room - so the level here is audible.)
+    obj = _voice(speech_gate_listener(ambient=[0.5] * 5), frames=25, rms=0.01)
 
     assert obj._speech_gate_reason() is None
 
