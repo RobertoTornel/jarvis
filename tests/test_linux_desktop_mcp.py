@@ -207,6 +207,146 @@ def test_plan_char_detects_shift_and_unmapped_characters():
     assert plan_char(display, "ñ") is None
 
 
+def test_plan_char_never_infers_shift_from_altgr_slot_indices():
+    """Slots 3/4 are AltGr levels, not Shift levels.
+
+    Parity (`index % 2`) would claim Shift for '@' (slot 3 here) and type
+    '"' on this es,us layout, so only the plain and Shift levels of the
+    active group — slots 0 and 1 — may become a direct plan.
+    """
+    from claire.mcp_servers.linux_desktop import plan_char
+
+    class FakeDisplay:
+        def __init__(self, mapping):
+            self._mapping = mapping
+
+        def keysym_to_keycodes(self, keysym):
+            return list(self._mapping.get(keysym, []))
+
+        def keysym_to_keycode(self, keysym):
+            # An index-free fallback exists but cannot prove which level
+            # of the row the keysym sits on.
+            return 26
+
+    display = FakeDisplay(
+        {
+            0x40: [(11, 3), (11, 4), (24, 4)],  # '@' only at AltGr levels
+            0x60: [(49, 2)],  # '`' only at group-2 level
+            0x61: [(38, 0)],  # 'a' plain level
+            0x41: [(38, 1)],  # 'A' Shift level
+        }
+    )
+    assert plan_char(display, "@") is None
+    assert plan_char(display, "`") is None
+    assert plan_char(display, "a") == (38, False)
+    assert plan_char(display, "A") == (38, True)
+    # No slot information at all → no direct plan, caller rebinds instead.
+    assert plan_char(display, "ñ") is None
+
+
+def test_tap_unmapped_char_maps_a_full_row_and_restores_it_when_the_tap_raises(
+    monkeypatch,
+):
+    """The rebind must cover every level of the spare keycode's row.
+
+    A one-element row leaves the other levels stale, and an exception must
+    never leave the owner's keyboard remapped — the original row goes back
+    in a `finally`, with syncs around the tap so the client sees the rebind
+    before the key event and the restore after it.
+    """
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def __init__(self):
+            self.row = [0] * 10  # ten keysyms per keycode, as on the real map
+            self.changes = []  # (keycode, row) in call order
+            self.syncs = 0
+
+        def get_keyboard_mapping(self, first, count):
+            return [list(self.row)]
+
+        def change_keyboard_mapping(self, first, rows):
+            self.changes.append((int(first), list(rows[0])))
+            if int(first) == 248:
+                self.row = list(rows[0])
+
+        def sync(self):
+            self.syncs += 1
+
+    display = FakeDisplay()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("tap exploded")
+
+    monkeypatch.setattr(mod, "_tap", boom)
+    with pytest.raises(RuntimeError):
+        mod._tap_unmapped_char(display, "é", 248)
+
+    assert len(display.changes) == 2, "rebind first, restore second"
+    spare, rebound = display.changes[0]
+    assert spare == 248
+    assert len(rebound) == 10, "a full-length row, like every other keycode's"
+    assert rebound == [0xE9] * 10, "the keysym at every level of every group"
+    restored_keycode, restored = display.changes[1]
+    assert restored_keycode == 248
+    assert restored == [0] * 10, "the original row must return even when the tap raises"
+    assert display.syncs >= 2, "sync before the tap and again after the restore"
+
+
+def test_type_text_never_counts_a_character_it_could_not_send(monkeypatch):
+    """Control characters cannot be produced by a key press, so they are
+    skipped without being counted — the count must match what a client
+    actually receives."""
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def keysym_to_keycodes(self, keysym):
+            return [(38, 0)] if keysym in (0x61, 0x62, 0x63) else []
+
+        def keysym_to_keycode(self, keysym):
+            return 0
+
+        def sync(self):
+            pass
+
+    taps = []
+
+    def record(display, keycode, shift=False):
+        taps.append((int(keycode), bool(shift)))
+
+    monkeypatch.setattr(mod, "_tap", record)
+    typed = mod._type_text(FakeDisplay(), "ab\x07c")
+    assert typed == 3
+    assert len(taps) == 3, "the bell was skipped, not counted as typed"
+
+
+def test_type_text_fails_loudly_when_a_character_cannot_be_sent(monkeypatch):
+    """A character that cannot be produced raises out of `_type_text` — the
+    tool call fails instead of returning a success count that lies."""
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def keysym_to_keycodes(self, keysym):
+            return [(38, 0)] if keysym == 0x61 else []
+
+        def keysym_to_keycode(self, keysym):
+            return 0
+
+        def get_keyboard_mapping(self, first, count):
+            return [[0] * 10]
+
+        def sync(self):
+            pass
+
+    def boom(display, ch, spare):
+        raise ValueError(f"cannot type the character {ch!r}")
+
+    monkeypatch.setattr(mod, "_tap", lambda display, keycode, shift=False: None)
+    monkeypatch.setattr(mod, "_tap_unmapped_char", boom)
+    with pytest.raises(ValueError):
+        mod._type_text(FakeDisplay(), "aé")
+
+
 def test_split_launch_command_is_shell_free():
     from claire.mcp_servers.linux_desktop import split_launch
 

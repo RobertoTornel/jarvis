@@ -289,23 +289,25 @@ def match_window(windows: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
 def plan_char(display: Any, ch: str) -> Optional[Tuple[int, bool]]:
     """Return ``(keycode, needs_shift)`` for typing ``ch``, or None.
 
-    ``None`` means the current layout has no key for this character; the
-    caller falls back to a temporarily rebound spare keycode. The keymap's
-    slot index is what identifies Shift: odd slots are the shifted level.
+    ``None`` means the layout has no *direct* key for this character; the
+    caller falls back to a temporarily rebound spare keycode. Only slots 0
+    and 1 — the plain and Shift levels of the active group — become a
+    direct plan: higher slots are AltGr or extra-group levels whose
+    modifier cannot be derived from the slot index (on a two-group
+    ``es,us`` map ``@`` sits at slot 3, and parity would claim Shift,
+    typing ``"`` instead).
     """
     keysym = _keysym_for_char(ch)
     if not keysym:
         return None
     try:
         pairs = list(display.keysym_to_keycodes(keysym))
-    except Exception:  # noqa: BLE001 - fall through to the single lookup
+    except Exception:  # noqa: BLE001 - fall through to the rebind path
         pairs = []
-    if pairs:
-        keycode, index = pairs[0]
-        return int(keycode), bool(index % 2)
-    keycode = display.keysym_to_keycode(keysym)
-    if keycode:
-        return int(keycode), False
+    for want_shift, wanted_slot in ((False, 0), (True, 1)):
+        for keycode, slot in pairs:
+            if int(slot) == wanted_slot:
+                return int(keycode), want_shift
     return None
 
 
@@ -514,23 +516,52 @@ def _spare_keycode(display: Any) -> Optional[int]:
     return None
 
 
+# Seconds to hold the rebind before the tap, and again before the restore.
+# The client re-reads the keymap only when it processes our MappingNotify,
+# and it reads whatever row the server holds *at that moment* — so if the
+# client's event loop lags past the restore it types from the stale row
+# (empty: character dropped) or the next rebind's row (wrong character).
+# The whole install→restore window must outlast that lag; under heavy load
+# on this machine 0.1 s demonstrably was not enough, 0.4 s is.
+_REBIND_SETTLE_SECONDS = 0.2
+
+
 def _tap_unmapped_char(display: Any, ch: str, spare: int) -> None:
     """Type a character the layout lacks via a temporarily rebound keycode.
 
-    The mapping is changed and restored on one X connection, so the server
-    (and every client watching MappingNotify) sees the rebind *before* the
-    key event and the restore *after* it — the same ordering xdotool relies
-    on.
+    The spare keycode gets a *full-length* row — the same width every
+    other keycode has (ten keysyms on this machine) — with the character's
+    keysym at every level of every group, so the tap resolves to it
+    whatever group/level state the client is in. Each mapping change is
+    followed by a sync and a settle: the server must have processed the
+    rebind before the key event, and the client must have seen both
+    before the original row is restored. The restore itself runs in a
+    ``finally`` so an exception can never leave the keyboard remapped.
     """
     keysym = _keysym_for_char(ch)
     if not keysym:
         raise ValueError(f"cannot type the character {ch!r}")
-    original = display.get_keyboard_mapping(spare, 1)[0]
-    display.change_keyboard_mapping(spare, [(keysym,)])
+    original = tuple(display.get_keyboard_mapping(spare, 1)[0])
+    if not original:
+        raise ValueError(f"cannot read the keymap row for keycode {spare}")
+    rebound = tuple(keysym for _ in original)
     try:
+        display.change_keyboard_mapping(spare, [rebound])
+        display.sync()
+        time.sleep(_REBIND_SETTLE_SECONDS)
         _tap(display, spare)
+        display.sync()
+        time.sleep(_REBIND_SETTLE_SECONDS)
     finally:
         display.change_keyboard_mapping(spare, [tuple(original)])
+        display.sync()
+        # Our own connection also receives a MappingNotify for every
+        # mapping change; drain them so they cannot pile up.
+        try:
+            while display.pending_events():
+                display.next_event()
+        except Exception:  # noqa: BLE001 - draining is hygiene, never fatal
+            pass
 
 
 def _type_text(display: Any, text: str) -> int:
