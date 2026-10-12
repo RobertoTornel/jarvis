@@ -176,12 +176,27 @@ answer, the tool walks a fallback chain before giving up:
 3. **Honest block envelope** — if every provider fails, the envelope
    admits it and forbids unverified facts (same framing as the
    links-only envelope).
+4. **The Wikipedia fallback never stands in for a search that did not
+   run.** When DDG was blocked and the only content came from the
+   Wikipedia fallback, the payload itself states that no search ran and
+   where the text came from, so the model cannot relay it as a search
+   result. For a query that plainly asks for something that changes hour
+   to hour (weather, news, prices, scores, traffic, opening hours,
+   anything "now", "today" or "tomorrow") the extract is withheld
+   entirely and the envelope forbids stating any current value instead,
+   because encyclopaedia prose cannot answer such a question: offering
+   it is how a film summary came to be relayed as the weather, the field
+   trace recorded in `reply.spec.md`. `_looks_time_sensitive` is a
+   deliberately conservative marker list and not a classifier, so a
+   false positive costs one honest "I could not search" reply.
 
 Rate-limit detection fires regardless of fallback availability: the
 `🚧 DuckDuckGo served a bot-challenge page` console line is printed when
 DDG blocks us and no instant answer was available, even if a fallback
 then rescues the query. The `✅ Answered via …` line afterwards tells
-field-triage which provider actually carried the reply.
+field-triage which provider actually carried the reply, and becomes
+`⚠️ Web search was blocked; answered from the Wikipedia fallback
+instead.` when the content is a fallback rather than a search.
 
 ### Progress messages
 

@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import Mock, patch
 import requests
 
+from src.claire.tools.builtin import web_search as web_search_module
 from src.claire.tools.builtin.web_search import WebSearchTool
 from src.claire.tools.base import ToolContext
 from src.claire.tools.types import ToolExecutionResult
@@ -1174,3 +1175,129 @@ class TestLanguagePlumbingEndToEnd:
                 listener._dispatch_query("istanbul")
 
         assert run_reply.call_args.kwargs["language"] == "tr"
+
+
+class TestDegradedWikipediaFallback:
+    """A Wikipedia extract must not stand in for a search that never ran.
+
+    On this machine DuckDuckGo answers every request with its bot-challenge
+    page, so the Wikipedia fallback is the only content the tool ever has.
+    Offering an encyclopaedia extract as the answer is what made "what is the
+    weather in Lisbon" return the city's population, and it is the same route
+    recorded in reply.spec.md, where a film summary was relayed as the weather.
+    """
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.tool = WebSearchTool()
+        self.context = Mock(spec=ToolContext)
+        self.context.user_print = Mock()
+        self.context.language = None
+        self.context.cfg = Mock()
+        self.context.cfg.web_search_enabled = True
+        self.context.cfg.voice_debug = False
+        self.context.cfg.brave_search_api_key = ""
+        self.context.cfg.wikipedia_fallback_enabled = True
+
+    def _run_blocked_with_wikipedia(self, mock_get, mock_wiki, query):
+        """Drive the tool down the DDG-blocked, Wikipedia-rescued path."""
+        instant = Mock()
+        instant.status_code = 200
+        instant.json.return_value = {}
+        instant.raise_for_status = Mock()
+        challenge = Mock()
+        challenge.status_code = 400
+        challenge.content = b'<div class="anomaly-modal"></div>'
+        mock_get.side_effect = [instant, challenge]
+        mock_wiki.return_value = (
+            "Lisbon",
+            "https://en.wikipedia.org/wiki/Lisbon",
+            "Lisbon is the capital and largest city of Portugal.",
+        )
+        return self.tool.run({"search_query": query}, self.context)
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_time_sensitive_query_is_not_answered_from_wikipedia(
+        self, mock_get, mock_wiki
+    ):
+        """A blocked search for the weather must not return an encyclopaedia entry."""
+        result = self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "what is the weather in Lisbon right now"
+        )
+
+        text = result.reply_text.lower()
+        # The extract itself must not reach the model as the answer.
+        assert "capital and largest city" not in text
+        # The model is told the search did not run and forbidden to state values.
+        assert "could not run" in text
+        assert "blocked" in text
+        assert "must not contain any current value" in text
+        assert "two short sentences" in text
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_descriptive_query_keeps_wikipedia_and_is_labelled(
+        self, mock_get, mock_wiki
+    ):
+        """An encyclopaedic query keeps the extract, with its provenance stated."""
+        result = self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "who directed Possessor"
+        )
+
+        text = result.reply_text
+        assert "capital and largest city" in text.lower()
+        # The model must be told no search ran and where the text came from.
+        assert "did not run" in text.lower()
+        assert "wikipedia" in text.lower()
+        assert "not from a search" in text.lower()
+
+    @patch('src.claire.tools.builtin.web_search._wikipedia_summary')
+    @patch('requests.get')
+    def test_status_line_is_a_warning_not_a_tick(self, mock_get, mock_wiki):
+        """The console must not report a blocked fallback as a success."""
+        self._run_blocked_with_wikipedia(
+            mock_get, mock_wiki, "who directed Possessor"
+        )
+
+        printed = "\n".join(
+            call.args[0] for call in self.context.user_print.call_args_list
+        )
+        assert "⚠️ Web search was blocked" in printed
+        assert "✅ Answered via Wikipedia fallback." not in printed
+
+    def test_time_sensitive_markers_are_recognised(self):
+        """Explicit markers of a live question are recognised."""
+        for query in (
+            "what is the weather in Lisbon",
+            "will it rain tomorrow",
+            "what is the temperature outside",
+            "any news about the election",
+            "what is the price of bitcoin",
+            "what was the score last night",
+            "how is the traffic right now",
+            "what are the opening hours",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is True, query
+
+    def test_descriptive_queries_are_not_flagged(self):
+        """Encyclopaedic questions keep their Wikipedia answer.
+
+        Word boundaries matter here: "trains in Portugal" must not be flagged
+        for containing the letters of "rain".
+        """
+        for query in (
+            "who directed Possessor",
+            "what is the capital of France",
+            "history of Lisbon",
+            "trains in Portugal",
+            "the open source movement",
+            "when was the Eiffel Tower built",
+        ):
+            assert web_search_module._looks_time_sensitive(query) is False, query
+
+    def test_empty_query_is_not_time_sensitive(self):
+        """A missing or blank query is never flagged."""
+        assert web_search_module._looks_time_sensitive("") is False
+        assert web_search_module._looks_time_sensitive("   ") is False
+        assert web_search_module._looks_time_sensitive(None) is False
