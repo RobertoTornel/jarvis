@@ -1761,6 +1761,31 @@ class VoiceListener(threading.Thread):
                             f"({speech_rms:.5f} < {floor * margin:.5f})")
         return None
 
+    def _speech_evidence(self) -> str:
+        """The acoustic numbers behind a gate decision, ready for the log.
+
+        The gate logs its reasons for *discarded* utterances, but a noisy room
+        fails in the other direction too: noise loud enough to satisfy both
+        tests reaches the recogniser and comes back as a stray word like
+        "Yeah.". Recording the same evidence for accepted utterances is what
+        makes the next "she is hallucinating" report measurable - it shows
+        whether to move ``min_speech_ms``, ``noise_gate_margin`` or
+        ``vad_aggressiveness``, instead of guessing.
+        """
+        voice_frames = int(getattr(self, "_utterance_voice_frames", 0))
+        buffered_frames = len(getattr(self, "_utterance_frames", ()) or ())
+        rate = max(1, int(getattr(self, "_stream_samplerate", self._samplerate) or 1))
+        per_frame_ms = 1000.0 * self._frame_samples / rate
+        floor = self._ambient_noise_floor()
+        margin = float(getattr(self.cfg, "noise_gate_margin", 2.0) or 0.0)
+        speech_rms = (self._utterance_speech_rms_sum / voice_frames) if voice_frames else 0.0
+        return (
+            f"buffered {buffered_frames * per_frame_ms:.0f} ms, "
+            f"vad speech {voice_frames * per_frame_ms:.0f} ms "
+            f"(floor {floor:.5f} x{margin:.1f} = {floor * margin:.5f}, "
+            f"speech rms {speech_rms:.5f})"
+        )
+
     def _discard_noisy_utterance(self, reason: str) -> None:
         """Drop a completed buffer that never held enough speech to transcribe."""
         debug_log(f"discarded utterance: {reason}", "voice")
@@ -3431,6 +3456,10 @@ class VoiceListener(threading.Thread):
                                 if reason is not None:
                                     self._discard_noisy_utterance(reason)
                                 else:
+                                    debug_log(
+                                        f"utterance accepted: {self._speech_evidence()}",
+                                        "voice",
+                                    )
                                     self._finalize_utterance()
                             self._pre_roll.clear()
                     # The streaming recogniser is fed frame by frame for

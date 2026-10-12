@@ -843,6 +843,34 @@ def _voice(obj, frames, rms):
     return obj
 
 
+def test_accepted_utterances_report_the_evidence_that_cleared_the_gate():
+    """The gate is measurable in both directions.
+
+    Discards logged why (``discarded utterance: ...``); accepts logged nothing,
+    so a noisy room that produced stray decodes left no record of how close to
+    the thresholds they were. This is the line that makes the next such report
+    tunable.
+    """
+    obj = _voice(speech_gate_listener(ambient=[0.001] * 200), frames=25, rms=0.01)
+    obj._utterance_frames = [b"\x00" * 64] * 25
+
+    evidence = obj._speech_evidence()
+
+    assert "buffered 500 ms" in evidence
+    assert "vad speech 500 ms" in evidence
+    assert "floor 0.00100" in evidence
+    assert "x2.0 = 0.00200" in evidence
+    assert "speech rms 0.01000" in evidence
+
+def test_the_evidence_report_survives_an_utterance_with_no_frames():
+    """A report, not a ZeroDivisionError, when there is nothing to report."""
+    obj = _voice(speech_gate_listener(), frames=0, rms=0.0)
+
+    evidence = obj._speech_evidence()
+
+    assert "vad speech 0 ms" in evidence
+    assert "speech rms 0.00000" in evidence
+
 def test_padded_noise_click_fails_the_speech_gate():
     # One 20 ms blip is 20 ms of speech no matter how much pre-roll precedes it.
     obj = _voice(speech_gate_listener(), frames=1, rms=0.05)
