@@ -1853,3 +1853,95 @@ class TestIntentJudgeSkipOnWakeWord:
 
         judge.judge.assert_not_called()
         assert _accepted_query(listener) == "what is the weather"
+
+
+@pytest.mark.unit
+class TestHotWindowGraceBand:
+    """hot_window_grace_seconds is the opt-in judge-free fast band.
+
+    A follow-up that arrives immediately after Claire stops speaking is the
+    turn a human reply is most likely on, and the intent judge costs about
+    three seconds there. Inside the band the follow-up is accepted without
+    the judge; after it, strict mode applies as before so background
+    television is still gated. 0.0 (the default) judges every follow-up.
+    """
+
+    @patch("builtins.print")
+    def test_grace_band_accepts_without_calling_the_judge(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="addressed to someone else in the room"))
+        _process_transcript(listener, "and what about tomorrow", utterance_energy=0.01)
+
+        judge.judge.assert_not_called()
+        assert _accepted_query(listener) == "and what about tomorrow"
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_after_the_band_strict_mode_still_judges(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+        # Five seconds into a six-second window: past the band, still inside.
+        listener.state_manager._hot_window_start_time = time.time() - 5.0
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high",
+            reasoning="not addressed to Claire"))
+        _process_transcript(listener, "did you see the game last night", utterance_energy=0.01)
+
+        judge.judge.assert_called()
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_the_band_is_off_by_default(self, _print):
+        """0.0 judges every follow-up, so strict mode keeps its guarantee."""
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 0.0
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        judge = _install_intent_judge(listener, _make_judgment(
+            directed=False, query="", confidence="high", reasoning="not directed"))
+        _process_transcript(listener, "did you see the game last night", utterance_energy=0.01)
+
+        judge.judge.assert_called()
+        assert _accepted_query(listener) == ""
+        listener.state_manager.stop()
+
+    def test_the_band_never_applies_in_permissive_mode(self):
+        """Permissive mode already accepts without the judge; no band needed."""
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = False
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        listener.echo_detector.track_tts_start("Here is your answer.")
+        _simulate_tts_finish(listener)
+        assert _wait_for_hot_window_active(listener)
+
+        assert listener._inside_follow_up_grace() is False
+        listener.state_manager.stop()
+
+    def test_the_band_needs_an_active_window(self):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=6.0)
+        listener.cfg.hot_window_require_directed = True
+        listener.cfg.hot_window_grace_seconds = 2.5
+
+        assert listener._inside_follow_up_grace() is False
+        listener.state_manager.stop()

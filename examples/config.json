@@ -94,6 +94,7 @@
   "hot_window_seconds": 3.0,
   "hot_window_max_follow_ups": 3,
   "hot_window_require_directed": false,
+  "hot_window_grace_seconds": 0.0,
   "low_power_mode": false,
   "echo_energy_threshold": 2.0,
   "echo_tolerance": 0.3,

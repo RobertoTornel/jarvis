@@ -261,6 +261,13 @@ class Settings:
     # drive a turn. False (the default) keeps the documented permissive
     # behaviour: all non-echo speech counts as a follow-up.
     hot_window_require_directed: bool
+    # Opt-in fast band at the very start of a hot window. A follow-up that
+    # arrives within this many seconds of Claire finishing is taken without
+    # the intent judge, so the most likely follow-up of all does not pay a
+    # ~3 s classification call. 0.0 (the default) judges every follow-up, so
+    # enabling strict mode keeps the guarantee it advertises. Clamped to the
+    # window itself.
+    hot_window_grace_seconds: float
     low_power_mode: bool
 
     # Echo Detection
@@ -741,6 +748,7 @@ def get_default_config() -> Dict[str, Any]:
         "hot_window_seconds": 3.0,
         "hot_window_max_follow_ups": 3,
         "hot_window_require_directed": False,
+        "hot_window_grace_seconds": 0.0,
         "low_power_mode": False,
         "echo_energy_threshold": 2.0,
         "echo_tolerance": 0.3,  # Time tolerance for echo detection timing
@@ -1136,6 +1144,18 @@ def load_settings() -> Settings:
         )
     else:
         hot_window_require_directed = bool(raw_require_directed)
+    # The fast band at the start of a hot window. Default 0.0 so strict mode
+    # keeps the guarantee it advertises: nothing is accepted without the
+    # judge's verdict unless the user asks for the trade. A grace longer than
+    # the window itself is meaningless, so it is clamped to the window.
+    try:
+        hot_window_grace_seconds = float(merged.get("hot_window_grace_seconds", 0.0))
+    except (TypeError, ValueError):
+        raise TypeError("hot_window_grace_seconds must be a number")
+    if hot_window_grace_seconds < 0.0:
+        hot_window_grace_seconds = 0.0
+    if hot_window_grace_seconds > hot_window_seconds:
+        hot_window_grace_seconds = hot_window_seconds
     low_power_mode = bool(merged.get("low_power_mode", False))
     echo_energy_threshold = float(merged.get("echo_energy_threshold", 2.0))
     echo_tolerance = float(merged.get("echo_tolerance", 0.3))
@@ -1356,6 +1376,7 @@ def load_settings() -> Settings:
         hot_window_seconds=hot_window_seconds,
         hot_window_max_follow_ups=hot_window_max_follow_ups,
         hot_window_require_directed=hot_window_require_directed,
+        hot_window_grace_seconds=hot_window_grace_seconds,
         low_power_mode=low_power_mode,
         echo_energy_threshold=echo_energy_threshold,
         echo_tolerance=echo_tolerance,

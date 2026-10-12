@@ -125,3 +125,47 @@ def test_strict_flag_strings_are_coerced(tmp_path, monkeypatch, value, expected)
     _write_config(tmp_path, monkeypatch, {"hot_window_require_directed": value})
 
     assert load_settings().hot_window_require_directed is expected
+
+# ---------------------------------------------------------------------------
+# hot_window_grace_seconds
+# ---------------------------------------------------------------------------
+
+def test_the_default_grace_band_is_off():
+    """0.0 means every follow-up is judged: strict mode stays strict."""
+    assert get_default_config()["hot_window_grace_seconds"] == 0.0
+
+def test_settings_declares_the_grace_field():
+    named = {f.name for f in dataclasses.fields(Settings)}
+
+    assert "hot_window_grace_seconds" in named
+
+def test_the_grace_band_is_read_from_config(tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch, {"hot_window_grace_seconds": 2.5})
+
+    assert load_settings().hot_window_grace_seconds == 2.5
+
+def test_a_quoted_number_is_accepted(tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch, {"hot_window_grace_seconds": "2.5"})
+
+    assert load_settings().hot_window_grace_seconds == 2.5
+
+def test_a_negative_grace_band_is_clamped_to_zero(tmp_path, monkeypatch):
+    _write_config(tmp_path, monkeypatch, {"hot_window_grace_seconds": -4.0})
+
+    assert load_settings().hot_window_grace_seconds == 0.0
+
+def test_a_grace_band_longer_than_the_window_is_clamped(tmp_path, monkeypatch):
+    """A band longer than the window it lives in is meaningless."""
+    _write_config(tmp_path, monkeypatch, {
+        "hot_window_seconds": 3.0,
+        "hot_window_grace_seconds": 30.0,
+    })
+
+    assert load_settings().hot_window_grace_seconds == 3.0
+
+def test_a_non_numeric_grace_band_is_rejected(tmp_path, monkeypatch):
+    """A typo must be loud, not silently treated as off."""
+    _write_config(tmp_path, monkeypatch, {"hot_window_grace_seconds": "soon"})
+
+    with pytest.raises(TypeError):
+        load_settings()

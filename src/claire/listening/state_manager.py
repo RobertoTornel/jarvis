@@ -81,6 +81,21 @@ class StateManager:
         """Check if hot window is currently active."""
         return self.get_state() == ListeningState.HOT_WINDOW
 
+    def hot_window_elapsed(self) -> Optional[float]:
+        """Seconds since the current hot window armed, or None if not active.
+
+        Used to tell a follow-up that arrives immediately after Claire stops
+        speaking from one that arrives later. The first moment of the window
+        is when a human reply is most likely, and requiring an LLM verdict
+        there costs seconds on the interaction the window exists to serve.
+        """
+        with self._state_lock:
+            if self._state != ListeningState.HOT_WINDOW:
+                return None
+            if self._hot_window_start_time <= 0:
+                return None
+            return max(0.0, time.time() - self._hot_window_start_time)
+
     def start_collection(self, initial_text: str = "") -> None:
         """
         Start query collection mode.

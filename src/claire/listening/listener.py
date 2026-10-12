@@ -1124,9 +1124,55 @@ class VoiceListener(threading.Thread):
                 "voice",
             )
 
+        # Opt-in fast band (`hot_window_grace_seconds`): a follow-up arriving
+        # immediately after Claire stops speaking is taken without the judge,
+        # because that is the turn a human reply is most likely on and the
+        # judge is the single most expensive stage of it. Acceptance reuses
+        # the existing hot-window fallback below, which still rejects echo.
+        skip_judge_in_grace = (
+            not is_speaking_now
+            and not skip_judge_on_wake_word
+            and self._inside_follow_up_grace()
+        )
+        if skip_judge_in_grace:
+            debug_log(
+                "skipping intent judge — follow-up inside the grace band of "
+                "the hot window",
+                "voice",
+            )
+            # The accept-from-None path lives inside the judge block below, so
+            # skipping the judge would also skip acceptance. Take the turn here
+            # instead, after the same echo check that path uses: a follow-up
+            # arriving while Claire's own voice is still in the buffer must not
+            # drive a turn.
+            if could_be_hot_window:
+                grace_tts_text = (
+                    (self.echo_detector._last_tts_text or "") if same_tts_context else ""
+                )
+                is_pure_echo_grace = False
+                if grace_tts_text:
+                    grace_score = fuzz.partial_ratio(text_lower, grace_tts_text.lower())
+                    grace_tts_words = len(grace_tts_text.split())
+                    grace_text_words = len(text_lower.split())
+                    is_pure_echo_grace = (
+                        grace_score >= 70
+                        and grace_text_words
+                        <= max(grace_tts_words * 1.3, grace_tts_words + 3)
+                    )
+                if is_pure_echo_grace:
+                    debug_log(
+                        f"🔇 Echo inside the grace band: \"{text_lower}\"",
+                        "voice",
+                    )
+                    self._stop_thinking_tune()
+                    return
+                self._accept_follow_up(text_lower, "grace band")
+                return
+
         if (
             not skip_intent_judge_during_tts
             and not skip_judge_on_wake_word
+            and not skip_judge_in_grace
             and has_engagement_signal
             and self._intent_judge is not None
             and self._intent_judge.available
@@ -1160,9 +1206,19 @@ class VoiceListener(threading.Thread):
                 else:
                     print(f"  🧠 Intent ({mode_str}): not directed ({intent_judgment.reasoning})", flush=True)
             else:
-                reason = self._intent_judge.last_failure_reason or "no segments or unavailable"
-                print(f"  🧠 Intent judge: unavailable ({reason})", flush=True)
-                debug_log(f"intent judge returned None — falling back ({reason})", "voice")
+                if skip_judge_in_grace:
+                    # A deliberate skip, not a failure: saying "unavailable"
+                    # here would send field triage after a judge that was
+                    # never asked.
+                    print("  🧠 Intent: follow-up inside the grace window (no judge needed)", flush=True)
+                    debug_log(
+                        "intent judge deliberately skipped — grace band",
+                        "voice",
+                    )
+                else:
+                    reason = self._intent_judge.last_failure_reason or "no segments or unavailable"
+                    print(f"  🧠 Intent judge: unavailable ({reason})", flush=True)
+                    debug_log(f"intent judge returned None — falling back ({reason})", "voice")
                 # Hot window fallback: if the early echo check already cleared
                 # this text, accept it even without the judge's verdict.
                 if could_be_hot_window:
@@ -2346,6 +2402,51 @@ class VoiceListener(threading.Thread):
         return self._assembler().build(
             provisional, authoritative, source or "authoritative", **timings
         )
+
+    def _accept_follow_up(self, text_lower: str, reason: str) -> None:
+        """Take an utterance as this turn's query and hand it to collection.
+
+        The sequence is: cancel the pending activation, mark the segment so it
+        is not re-extracted, clear the audio buffers, start collection and give
+        the user the thinking cue. The caller owns the echo decision. Extracted
+        so a new acceptance path does not add a tenth copy of it.
+        """
+        debug_log(f"✅ Accepting ({reason}): \"{text_lower}\"", "voice")
+        self.state_manager.cancel_hot_window_activation()
+        self._transcript_buffer.mark_segment_processed(text_lower)
+        self._clear_audio_buffers()
+        self.state_manager.start_collection(text_lower)
+        self._start_thinking_tune()
+        try:
+            print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
+        except Exception:
+            pass
+
+    def _inside_follow_up_grace(self) -> bool:
+        """Whether a hot-window follow-up is inside the judge-free fast band.
+
+        The first moments after Claire stops speaking are when a human
+        follow-up is overwhelmingly most likely, and the intent judge costs
+        ~3 s at p50 on exactly that turn. Inside `hot_window_grace_seconds`
+        the follow-up is taken without the judge; after it, strict mode
+        applies as before, so background television is still gated.
+
+        Opt-in and narrow: the key defaults to 0.0 (every follow-up judged),
+        permissive mode already accepts without the judge, and a genuine wake
+        word has its own escape hatch. `is not True` because only a real
+        config coerces to a bool, and a MagicMock is not True; the duration is
+        likewise required to be a real number, because `float(MagicMock())` is
+        1.0 and a mock config would otherwise enable the band by accident.
+        """
+        if getattr(self.cfg, "hot_window_require_directed", False) is not True:
+            return False
+        grace = getattr(self.cfg, "hot_window_grace_seconds", 0.0)
+        if isinstance(grace, bool) or not isinstance(grace, (int, float)):
+            return False
+        if grace <= 0.0:
+            return False
+        elapsed = self.state_manager.hot_window_elapsed()
+        return elapsed is not None and elapsed < grace
 
     def _wake_word_seen(self, text_lower: str, provisional_lower: str = "") -> bool:
         """Whether this utterance addressed Claire by name.

@@ -295,6 +295,10 @@ def _build_field_metadata() -> List[FieldMeta]:
     f("hot_window_require_directed", "Strict Follow-ups",
       "Only accept follow-ups aimed at Claire, not background speech",
       "timing", "bool")
+    f("hot_window_grace_seconds", "Instant Follow-up Window",
+      "Answer a follow-up this soon after speaking without judging it first "
+      "(0 = judge every follow-up)",
+      "timing", "float", min_val=0.0, max_val=30.0, step=0.5, suffix="s")
     f("transcript_buffer_duration_sec", "Transcript Buffer",
       "Duration of rolling transcript history for intent judging",
       "timing", "float", min_val=10, max_val=600, step=10, suffix="s")
