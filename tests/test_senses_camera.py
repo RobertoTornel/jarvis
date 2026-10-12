@@ -182,9 +182,14 @@ def test_describe_availability_without_a_camera_is_a_plain_report_not_an_error(m
     assert "What you can do" in verdict.render()
 
 
-def test_describe_availability_with_a_camera_reports_it(tmp_path):
+def test_describe_availability_with_a_camera_reports_it(tmp_path, monkeypatch):
     dev_root, sysfs = _dev_root_with(
         tmp_path, ["video0"], labels=[("video0", "Integrated Camera")]
+    )
+    # A regular file in a fake dev root cannot answer VIDIOC_ENUM_FMT, so the
+    # live probe is stood in for with what a real capture node reports.
+    monkeypatch.setattr(
+        camera, "_decodable_formats_for", lambda path: ("MJPG", "YUYV")
     )
     verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
     assert verdict.available is True
@@ -193,6 +198,46 @@ def test_describe_availability_with_a_camera_reports_it(tmp_path):
     assert "1 camera" in verdict.reason
     assert verdict.spoken_summary().startswith("Yes")
     assert verdict.actions == ()
+
+
+def test_describe_availability_skips_a_device_with_no_decodable_format(
+    tmp_path, monkeypatch
+):
+    """A metadata node exists but cannot capture: scanned, never offered."""
+    dev_root, sysfs = _dev_root_with(
+        tmp_path,
+        ["video0", "video1"],
+        labels=[("video0", "W4DS: W4DS"), ("video1", "W4DS: W4DS")],
+    )
+    monkeypatch.setattr(
+        camera,
+        "_decodable_formats_for",
+        lambda path: ("MJPG",) if path.endswith("video0") else (),
+    )
+    verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
+    assert verdict.available is True
+    assert [device.path for device in verdict.devices] == [
+        str(dev_root / "video0")
+    ]
+    assert "1 camera" in verdict.reason
+    assert "not counted" in verdict.reason
+
+
+def test_describe_availability_when_no_device_can_capture_says_so_plainly(
+    tmp_path, monkeypatch
+):
+    """Two nodes exist, neither decodes: no ready camera is claimed."""
+    dev_root, sysfs = _dev_root_with(tmp_path, ["video0", "video1"])
+    monkeypatch.setattr(camera, "_decodable_formats_for", lambda path: ())
+    verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
+    assert verdict.available is False
+    assert verdict.devices == ()
+    assert "2 video device(s) exist" in verdict.reason
+    assert "none" in verdict.reason
+    assert "ready" not in verdict.reason
+    assert "detected and ready" not in verdict.reason
+    assert verdict.spoken_summary()
+    assert verdict.actions == tuple(camera.NO_CAMERA_FIXES)
 
 
 def test_diagnose_matches_describe_availability(monkeypatch):
@@ -229,7 +274,7 @@ def test_capture_frame_never_opens_a_device_when_the_scan_is_empty(monkeypatch):
     def _tripwire(*args, **kwargs):
         raise AssertionError("capture_frame opened a device with no camera present")
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", _tripwire)
+    monkeypatch.setattr(camera, "_capture_v4l2", _tripwire)
     with pytest.raises(camera.CameraNotFoundError):
         camera.capture_frame()
 
@@ -264,7 +309,7 @@ def test_capture_frame_saves_a_real_jpeg_from_a_fake_driver_under_the_lock(tmp_p
             data=jpeg, pixel_format="MJPG", width=64, height=48
         )
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", fake_capture)
+    monkeypatch.setattr(camera, "_capture_v4l2", fake_capture)
     out_dir = tmp_path / "frames"
     saved = camera.capture_frame(
         dev_root=dev_root, sysfs_root=sysfs, out_dir=out_dir
@@ -291,7 +336,7 @@ def test_capture_frame_selects_by_index_and_by_name(tmp_path, monkeypatch):
             data=_jpeg_bytes(), pixel_format="MJPG", width=64, height=48
         )
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", fake_capture)
+    monkeypatch.setattr(camera, "_capture_v4l2", fake_capture)
     camera.capture_frame(1, dev_root=dev_root, sysfs_root=sysfs, out_dir=tmp_path)
     camera.capture_frame("usb webcam", dev_root=dev_root, sysfs_root=sysfs, out_dir=tmp_path)
     assert seen == [str(dev_root / "video1"), str(dev_root / "video1")]
@@ -304,7 +349,7 @@ def test_captured_frame_refuses_to_be_empty():
 
 def test_unopenable_device_is_a_named_error_with_the_permission_fix():
     with pytest.raises(camera.CameraCaptureError) as info:
-        camera._capture_v4l2_read("/dev/video-does-not-exist")
+        camera._capture_v4l2("/dev/video-does-not-exist")
     error = info.value
     assert error.device_path == "/dev/video-does-not-exist"
     assert "could not be opened" in str(error)
