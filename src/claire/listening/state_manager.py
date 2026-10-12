@@ -49,6 +49,9 @@ class StateManager:
         # Collection state
         self._pending_query: str = ""
         self._last_voice_time: float = 0.0
+        # Newest moment voice was actually heard (capture time, not the time
+        # its transcript finished decoding). 0.0 means "nothing noted yet".
+        self._last_voice_heard_at: float = 0.0
         self._collect_start_time: float = 0.0
 
         # Hot window state
@@ -96,18 +99,54 @@ class StateManager:
                 return None
             return max(0.0, time.time() - self._hot_window_start_time)
 
-    def start_collection(self, initial_text: str = "") -> None:
+    def note_voice_heard(self, when: Optional[float] = None) -> None:
+        """Record the newest moment voice was heard.
+
+        Called at capture time, before transcription runs, so the follow-up
+        silence window can be measured from when the voice stopped rather
+        than from when the transcript became ready. Time only ever moves
+        forward: an out-of-order note (a late queued transcript) must not
+        rewind the anchor. While a collection is open the window anchor is
+        refreshed too, so a continuation whose transcript has not arrived
+        yet keeps the window open.
+        """
+        moment = time.time() if when is None else float(when)
+        with self._state_lock:
+            if moment > self._last_voice_heard_at:
+                self._last_voice_heard_at = moment
+            if self.is_collecting() and self._last_voice_heard_at > self._last_voice_time:
+                self._last_voice_time = self._last_voice_heard_at
+
+    def start_collection(self, initial_text: str = "", last_voice_time: Optional[float] = None) -> None:
         """
         Start query collection mode.
 
         Args:
             initial_text: Optional initial text to seed the collection
+            last_voice_time: When the voice actually stopped (capture time),
+                so silence is measured from the voice, not from the arrival
+                of its transcript. Omit to start the window now, exactly as
+                before.
         """
         with self._state_lock:
+            now = time.time()
+            provided = float(last_voice_time) if last_voice_time else 0.0
             self._state = ListeningState.COLLECTING
             self._pending_query = initial_text.strip()
-            self._last_voice_time = time.time()
-            self._collect_start_time = self._last_voice_time
+            # Silence is measured from when the voice stopped: transcription
+            # runs inside the follow-up window, not before it. A transcription
+            # may consume at most half of that window, so once a voice moment
+            # is known the anchor is floored at half a window — a decode
+            # slower than the whole window still leaves the turn at least
+            # half a window to respond in. With no voice time known (and
+            # none noted) the window starts now, exactly as it always did.
+            voice_moment = max(provided, self._last_voice_heard_at)
+            self._last_voice_time = (
+                max(voice_moment, now - self.voice_collect_seconds / 2)
+                if voice_moment > 0.0
+                else now
+            )
+            self._collect_start_time = now
 
         start_time_str = datetime.fromtimestamp(self._collect_start_time).strftime('%H:%M:%S.%f')[:-3]
         debug_log(f"collection started at {start_time_str}: '{initial_text}'", "state")
@@ -135,7 +174,12 @@ class StateManager:
 
         with self._state_lock:
             self._pending_query = (self._pending_query + " " + text).strip()
-            self._last_voice_time = time.time()
+            arrived = time.time()
+            self._last_voice_time = arrived
+            # This transcript proves voice was heard; keep the newest voice
+            # moment moving forward alongside the window anchor.
+            if arrived > self._last_voice_heard_at:
+                self._last_voice_heard_at = arrived
 
         debug_log(f"added to collection: '{text}' -> '{self._pending_query}'", "state")
 

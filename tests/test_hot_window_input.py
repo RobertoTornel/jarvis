@@ -1945,3 +1945,70 @@ class TestHotWindowGraceBand:
 
         assert listener._inside_follow_up_grace() is False
         listener.state_manager.stop()
+
+# ---------------------------------------------------------------------------
+# Test: a continuation that lands while the first transcript is decoding
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestContinuationJoinsAcrossTranscription:
+    """A split sentence must survive the transcription wait.
+
+    "Claire, remind me to" ends at t=0, "...call mum at five" ends at t=1.5
+    while the first transcript is still decoding, A's transcript arrives at
+    t=2.0 and B's at t=2.6. The silence window is anchored on the voice
+    moments (not on transcript arrival), so the turn joins instead of
+    splitting: A must not dispatch alone at t=2.0, and B must not become a
+    second turn at t=2.6.
+    """
+
+    @patch("builtins.print")
+    def test_second_utterance_during_decoding_joins_the_turn(self, _print):
+        listener, _ = _create_listener()
+        dispatched = []
+        listener._dispatch_query = lambda q: dispatched.append(q)
+
+        # t=0: first utterance captured; its decode runs for ~2.0 s.
+        t_a_end = time.time()
+        listener.state_manager.note_voice_heard(t_a_end)
+
+        # t=1.5: continuation captured while A is still decoding.
+        time.sleep(1.5)
+        t_b_end = time.time()
+        listener.state_manager.note_voice_heard(t_b_end)
+
+        # t=2.0: A's transcript arrives and opens the collection.
+        time.sleep(0.5)
+        _process_transcript(
+            listener, "claire, remind me to", utterance_end_time=t_a_end
+        )
+        assert listener.state_manager.is_collecting()
+        assert listener.state_manager.get_pending_query() == "remind me to"
+
+        # The main loop polls this every 0.2 s; A must not go out alone.
+        listener._check_query_timeout()
+        assert dispatched == []
+
+        # t=2.6: B's transcript arrives and must join, not start a new turn.
+        time.sleep(0.6)
+        assert listener.state_manager.is_collecting()
+        _process_transcript(
+            listener, "call mum at five", utterance_end_time=t_b_end
+        )
+        assert dispatched == []
+        assert listener.state_manager.get_pending_query() == (
+            "remind me to call mum at five"
+        )
+        assert listener.state_manager.is_collecting()
+
+        # The joined turn still expires. add_to_collection refreshes the
+        # window when B's transcript arrives (today's continuation
+        # semantics), so it closes 2.0 s after that arrival -- which is
+        # never earlier than 2.0 s after B's voice stopped.
+        b_arrived = time.time()
+        deadline = b_arrived + 2.0 + 0.15
+        while time.time() < deadline:
+            time.sleep(0.02)
+            listener._check_query_timeout()
+        assert dispatched == ["remind me to call mum at five"]

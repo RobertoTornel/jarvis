@@ -1166,7 +1166,7 @@ class VoiceListener(threading.Thread):
                     )
                     self._stop_thinking_tune()
                     return
-                self._accept_follow_up(text_lower, "grace band")
+                self._accept_follow_up(text_lower, "grace band", last_voice_time=utterance_end_time or None)
                 return
 
         if (
@@ -1240,7 +1240,7 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
+                        self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                         self._start_thinking_tune()
                         try:
                             print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1278,7 +1278,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(intent_judgment.query)
+                            self.state_manager.start_collection(intent_judgment.query, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1347,7 +1347,7 @@ class VoiceListener(threading.Thread):
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
 
-                        self.state_manager.start_collection(hot_query)
+                        self.state_manager.start_collection(hot_query, last_voice_time=utterance_end_time or None)
 
                         # Start thinking tune and show processing message
                         self._start_thinking_tune()
@@ -1381,7 +1381,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1411,7 +1411,7 @@ class VoiceListener(threading.Thread):
                         self.state_manager.cancel_hot_window_activation()
                         self._transcript_buffer.mark_segment_processed(text_lower)
                         self._clear_audio_buffers()
-                        self.state_manager.start_collection(text_lower)
+                        self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                         self._start_thinking_tune()
                         try:
                             print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1453,7 +1453,7 @@ class VoiceListener(threading.Thread):
                             self._transcript_buffer.mark_segment_processed(text_lower)
 
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1494,7 +1494,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1560,7 +1560,7 @@ class VoiceListener(threading.Thread):
                             self.state_manager.cancel_hot_window_activation()
                             self._transcript_buffer.mark_segment_processed(text_lower)
                             self._clear_audio_buffers()
-                            self.state_manager.start_collection(text_lower)
+                            self.state_manager.start_collection(text_lower, last_voice_time=utterance_end_time or None)
                             self._start_thinking_tune()
                             try:
                                 print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -1596,7 +1596,7 @@ class VoiceListener(threading.Thread):
             self._clear_audio_buffers()
 
             query_fragment = extract_query_after_wake(text_lower, wake_word, list(aliases))
-            self.state_manager.start_collection(query_fragment)
+            self.state_manager.start_collection(query_fragment, last_voice_time=utterance_end_time or None)
 
             # Start thinking tune and show processing message
             self._start_thinking_tune()
@@ -2403,7 +2403,8 @@ class VoiceListener(threading.Thread):
             provisional, authoritative, source or "authoritative", **timings
         )
 
-    def _accept_follow_up(self, text_lower: str, reason: str) -> None:
+    def _accept_follow_up(self, text_lower: str, reason: str,
+                          last_voice_time: Optional[float] = None) -> None:
         """Take an utterance as this turn's query and hand it to collection.
 
         The sequence is: cancel the pending activation, mark the segment so it
@@ -2415,7 +2416,7 @@ class VoiceListener(threading.Thread):
         self.state_manager.cancel_hot_window_activation()
         self._transcript_buffer.mark_segment_processed(text_lower)
         self._clear_audio_buffers()
-        self.state_manager.start_collection(text_lower)
+        self.state_manager.start_collection(text_lower, last_voice_time=last_voice_time)
         self._start_thinking_tune()
         try:
             print(f"\n✨ Working on it: {self.state_manager.get_pending_query()}")
@@ -3678,6 +3679,9 @@ class VoiceListener(threading.Thread):
 
         # Track when utterance ends - but don't overwrite global timing yet
         utterance_end_time = time.time()
+        # The silence window runs from this moment, not from when the
+        # transcript finishes decoding: note it before transcription starts.
+        self.state_manager.note_voice_heard(utterance_end_time)
         utterance_start_time = self.echo_detector._utterance_start_time
 
         if self.cfg.voice_debug:
