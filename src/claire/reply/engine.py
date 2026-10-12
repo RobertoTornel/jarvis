@@ -541,6 +541,33 @@ _DIGEST_SKIP_TOOLS = frozenset({
     "getTime",
 })
 
+#: Hard ceiling on how much of one tool result enters the model's context.
+#: The digest below only runs for small models, so with a large chat model a
+#: tool that returns a data dump puts all of it in front of the model on every
+#: remaining turn of the conversation. Measured 2026-10-13: fetching
+#: en.wikipedia.org/wiki/Lisbon returned 50,028 characters in one call, which
+#: is roughly 12k tokens of context carried by the rest of the conversation.
+#: Generous enough to leave a real answer intact.
+_MAX_TOOL_RESULT_CHARS = 8000
+
+
+def _cap_tool_result(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """Truncate an oversized tool result, keeping the head and saying so.
+
+    The marker matters as much as the cut: a model handed a silently shortened
+    payload may answer as though it saw the whole thing. Naming the omission
+    lets it ask for something narrower instead of guessing.
+    """
+    if not isinstance(text, str) or len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return (
+        text[:limit]
+        + f"\n\n[... {omitted} more characters of this result were omitted to "
+        "keep the reply within its context budget. Ask for something more "
+        "specific if what you need is not above.]"
+    )
+
 
 def _maybe_digest_tool_result(
     cfg,
@@ -2489,6 +2516,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
                     tool_name=tool_name,
                     raw_tool_result=result.reply_text,
                 )
+                # The digest is model-gated and skips some tools outright, so
+                # cap whatever comes out of it: nothing a tool returns may
+                # inflate the rest of the conversation without limit.
+                effective_result = _cap_tool_result(effective_result)
 
                 if use_text_tools:
                     # Plan-aware remainder nudge. When a pre-loop plan exists,
