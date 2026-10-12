@@ -387,9 +387,16 @@ def _select_llm(
             selected.append(clean)
 
     # Hard cap — a chatty router that ignores the prompt cap must not bloat
-    # the downstream tool list. Preserve order (model's ranking).
-    if len(selected) > _LLM_MAX_SELECTED:
-        selected = selected[:_LLM_MAX_SELECTED]
+    # the downstream tool list. The cap bounds the REAL tools only, keeping
+    # their model ranking; system tools (SYSTEM_TOOL_NAMES) steer the agent
+    # loop rather than do the user's work, and the router names them in
+    # almost every verdict — letting them eat real slots shrank the actual
+    # routing verdict (e.g. "stop, toolSearchTool, w0, w1, w2" crowded out
+    # two of the five real picks). System tools are retained on top of the
+    # `_LLM_MAX_SELECTED` real-tool budget.
+    system_selected = [t for t in selected if t in SYSTEM_TOOL_NAMES]
+    real_selected = [t for t in selected if t not in SYSTEM_TOOL_NAMES]
+    selected = system_selected + real_selected[:_LLM_MAX_SELECTED]
 
     selected = _ensure_always_included(selected, builtin_tools, mcp_tools)
 
