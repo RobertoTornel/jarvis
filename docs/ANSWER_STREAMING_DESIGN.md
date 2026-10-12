@@ -1,21 +1,56 @@
 # Design: speaking the answer while it is still being written
 
-Status: **designed, not implemented.** This document exists so the work can be executed
-without re-deriving it, and so the risks are on the record before any code moves.
+Status: **refuted by measurement, not implemented.** The design below is kept because it
+names the risks accurately, but the measurement in the next section removes its premise: the
+answer call is mostly fixed gateway overhead, so streaming it would save far less than it
+costs. Do not implement this without new evidence that the balance has changed.
 
-## Why
+## The measurement that retired it
 
-Measured on the owner's live config (see `CLAIRE_FIX_REPORT_2026-10-12.md`, section 1): on a
-conversational turn the router and the planner are now both skipped, so the whole turn is a
-single model call that takes 3.2 s and writes two or three sentences. The speech engine
-already synthesises and plays per sentence, so it can start on sentence one while sentence
-two is still being generated. Expected saving: roughly one second of the answer call, on
-every spoken turn, and more on longer replies.
+Run on this machine against the live gateway and the **real captured answer prompt** (3,257
+prompt tokens, 3,200 of them served from the gateway's cache), streaming enabled so every
+phase could be timed:
 
-Painting the first sentence about a second earlier is the last identified latency lever on
-the conversational path.
+| prompt | prompt tokens | cached | first token | first content | total |
+|---|---|---|---|---|---|
+| real captured answer prompt | 3,257 | 3,200 | 1.25 s | 1.32 s | 1.79 s |
+| the same prompt again | 3,257 | 3,200 | 1.20 s | 1.49 s | 1.92 s |
+| the real turn with the system prompt cut to 600 chars | 326 | 0 | 1.10 s | 1.38 s | 2.81 s |
+| a deliberately tiny prompt | 48 | 0 | 0.92 s | 2.24 s | 2.62 s |
 
-## Why it is not a small change
+Three conclusions, none of which the original estimate had:
+
+1. **There is about a second of fixed overhead before any token comes back**, and it does not
+   depend on prompt size: 48 tokens cost 0.92 s, 3,257 tokens cost 1.25 s. That is the
+   gateway and the model being scheduled, not the prompt being read.
+2. **Prompt size is therefore not worth optimising either.** Shrinking a 3,257-token prompt to
+   326 tokens moved time-to-first-token by 0.15 s. The gateway already caches the large
+   system prompt (3,200 of 3,257 tokens were cached).
+3. **Time-to-first-content is dominated by variable reasoning, and the prose itself is
+   short.** Only about half a second of a 1.8 to 2.8 s call is spent producing the words.
+   Reasoning-token counts across runs of the same prompt ranged from 8 to 195, and the
+   gateway ignores every instruction to reason less (`reasoning_effort`, `enable_thinking`,
+   "answer immediately"), which earlier rounds established.
+
+So the speakable window is roughly the last half second of the call. Streaming it would move
+the first sentence earlier by a few hundred milliseconds at best, while the change requires a
+new streaming entry point that takes a message list, an incremental sentence splitter, and
+echo bookkeeping that one `speak()` per sentence would otherwise break, including the stop
+command. That is a bad trade, and it is the reason nothing here is implemented.
+
+The honest description of where a conversational turn's time now goes: the collection wait
+(the owner's setting), transcription, about a second of fixed gateway overhead per call,
+variable reasoning, and a short generation. Streaming attacks only the last of those.
+
+## The original argument, for the record
+
+The case for it was this. On a conversational turn the router and the planner are now both
+skipped, so the whole turn is a single model call that takes about 3 s and writes two or three
+sentences. The speech engine already synthesises and plays per sentence, so it could start on
+sentence one while sentence two is still being generated. The estimate at the time was a
+saving of roughly one second on every spoken turn. It was wrong, for the reason above.
+
+### Why it would have been a large change
 
 1. **The live speaker is not the reply engine.** `run_reply_engine` is called with
    `tts=None` on both live paths (voice: `listening/listener.py` `_dispatch_query`; text:
@@ -55,7 +90,7 @@ the conversational path.
    `duration_callback` sets the *total* duration used for words-per-second maths, so it must
    not be fed one sentence's length.
 
-## Chosen approach
+## The design, had it been worth building
 
 Stream only where it is safe, and keep every existing consumer of the whole reply intact.
 
@@ -88,7 +123,7 @@ Stream only where it is safe, and keep every existing consumer of the whole repl
    complete). Respect `llm_chat_timeout_sec`. The panel and desktop stay on the single
    completion event.
 
-## Tests to add, and the ones that must keep passing
+## Tests it would have needed
 
 New, in `tests/test_echo_detection.py`: a multi-sentence `track_tts_start` plus
 `extend_tts_text` case asserting `_last_tts_text` equals the whole reply and that extend does
@@ -107,7 +142,7 @@ pipelining, flush, interrupt, `get_last_spoken_text`), `tests/test_piper_tts.py`
 `tests/test_echo_detection.py`, `tests/test_echo_loop_prevention.py`,
 `tests/test_short_query_echo.py`, `tests/test_stop_command_echo.py`.
 
-## Open questions
+## Open questions it left
 
 - The streamed tool-call delta shape from this gateway is unverified, so the flush-on-
   surprise fallback is a precaution, not a proven path.
