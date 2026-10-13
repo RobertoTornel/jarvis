@@ -225,9 +225,9 @@ class _VersionCard(QFrame):
         if is_latest:
             latest_badge = QLabel("  LATEST  ")
             latest_badge.setStyleSheet(f"""
-                background-color: rgba(34, 197, 94, 0.12);
+                background-color: {COLORS['success_glow']};
                 color: {COLORS['success']};
-                border: 1px solid rgba(34, 197, 94, 0.3);
+                border: 1px solid {COLORS['success_border']};
                 border-radius: 4px;
                 font-size: 10px;
                 font-weight: 700;

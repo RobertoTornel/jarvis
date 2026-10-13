@@ -18,6 +18,7 @@ from flask import Flask, jsonify, request, Response
 from claire.config import load_settings
 from claire.debug import debug_log
 from claire.memory.graph import FIXED_BRANCH_IDS, GraphMemoryStore
+from desktop_app.themes import law_style
 
 
 app = Flask(__name__)
@@ -842,7 +843,7 @@ def diary_optimise_topics() -> Response:
 @app.route("/")
 def index() -> str:
     """Serve the memory viewer frontend."""
-    return """<!DOCTYPE html>
+    return law_style("""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -853,28 +854,28 @@ def index() -> str:
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            /* Deep space theme with amber accents */
-            --bg-primary: #0a0b0f;
-            --bg-secondary: #12141a;
-            --bg-tertiary: #1a1d26;
-            --bg-card: #161920;
-            --bg-hover: #1e222c;
+            /* The shared colour law, under this page's own token names. */
+            --bg-primary: {bg_primary};
+            --bg-secondary: {bg_secondary};
+            --bg-tertiary: {bg_tertiary};
+            --bg-card: {bg_card};
+            --bg-hover: {bg_hover};
 
-            --accent-primary: #f59e0b;
-            --accent-secondary: #fbbf24;
-            --accent-glow: rgba(245, 158, 11, 0.15);
-            --accent-muted: #92400e;
+            --accent-primary: {accent_primary};
+            --accent-secondary: {accent_secondary};
+            --accent-glow: {accent_glow};
+            --accent-muted: {accent_muted};
 
-            --text-primary: #f4f4f5;
-            --text-secondary: #a1a1aa;
-            --text-muted: #71717a;
+            --text-primary: {text_primary};
+            --text-secondary: {text_secondary};
+            --text-muted: {text_muted};
 
-            --border-color: #27272a;
-            --border-glow: rgba(245, 158, 11, 0.3);
+            --border-color: {border};
+            --border-glow: {border_glow};
 
-            --success: #22c55e;
-            --warning: #f59e0b;
-            --error: #ef4444;
+            --success: {success};
+            --warning: {warning};
+            --error: {error};
 
             --radius-sm: 6px;
             --radius-md: 10px;
@@ -910,8 +911,7 @@ def index() -> str:
             right: 0;
             bottom: 0;
             background:
-                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(245, 158, 11, 0.08), transparent),
-                radial-gradient(ellipse 60% 40% at 100% 100%, rgba(139, 92, 246, 0.05), transparent);
+                radial-gradient(ellipse 80% 50% at 50% -20%, {accent_wash}, transparent);
             pointer-events: none;
             z-index: -1;
         }
@@ -921,7 +921,7 @@ def index() -> str:
             position: sticky;
             top: 0;
             z-index: 100;
-            background: rgba(10, 11, 15, 0.85);
+            background: {bg_scrim};
             backdrop-filter: blur(20px);
             border-bottom: 1px solid var(--border-color);
             padding: 1rem 2rem;
@@ -1250,7 +1250,7 @@ def index() -> str:
         }
 
         .action-btn.delete:hover {
-            background: rgba(239, 68, 68, 0.15);
+            background: {error_glow};
             border-color: var(--error);
             color: var(--error);
         }
@@ -1886,7 +1886,7 @@ def index() -> str:
         }
 
         .detail-action-btn.delete:hover {
-            background: rgba(239, 68, 68, 0.15);
+            background: {error_glow};
             border-color: var(--error);
             color: var(--error);
         }
@@ -2801,7 +2801,7 @@ def index() -> str:
                 ctx.beginPath();
                 ctx.moveTo(from.x, from.y);
                 ctx.lineTo(to.x, to.y);
-                ctx.strokeStyle = 'rgba(245, 158, 11, 0.15)';
+                ctx.strokeStyle = '{accent_glow}';
                 ctx.stroke();
             });
 
@@ -2821,8 +2821,8 @@ def index() -> str:
                     ctx.beginPath();
                     ctx.arc(pos.x, pos.y, radius + 6, 0, Math.PI * 2);
                     ctx.fillStyle = isSelected
-                        ? 'rgba(245, 158, 11, 0.25)'
-                        : 'rgba(245, 158, 11, 0.12)';
+                        ? '{accent_selection}'
+                        : '{accent_wash}';
                     ctx.fill();
                 }
 
@@ -2831,18 +2831,18 @@ def index() -> str:
                 ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
 
                 if (isSelected) {
-                    ctx.fillStyle = '#f59e0b';
+                    ctx.fillStyle = '{accent_primary}';
                 } else if (isRoot) {
-                    ctx.fillStyle = '#1a1d26';
+                    ctx.fillStyle = '{bg_tertiary}';
                 } else if (node.has_children) {
-                    ctx.fillStyle = '#1e222c';
+                    ctx.fillStyle = '{bg_hover}';
                 } else {
-                    ctx.fillStyle = '#161920';
+                    ctx.fillStyle = '{bg_card}';
                 }
                 ctx.fill();
 
                 ctx.lineWidth = (isSelected ? 2.5 : 1.5) / graphZoom;
-                ctx.strokeStyle = isSelected ? '#fbbf24' : isHovered ? '#f59e0b' : '#27272a';
+                ctx.strokeStyle = isSelected ? '{accent_primary}' : isHovered ? '{accent_primary}' : '{border}';
                 ctx.stroke();
 
                 // Label
@@ -2850,7 +2850,7 @@ def index() -> str:
                 ctx.font = `500 ${fontSize}px Outfit, sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
-                ctx.fillStyle = isSelected ? '#fef3c7' : '#f4f4f5';
+                ctx.fillStyle = isSelected ? '{on_accent}' : '{text_primary}';
 
                 // Truncate name to fit
                 let label = node.name;
@@ -3781,7 +3781,7 @@ def index() -> str:
         loadMemories();
     </script>
 </body>
-</html>"""
+</html>""")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

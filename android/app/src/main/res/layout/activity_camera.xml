@@ -22,7 +22,7 @@
         android:id="@+id/camera_toolbar"
         android:layout_width="match_parent"
         android:layout_height="?attr/actionBarSize"
-        android:background="#99000000"
+        android:background="@color/scrim"
         app:navigationIcon="@drawable/ic_back"
         app:title="@string/camera_title"
         app:titleTextAppearance="@style/ToolbarTitle" />
@@ -32,7 +32,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="#CC0E1116"
+        android:background="@color/bg_scrim"
         android:orientation="vertical"
         android:paddingStart="14dp"
         android:paddingTop="12dp"

@@ -1,5 +1,15 @@
 # Desktop App Specification
 
+> **Deprecated — kept for compatibility only.** The web panel
+> (`src/claire/panel/`, <http://127.0.0.1:8765/> ) is now the primary Claire UI,
+> and the animated face has moved there — see `docs/PANEL_FACE.md`. This PyQt6
+> app is still present, still launched by `claire-desktop.service`, and its
+> tests still run, because the service and the tests depend on it and removing
+> it was out of scope for the panel migration. One piece of it remains
+> load-bearing for everyone: `ClaireStateManager` here is still the single
+> writer of the shared face-state file that both UIs read. Do not add new
+> features to this app; add them to the panel.
+
 This document outlines the architecture and behavior of the Claire Desktop App - a cross-platform PyQt6 system tray application that provides a graphical interface for the Claire voice assistant.
 
 ## Overview
@@ -20,7 +30,7 @@ src/desktop_app/
 ├── setup_wizard.py      # First-run setup wizard
 ├── settings_window.py   # Auto-generated settings UI from config metadata
 ├── face_widget.py       # Animated face visualization
-├── themes.py            # Qt stylesheets and color palette
+├── themes.py            # The shared colour law and the Qt stylesheets
 ├── diary_dialog.py      # End-of-session diary update dialog
 ├── chat_window.py       # Text chat interface (see chat_window.spec.md)
 ├── memory_viewer.py     # Flask-based memory browser
@@ -174,7 +184,7 @@ The Inno Setup script also runs a `VerifyCudaInstall` hook after the CUDA downlo
 
 Animated loading screen shown during startup with:
 
-- Pulsing orb animation (matches theme colors)
+- Pulsing orb animation (matches the shared theme colours)
 - Status text updates ("Checking Ollama...", "Starting daemon...")
 - Frameless, centered, always-on-top
 
@@ -331,21 +341,41 @@ In subprocess mode, the daemon runs as a separate process. IPC is achieved via s
 
 ## Theme System
 
-All UI components use a consistent dark theme defined in `themes.py`:
+All UI components use the shared colour law, defined once in `themes.py` as
+`COLOUR_LAW` and exposed to Qt under the role names in `COLORS`:
 
 ```python
-COLORS = {
-    "bg_primary": "#09090b",      # Deep space black
-    "bg_secondary": "#18181b",    # Slightly lighter
-    "accent_primary": "#f59e0b",  # Amber
-    "accent_secondary": "#fbbf24", # Lighter amber
-    "text_primary": "#fafafa",    # White
-    "text_secondary": "#a1a1aa",  # Muted
-    ...
+COLOUR_LAW = {
+    "bg": "#131417",
+    "surface": "#1b1d21",
+    "surface_alt": "#24262b",
+    "surface_high": "#2e3138",
+    "line": "#31343a",
+    "line_soft": "#26282d",
+    "text": "#e8eaed",
+    "text_dim": "#a8adb5",
+    "text_faint": "#878d96",
+    "accent": "#e562a4",
+    "accent_dim": "#cf4b92",
+    "accent_ink": "#150a12",
+    "success": "#4cc38a",
+    "warning": "#d9a441",
+    "danger": "#ef6a6a",
 }
 ```
 
-Components use `CLAIRE_THEME_STYLESHEET` for consistent styling across all dialogs and windows.
+The law is shared with the web panel and the Android app (see
+`docs/MEMORY_EDITOR_UX.md` §4). Dark grey and light grey carry all structure and
+text, and one pink accent marks Claire and the things the owner can act on.
+Green, amber and red stay status colours, and pink never stands in for one; in
+the conversation view Claire is pink and the owner is neutral grey. The face
+widget paints its mesh in the grey text roles with the accent in its glow.
+
+No desktop module writes a hex of its own: `themes.py` holds the values and the
+other modules read `COLORS` (or render a stylesheet through `law_style()`), so a
+colour change lands in one place. `CLAIRE_THEME_STYLESHEET`,
+`CHAT_THEME_STYLESHEET` and `WIZARD_STYLESHEET` give every dialog and window the
+same treatment.
 
 ## Update System
 

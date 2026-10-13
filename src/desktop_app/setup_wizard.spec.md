@@ -21,8 +21,8 @@ An OpenAI-compatible user has opted out of the local Ollama stack, so `should_sh
 
 ## Layout and overflow
 
-The wizard uses a shared dark visual theme in `themes.py`, with neutral cards,
-amber selections and primary actions, and a four-stage header: Voice,
+The wizard uses the shared colour law from `themes.py`, with neutral cards,
+pink selections and primary actions, and a four-stage header: Voice,
 Intelligence, Capabilities, Ready. The standard window is 960 × 780, bounded
 by the available screen. Normal page content fits without scrolling at this
 size. Provider choices, connection/model settings, and chat/fast selectors use

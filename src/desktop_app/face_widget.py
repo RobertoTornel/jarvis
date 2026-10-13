@@ -39,6 +39,7 @@ from PyQt6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QLinearGra
 from PyQt6.QtCore import Qt, QTimer, QPointF, pyqtSignal, QObject
 
 from claire.debug import debug_log
+from desktop_app.themes import COLORS
 
 
 class Expression(Enum):
@@ -68,7 +69,31 @@ import tempfile
 import os
 
 def _get_claire_state_file() -> str:
-    """Get the path to the Claire state file."""
+    """Get the path to the Claire state file.
+
+    Prefers ``$XDG_RUNTIME_DIR/claire/claire_state`` (directory created if
+    needed) and falls back to the temp dir when ``XDG_RUNTIME_DIR`` is not set.
+
+    The file lives under ``$XDG_RUNTIME_DIR`` rather than ``/tmp`` because
+    ``/tmp`` does not work between systemd units: ``claire.service``,
+    ``claire-panel.service`` and ``claire-desktop.service`` all set
+    ``PrivateTmp=yes``, so each service has its own private ``/tmp`` and a state
+    file written by one unit is invisible to the others.
+    ``$XDG_RUNTIME_DIR`` (``/run/user/<uid>``) is shared by all of the user's
+    units and is not touched by ``PrivateTmp``, so it is the one location every
+    process agrees on.  The panel (``claire/panel/server.py``) resolves the same
+    path, falling back here when ``XDG_RUNTIME_DIR`` is absent (dev runs,
+    non-systemd machines), where both sides share one namespace anyway.  See
+    ``docs/PANEL_FACE.md``.
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        shared_dir = os.path.join(runtime_dir, "claire")
+        try:
+            os.makedirs(shared_dir, exist_ok=True)
+            return os.path.join(shared_dir, "claire_state")
+        except OSError:
+            pass  # not creatable: fall through to the shared-namespace fallback
     return os.path.join(tempfile.gettempdir(), "claire_state")
 
 
@@ -158,12 +183,18 @@ class LowPolyFaceWidget(QWidget):
     creating a futuristic AI assistant aesthetic.
     """
     
-    # Colors
-    PRIMARY_COLOR = QColor("#fbbf24")  # Amber/gold - matches Claire theme
-    SECONDARY_COLOR = QColor("#f59e0b")  # Darker amber
-    GLOW_COLOR = QColor("#fcd34d")  # Light amber for glow
-    BG_COLOR = QColor("#0a0a0a")  # Near black background
-    GRID_COLOR = QColor("#1f1f1f")  # Dark gray for background grid
+    # The law's roles: a grey face with the one pink accent in its glow, the
+    # same reading as the panel's face.
+    PRIMARY_COLOR = QColor(COLORS["text_primary"])
+    SECONDARY_COLOR = QColor(COLORS["text_secondary"])
+    GLOW_COLOR = QColor(COLORS["accent_primary"])
+    BG_COLOR = QColor(COLORS["bg_primary"])
+    GRID_COLOR = QColor(COLORS["border_soft"])
+
+    @staticmethod
+    def _with_alpha(colour: QColor, alpha: int) -> QColor:
+        """The same colour at a given alpha, for glows."""
+        return QColor(colour.red(), colour.green(), colour.blue(), alpha)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -700,8 +731,8 @@ class LowPolyFaceWidget(QWidget):
         # Outer glow (scaled by activation)
         alpha = int(200 * activation)
         gradient = QRadialGradient(x, y, 8)
-        gradient.setColorAt(0, QColor(251, 191, 36, alpha))
-        gradient.setColorAt(1, QColor(251, 191, 36, 0))
+        gradient.setColorAt(0, self._with_alpha(self.GLOW_COLOR, alpha))
+        gradient.setColorAt(1, self._with_alpha(self.GLOW_COLOR, 0))
         painter.setBrush(gradient)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setOpacity(activation)
@@ -787,8 +818,8 @@ class LowPolyFaceWidget(QWidget):
         # Apply activation level to glow
         glow_alpha = int(100 * self._activation_level)
         glow_gradient = QRadialGradient(ex, ey, size * 1.5)
-        glow_gradient.setColorAt(0, QColor(251, 191, 36, glow_alpha))
-        glow_gradient.setColorAt(1, QColor(251, 191, 36, 0))
+        glow_gradient.setColorAt(0, self._with_alpha(self.GLOW_COLOR, glow_alpha))
+        glow_gradient.setColorAt(1, self._with_alpha(self.GLOW_COLOR, 0))
         painter.setBrush(glow_gradient)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setOpacity(self._activation_level)
@@ -1018,7 +1049,7 @@ class FaceWindow(QWidget):
         )
 
         # Dark background
-        self.setStyleSheet("background-color: #0a0a0a;")
+        self.setStyleSheet(f"background-color: {COLORS['bg_primary']};")
 
         # Layout
         layout = QVBoxLayout(self)

@@ -28,7 +28,7 @@ from claire.config import (
     SUPPORTED_CHAT_MODELS,
 )
 from claire.debug import debug_log
-from desktop_app.themes import apply_theme
+from desktop_app.themes import COLORS, apply_theme
 from desktop_app.mcp_catalogue import CATALOGUE, CATALOGUE_BY_NAME, MCPEntry
 
 
@@ -737,7 +737,7 @@ class SettingsWindow(QDialog):
             "file access, web search, databases, and more."
         )
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
         layout.addWidget(desc)
 
         # Server list
@@ -776,8 +776,8 @@ class SettingsWindow(QDialog):
         self._mcp_detail = QLabel("")
         self._mcp_detail.setWordWrap(True)
         self._mcp_detail.setStyleSheet(
-            "background-color: #12141a; border: 1px solid #27272a; "
-            "border-radius: 8px; padding: 12px; color: #a1a1aa; font-size: 12px;"
+            f"background-color: {COLORS['bg_secondary']}; border: 1px solid {COLORS['border']}; "
+            f"border-radius: 8px; padding: 12px; color: {COLORS['text_secondary']}; font-size: 12px;"
         )
         self._mcp_detail.setMinimumHeight(60)
         layout.addWidget(self._mcp_detail)
@@ -1044,21 +1044,21 @@ class _MCPCatalogueDialog(QDialog):
 
         desc = QLabel("Select MCP servers to add. Already-configured servers are shown as checked.")
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
         layout.addWidget(desc)
 
         # Node.js availability warning
         node_warning = QLabel(
             "⚠️  <b>Node.js not found.</b> Most MCP servers require Node.js. "
-            "<a href='https://nodejs.org/' style='color: #f59e0b;'>Download Node.js</a> "
+            f"<a href='https://nodejs.org/' style='color: {COLORS['accent_primary']};'>Download Node.js</a> "
             "and restart Claire to use them."
         )
         node_warning.setOpenExternalLinks(True)
         node_warning.setWordWrap(True)
         node_warning.setStyleSheet(
-            "background: rgba(239, 68, 68, 0.12);"
-            "border: 1px solid rgba(239, 68, 68, 0.35);"
-            "border-radius: 8px; padding: 10px 14px; color: #fca5a5; font-size: 12px;"
+            f"background: {COLORS['error_wash']};"
+            f"border: 1px solid {COLORS['error_border']};"
+            f"border-radius: 8px; padding: 10px 14px; color: {COLORS['error_light']}; font-size: 12px;"
         )
         node_warning.setVisible(not self._is_node_available())
         layout.addWidget(node_warning)
@@ -1096,12 +1096,12 @@ class _MCPCatalogueDialog(QDialog):
 
             desc_label = QLabel(entry.description)
             desc_label.setWordWrap(True)
-            desc_label.setStyleSheet("color: #a1a1aa; font-size: 12px;")
+            desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
             text_layout.addWidget(desc_label)
 
             if entry.needs_api_key:
                 key_label = QLabel(f"🔑 Requires {entry.api_key_env_var}")
-                key_label.setStyleSheet("color: #fbbf24; font-size: 11px;")
+                key_label.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
                 text_layout.addWidget(key_label)
 
             card_layout.addLayout(text_layout, 1)

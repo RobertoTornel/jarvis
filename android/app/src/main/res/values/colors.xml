@@ -6,39 +6,55 @@
          The names below are Material 3 *roles*, not decoration.  Every colour here
          is consumed by themes.xml to fill a role in the scheme, and the components
          (cards, chips, switches, the toolbar) read the roles — so changing the
-         accent is one line here and not a hunt through nine layouts. -->
+         accent is one line here and not a hunt through nine layouts.
 
-    <!-- The one accent.  Teal, because it is legible on near-black at a glance and
-         reads as "on" without being an alarm colour. -->
-    <color name="accent">#FF4CC9B0</color>
-    <color name="accent_dim">#FF2A6E63</color>
+         One colour law for both front-ends (web panel and this app): dark grey and
+         light grey carry all structure and text, and a single pink accent marks
+         the assistant and interactive moments.  Pink is never used for a
+         destructive or error state. -->
+
+    <!-- The one accent.  Pink, the only accent hue in the law shared with the web
+         panel: it reads as "Claire"/"on" against the dark greys and is not an
+         alarm colour; accent_dim is the pressed, darker step. -->
+    <color name="accent">#FFE562A4</color>
+    <color name="accent_dim">#FFCF4B92</color>
 
     <!-- Surfaces, darkest to lightest. -->
-    <color name="bg">#FF0E1116</color>
-    <color name="surface">#FF161B22</color>
-    <color name="surface_alt">#FF1F2630</color>
-    <color name="surface_high">#FF28313D</color>
-    <color name="outline">#FF3A444F</color>
+    <color name="bg">#FF131417</color>
+    <color name="surface">#FF1B1D21</color>
+    <color name="surface_alt">#FF24262B</color>
+    <color name="surface_high">#FF2E3138</color>
+    <color name="outline">#FF31343A</color>
+
+    <!-- Translucent scrims.  A scrim is not a surface of its own: bg_scrim is
+         the law's bg carrying the alpha a layout needs over the live camera
+         preview, and scrim is neutral black, the shadow colour the desktop and
+         panel also keep neutral rather than tinting with the accent. -->
+    <color name="bg_scrim">#CC131417</color>
+    <color name="scrim">#99000000</color>
 
     <!-- Text. -->
-    <color name="text">#FFE6EDF3</color>
-    <color name="text_dim">#FF8B949E</color>
-    <color name="on_accent">#FF00382E</color>
+    <color name="text">#FFE8EAED</color>
+    <color name="text_dim">#FFA8ADB5</color>
+    <color name="on_accent">#FF150A12</color>
 
     <!-- State colours.  The same four the status chip, the status dot and the
-         conversation labels use, so "green" means one thing on every screen. -->
-    <color name="ok">#FF4CC9B0</color>
-    <color name="warn">#FFE3B341</color>
-    <color name="error">#FFFF7B72</color>
-    <color name="bad">#FFF85149</color>
-    <color name="idle">#FF8B949E</color>
+         conversation labels use, so "green" means one thing on every screen.
+         These keep their own hues — pink is not a state colour. -->
+    <color name="ok">#FF4CC38A</color>
+    <color name="warn">#FFD9A441</color>
+    <color name="error">#FFEF6A6A</color>
+    <color name="bad">#FFEF6A6A</color>
+    <color name="idle">#FF878D96</color>
 
-    <!-- Who is speaking, in the conversation. -->
-    <color name="you">#FF79C0FF</color>
-    <color name="claire">#FF4CC9B0</color>
+    <!-- Who is speaking, in the conversation: the owner in neutral grey, Claire
+         in the accent pink. -->
+    <color name="you">#FFA8ADB5</color>
+    <color name="claire">#FFE562A4</color>
 
-    <!-- Chat surfaces: an owner bubble, a Claire bubble, and the small print. -->
-    <color name="bubble_you">#FF1B2A3A</color>
-    <color name="bubble_claire">#FF152A26</color>
-    <color name="bubble_meta">#FF1F2630</color>
+    <!-- Chat surfaces: an owner bubble (neutral grey surface), a Claire bubble
+         (dark, subtly pink-tinted surface), and the small print. -->
+    <color name="bubble_you">#FF24262B</color>
+    <color name="bubble_claire">#FF2B2028</color>
+    <color name="bubble_meta">#FF1B1D21</color>
 </resources>

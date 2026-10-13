@@ -289,16 +289,16 @@ class RuntimeStatusDialog(QDialog):
                     layout.addSpacing(8)
                 header = QLabel(section)
                 header.setStyleSheet(
-                    "color: #fbbf24; font-weight: bold; font-size: 13px;"
+                    f"color: {COLORS['text_primary']}; font-weight: bold; font-size: 13px;"
                 )
                 layout.addWidget(header)
                 current_section = section
             row = QHBoxLayout()
             key_label = QLabel(key)
-            key_label.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+            key_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
             value_label = QLabel(value)
             value_label.setStyleSheet(
-                "color: #f4f4f5; font-size: 13px;"
+                f"color: {COLORS['text_primary']}; font-size: 13px;"
                 " font-family: 'SF Mono', 'Menlo', monospace;"
             )
             value_label.setWordWrap(True)
@@ -764,7 +764,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
 
                 # Header
                 header = QLabel("😵 Claire crashed in the previous session")
-                header.setStyleSheet("font-size: 18px; font-weight: bold; color: #f87171;")
+                header.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {COLORS['error_light']};")
                 layout.addWidget(header)
 
                 # Description
@@ -773,26 +773,26 @@ def show_crash_report_dialog(crash_content: str) -> None:
                     "The report will open as a GitHub issue (you can review before submitting)."
                 )
                 desc.setWordWrap(True)
-                desc.setStyleSheet("color: #a1a1aa;")
+                desc.setStyleSheet(f"color: {COLORS['text_secondary']};")
                 layout.addWidget(desc)
 
                 # Crash log preview
                 preview_label = QLabel("📋 Crash details (will be included in report):")
-                preview_label.setStyleSheet("color: #71717a; margin-top: 8px;")
+                preview_label.setStyleSheet(f"color: {COLORS['text_muted']}; margin-top: 8px;")
                 layout.addWidget(preview_label)
 
                 self.log_preview = QTextEdit()
                 self.log_preview.setPlainText(self.crash_info[:3000])  # Limit preview
                 self.log_preview.setReadOnly(True)
-                self.log_preview.setStyleSheet("""
-                    QTextEdit {
-                        background-color: #18181b;
-                        color: #a1a1aa;
+                self.log_preview.setStyleSheet(f"""
+                    QTextEdit {{
+                        background-color: {COLORS['bg_secondary']};
+                        color: {COLORS['text_secondary']};
                         font-family: monospace;
                         font-size: 11px;
-                        border: 1px solid #27272a;
+                        border: 1px solid {COLORS['border']};
                         border-radius: 4px;
-                    }
+                    }}
                 """)
                 self.log_preview.setMaximumHeight(200)
                 layout.addWidget(self.log_preview)
@@ -801,7 +801,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
                 privacy = QLabel(
                     "ℹ️ No personal data is collected. You control what's submitted via GitHub."
                 )
-                privacy.setStyleSheet("color: #71717a; font-size: 11px;")
+                privacy.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 11px;")
                 layout.addWidget(privacy)
 
                 # Buttons
@@ -809,34 +809,34 @@ def show_crash_report_dialog(crash_content: str) -> None:
                 btn_layout.addStretch()
 
                 dismiss_btn = QPushButton("Dismiss")
-                dismiss_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #27272a;
-                        color: #a1a1aa;
+                dismiss_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['bg_tertiary']};
+                        color: {COLORS['text_secondary']};
                         border: none;
                         padding: 8px 16px;
                         border-radius: 4px;
-                    }
-                    QPushButton:hover {
-                        background-color: #3f3f46;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['bg_hover']};
+                    }}
                 """)
                 dismiss_btn.clicked.connect(self.reject)
                 btn_layout.addWidget(dismiss_btn)
 
                 report_btn = QPushButton("📝 Report on GitHub")
-                report_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: white;
+                report_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['accent_primary']};
+                        color: {COLORS['on_accent']};
                         border: none;
                         padding: 8px 16px;
                         border-radius: 4px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #3b82f6;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['accent_muted']};
+                    }}
                 """)
                 report_btn.clicked.connect(self._open_github_issue)
                 btn_layout.addWidget(report_btn)
@@ -951,7 +951,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
 
                 # Header
                 header = QLabel("⚠️ Using Unofficial Model")
-                header.setStyleSheet("font-size: 18px; font-weight: bold; color: #fbbf24;")
+                header.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {COLORS['warning']};")
                 layout.addWidget(header)
 
                 # Description
@@ -963,7 +963,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                     "response formatting, or performance."
                 )
                 desc.setWordWrap(True)
-                desc.setStyleSheet("color: #a1a1aa; line-height: 1.5;")
+                desc.setStyleSheet(f"color: {COLORS['text_secondary']}; line-height: 1.5;")
                 desc.setTextFormat(desc.textFormat().RichText)
                 layout.addWidget(desc)
 
@@ -974,34 +974,34 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                 btn_layout.addStretch()
 
                 continue_btn = QPushButton("Continue Anyway")
-                continue_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #27272a;
-                        color: #a1a1aa;
+                continue_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['bg_tertiary']};
+                        color: {COLORS['text_secondary']};
                         border: none;
                         padding: 10px 20px;
                         border-radius: 4px;
-                    }
-                    QPushButton:hover {
-                        background-color: #3f3f46;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['bg_hover']};
+                    }}
                 """)
                 continue_btn.clicked.connect(self.accept)
                 btn_layout.addWidget(continue_btn)
 
                 wizard_btn = QPushButton("🔧 Open Setup Wizard")
-                wizard_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: white;
+                wizard_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['accent_primary']};
+                        color: {COLORS['on_accent']};
                         border: none;
                         padding: 10px 20px;
                         border-radius: 4px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #3b82f6;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['accent_muted']};
+                    }}
                 """)
                 wizard_btn.clicked.connect(self._open_wizard)
                 btn_layout.addWidget(wizard_btn)
@@ -1228,7 +1228,7 @@ class LogViewerWindow(QMainWindow):
 
         title = QLabel("📝 Claire Logs")
         title.setObjectName("title")
-        title.setStyleSheet("font-size: 20px; font-weight: 600; color: #fbbf24;")
+        title.setStyleSheet(f"font-size: 20px; font-weight: 600; color: {COLORS['text_primary']};")
         title_layout.addWidget(title)
 
         subtitle = QLabel("Activity timeline · downloads stay visible above the log")
@@ -1241,19 +1241,19 @@ class LogViewerWindow(QMainWindow):
         # Clear button
         clear_btn = QPushButton("🗑️ Clear")
         clear_btn.setToolTip("Clear all logs")
-        clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27272a;
-                color: #fafafa;
-                border: 1px solid #3f3f46;
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #3f3f46;
-                border-color: #f59e0b;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_hover']};
+                border-color: {COLORS['accent_primary']};
+            }}
         """)
         clear_btn.clicked.connect(self.clear_logs)
         header_row_layout.addWidget(clear_btn)
@@ -1261,19 +1261,19 @@ class LogViewerWindow(QMainWindow):
         # Report button on the right
         report_btn = QPushButton("🐛 Report Issue")
         report_btn.setToolTip("Report a bug or unexpected behavior on GitHub")
-        report_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27272a;
-                color: #fafafa;
-                border: 1px solid #3f3f46;
+        report_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #3f3f46;
-                border-color: #f59e0b;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_hover']};
+                border-color: {COLORS['accent_primary']};
+            }}
         """)
         report_btn.clicked.connect(self._report_issue)
         header_row_layout.addWidget(report_btn)
@@ -1536,10 +1536,10 @@ class MemoryViewerWindow(QMainWindow):
             fallback_layout.addWidget(icon_label)
 
             title_label = QLabel("Memory Viewer")
-            title_label.setStyleSheet("""
+            title_label.setStyleSheet(f"""
                 font-size: 24px;
                 font-weight: 600;
-                color: #fbbf24;
+                color: {COLORS['text_primary']};
                 background: transparent;
                 margin-top: 16px;
             """)
@@ -1552,9 +1552,9 @@ class MemoryViewerWindow(QMainWindow):
                 fallback_message = "PyQt6-WebEngine not installed.\nOpening in your default browser..."
 
             message_label = QLabel(fallback_message)
-            message_label.setStyleSheet("""
+            message_label.setStyleSheet(f"""
                 font-size: 14px;
-                color: #71717a;
+                color: {COLORS['text_muted']};
                 background: transparent;
                 margin-top: 8px;
             """)
@@ -1748,13 +1748,13 @@ class MemoryViewerWindow(QMainWindow):
             error_html = f"""
             <html>
             <head><style>
-                body {{ background: #18181b; color: #e4e4e7; font-family: system-ui;
+                body {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_primary']}; font-family: system-ui;
                        display: flex; justify-content: center; align-items: center;
                        height: 100vh; margin: 0; }}
                 .error {{ text-align: center; padding: 40px; }}
                 .icon {{ font-size: 64px; margin-bottom: 20px; }}
-                h1 {{ color: #fbbf24; margin-bottom: 16px; }}
-                p {{ color: #71717a; max-width: 400px; line-height: 1.6; }}
+                h1 {{ color: {COLORS['text_primary']}; margin-bottom: 16px; }}
+                p {{ color: {COLORS['text_muted']}; max-width: 400px; line-height: 1.6; }}
             </style></head>
             <body><div class="error">
                 <div class="icon">⚠️</div>
@@ -2557,7 +2557,7 @@ class ClaireSystemTray:
             painter = QPainter(pixmap)
 
             # Draw a circle
-            color = QColor("#4CAF50" if self.is_listening else "#9E9E9E")
+            color = QColor(COLORS['accent_primary'] if self.is_listening else COLORS['text_muted'])
             painter.setBrush(color)
             painter.setPen(color)
             painter.drawEllipse(4, 4, 56, 56)

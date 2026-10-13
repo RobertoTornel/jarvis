@@ -87,7 +87,7 @@ class ChatTitleBar(QWidget):
 
 
 class ClaireOrb(QWidget):
-    """Resolution-independent amber core, with no external image assets."""
+    """Resolution-independent accent core, with no external image assets."""
 
     def __init__(self, size: int, parent=None):
         super().__init__(parent)
@@ -207,7 +207,7 @@ _INPUT_STYLE = f"""
 _SEND_BTN_STYLE = f"""
     QPushButton {{
         background-color: {COLORS['accent_primary']};
-        color: {COLORS['bg_primary']};
+        color: {COLORS['on_accent']};
         border: none;
         border-radius: 18px;
         padding: 0;
@@ -215,11 +215,11 @@ _SEND_BTN_STYLE = f"""
         font-size: 14px;
     }}
     QPushButton:hover {{
-        background-color: {COLORS['accent_secondary']};
+        background-color: {COLORS['accent_muted']};
     }}
     QPushButton:disabled {{
         background-color: {COLORS['accent_muted']};
-        color: {COLORS['text_muted']};
+        color: {COLORS['on_accent']};
     }}
 """
 
@@ -273,14 +273,15 @@ _HEADER_STATUS_STYLE = f"""
     }}
 """
 
-# SMS-style bubbles: the user's messages sit on the right in the accent
-# colour, Claire's replies on the left in a dark bubble. The corner nearest
-# the sender is squared off, like a speech bubble.
+# SMS-style bubbles: Claire speaks in the accent, on the left, and the owner
+# in a neutral grey on the right. Success green is never a speaker colour. The
+# corner nearest the sender is squared off, like a speech bubble.
 _BUBBLE_STYLES = {
     "user": f"""
         QLabel {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS['accent_secondary']}, stop:1 {COLORS['accent_primary']});
-            color: {COLORS['bg_primary']};
+            background-color: {COLORS['bg_tertiary']};
+            color: {COLORS['text_primary']};
+            border: 1px solid {COLORS['border']};
             border-radius: 18px;
             border-bottom-right-radius: 5px;
             padding: 12px 16px;
@@ -289,9 +290,8 @@ _BUBBLE_STYLES = {
     """,
     "assistant": f"""
         QLabel {{
-            background-color: {COLORS['bg_secondary']};
-            color: {COLORS['text_primary']};
-            border: 1px solid {COLORS['border']};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS['accent_secondary']}, stop:1 {COLORS['accent_primary']});
+            color: {COLORS['on_accent']};
             border-radius: 18px;
             border-bottom-left-radius: 5px;
             padding: 12px 16px;

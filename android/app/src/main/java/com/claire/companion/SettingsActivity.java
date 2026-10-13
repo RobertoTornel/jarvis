@@ -531,7 +531,8 @@ public class SettingsActivity extends AppCompatActivity {
             // do.  The label stays as built ("Grant", "Open app settings", "Battery
             // settings") because it names the destination, which is more useful than a
             // generic verb.
-            hint.setTextColor(ok ? 0xFF4CC9B0 : 0xFFE3B341);
+            hint.setTextColor(ok ? hint.getContext().getColor(R.color.ok)
+                    : hint.getContext().getColor(R.color.warn));
         }
     }
 }

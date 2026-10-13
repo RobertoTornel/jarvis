@@ -614,10 +614,10 @@ notification are all rendered from the same snapshot.
 Two smaller decisions worth keeping:
 
 * The conversation is bubbles, and the **shape carries the meaning**: the owner's
-  words right-aligned in blue-green, Claire's left-aligned in teal, and the
-  phone's own actions and failures full-width and dim. A photo being sent is not
-  something either person said, and drawing it as a speech bubble would be a small
-  lie about who is talking.
+  words right-aligned in neutral grey, Claire's left-aligned in the pink accent,
+  and the phone's own actions and failures full-width and dim. A photo being sent
+  is not something either person said, and drawing it as a speech bubble would be
+  a small lie about who is talking.
 * The two MIUI exemptions and every permission are **rows with a button**, not
   switches. The app cannot grant itself `ACCESS_BACKGROUND_LOCATION` on Android
   11+, and a switch that silently does nothing is worse than a sentence that says
