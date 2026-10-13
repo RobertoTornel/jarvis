@@ -74,6 +74,15 @@ DEFAULT_ACK_PHRASES = [
     "Let me look.",
 ]
 
+# Spoken at 8, 18 and 30 seconds into a turn that has not answered yet, so a
+# long wait is not silence. Kept distinct from DEFAULT_ACK_PHRASES so the
+# opening phrase is never repeated as a continuation.
+DEFAULT_ACK_CONTINUATION_PHRASES = [
+    "Still on it.",
+    "Nearly there.",
+    "Just a moment more.",
+]
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -268,6 +277,12 @@ class Settings:
     # staying silent until the full reply is ready (see listening.spec.md).
     ack_enabled: bool
     ack_phrases: list[str]
+    # Play the acknowledgements from clips already on disk instead of
+    # synthesising them, and continue a long wait with further short clips
+    # (see listening.spec.md). Needs ack_enabled; turning it off falls back to
+    # live synthesis for the acknowledgement and drops the continuations.
+    ack_clips_enabled: bool
+    ack_continuation_phrases: list[str]
     hot_window_enabled: bool
     hot_window_seconds: float
     # How many consecutive wake-word-free follow-ups a single wake word unlocks
@@ -801,6 +816,8 @@ def get_default_config() -> Dict[str, Any]:
         "tune_enabled": True,
         "ack_enabled": True,
         "ack_phrases": DEFAULT_ACK_PHRASES,
+        "ack_clips_enabled": True,
+        "ack_continuation_phrases": DEFAULT_ACK_CONTINUATION_PHRASES,
         "hot_window_enabled": True,
         "hot_window_seconds": 3.0,
         "hot_window_max_follow_ups": 3,
@@ -1190,6 +1207,11 @@ def load_settings() -> Settings:
     ack_enabled = bool(merged.get("ack_enabled", True))
     ack_phrases = [p.strip() for p in (merged.get("ack_phrases") or [])
                    if isinstance(p, str) and p.strip()] or list(DEFAULT_ACK_PHRASES)
+    ack_clips_enabled = bool(merged.get("ack_clips_enabled", True))
+    ack_continuation_phrases = [
+        p.strip() for p in (merged.get("ack_continuation_phrases") or [])
+        if isinstance(p, str) and p.strip()
+    ] or list(DEFAULT_ACK_CONTINUATION_PHRASES)
     hot_window_enabled = bool(merged.get("hot_window_enabled", True))
     # The settings UI declares the same [1.0, 30.0] range for this key, so a
     # hand-edited config cannot arm a window too short to answer or so long it
@@ -1460,6 +1482,8 @@ def load_settings() -> Settings:
         tune_enabled=tune_enabled,
         ack_enabled=ack_enabled,
         ack_phrases=ack_phrases,
+        ack_clips_enabled=ack_clips_enabled,
+        ack_continuation_phrases=ack_continuation_phrases,
         hot_window_enabled=hot_window_enabled,
         hot_window_seconds=hot_window_seconds,
         hot_window_max_follow_ups=hot_window_max_follow_ups,

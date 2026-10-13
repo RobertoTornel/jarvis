@@ -793,6 +793,34 @@ class PiperTTS:
             self._initialized = True
             return self._voice is not None
 
+    def synthesise_pcm(self, text: str) -> "tuple[Any, int]":
+        """Render ``text`` to int16 mono PCM without playing it.
+
+        Filling the pre-recorded clip cache needs the audio but must not open
+        the output device, so this runs the same synthesis ``_speak_once`` does
+        and returns the samples instead of streaming them.
+        """
+        import numpy as np
+
+        if not self._ensure_initialized() or self._voice is None:
+            raise RuntimeError(self._init_error or "Piper voice is not available")
+
+        from piper.config import SynthesisConfig
+        syn_config = SynthesisConfig(
+            speaker_id=self.speaker,
+            length_scale=self.length_scale,
+            noise_scale=self.noise_scale,
+            noise_w_scale=self.noise_w,
+        )
+        chunks = []
+        for chunk in self._voice.synthesize(text, syn_config):
+            audio = getattr(chunk, "audio_int16_array", None)
+            if audio is not None and len(audio):
+                chunks.append(np.asarray(audio, dtype=np.int16))
+        if not chunks:
+            raise RuntimeError("Piper produced no audio")
+        return np.concatenate(chunks).astype(np.int16, copy=False), int(self._sample_rate)
+
     def start(self) -> None:
         if not self.enabled or self._thread is not None:
             return

@@ -99,6 +99,7 @@ dedicated page:
 - `low_power_mode`
 - `tune_enabled`
 - `ack_enabled`
+- `ack_clips_enabled`
 - `dictation_enabled`
 - `dictation_hotkey`
 - `dictation_filler_removal`

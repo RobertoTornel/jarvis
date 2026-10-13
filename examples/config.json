@@ -92,6 +92,12 @@
     "Right away.",
     "Let me look."
   ],
+  "ack_clips_enabled": true,
+  "ack_continuation_phrases": [
+    "Still on it.",
+    "Nearly there.",
+    "Just a moment more."
+  ],
   "hot_window_enabled": true,
   "hot_window_seconds": 3.0,
   "hot_window_max_follow_ups": 3,

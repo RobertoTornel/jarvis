@@ -68,3 +68,22 @@ of the item it is currently speaking, and only if that item was not
 interrupted. A plain `str` left in the queue (the stop sentinel, or a producer
 that predates the type) is coerced to a callback-less `_SpeechItem`, so
 `""` still terminates the worker as before.
+
+## Pre-recorded clips
+
+`output/clip_cache.py` renders a short phrase once and keeps it as a mono
+16-bit WAV under `~/.cache/claire/clips` (honouring `XDG_CACHE_HOME` and
+`CLAIRE_CLIP_CACHE_DIR`), so the acknowledgement and the continuations of a
+long turn are heard without synthesis or a network round trip. A clip's file
+name is a digest of the phrase and of a voice fingerprint covering the engine,
+the voice id, the model and, for Piper, the model path and length scale.
+Changing any of them renders new clips rather than serving the old ones.
+
+Rendering reuses the configured engine: `FishClient.synthesise` for Fish, with
+Piper as the offline fallback and only when its voice model is already on
+disk. `PiperTTS.synthesise_pcm(text)` returns int16 mono PCM and opens no
+output device, which is the entry point the cache uses. A failed render leaves
+no file, is logged under the `clips` category, and makes the caller fall back
+to live speech rather than silence. `ClipLibrary.get` reads memory and disk
+only, so a turn never waits on rendering; the background prewarm thread fills
+the cache.

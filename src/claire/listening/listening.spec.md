@@ -451,6 +451,23 @@ and before `run_reply_engine` — and the reply is queued behind it.
   requests do not all open with the same words. Defaults live in
   `config.DEFAULT_ACK_PHRASES` ("On it.", "Okay.", "Right away.", "Let me look.").
 - **Opt-out.** `ack_enabled: false` restores the silent behaviour exactly.
+- **Pre-recorded clips.** With `ack_clips_enabled` (default true) the chosen
+  phrase is played from the clip cache in `output/clip_cache.py` when a clip
+  for it is already on disk, which removes synthesis and the first network
+  round trip from the moment the person stops speaking. A missing clip, an
+  output device that will not open, and a clip layer that could not be built
+  all fall back to `tts.speak(phrase)`, so the acknowledgement is never
+  dropped. `ClipLibrary.get` reads memory and disk only; rendering happens on
+  a background thread started by `prewarm_ack_clips()` at startup, or on
+  demand for a phrase that turned out to be missing.
+- **Long waits are covered.** `ack_continuation_phrases` (default
+  `config.DEFAULT_ACK_CONTINUATION_PHRASES`) are played as clips at 8, 18 and
+  30 seconds into a turn that has not answered. Phrases are picked
+  least-recently-used and never repeat one spoken earlier in the same turn.
+  Nothing is spoken after 30 seconds: the thinking tune carries the rest. The
+  schedule is cancelled the instant the turn ends, and the output device is
+  released before the reply is spoken, so a continuation never plays over the
+  answer.
 - **Skipped, never queued, while she is already speaking.** That means the
   person talked over a reply; an acknowledgement arriving after the thing it
   acknowledges is worse than silence. The reply path is unaffected, so a

@@ -884,6 +884,8 @@ digest, tool digest and others) that need a live model. They are excluded from
 the default run; `scripts/run_evals.sh` drives them and can generate `EVALS.md`.
 `scripts/measure_voice_latency.py` measures voice latency, and
 `scripts/check_stt_model.py` verifies the configured recogniser model.
+`scripts/measure_ack_latency.py` measures time to first audible sound for the
+acknowledgement, clip against live synthesis, on the real output device.
 
 ### Project layout
 
