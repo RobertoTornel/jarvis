@@ -133,7 +133,7 @@ Two capabilities deserve a note even though they are `READY`:
 | `wake_word` | acoustic wake behaviour — unmeasurable here (see above) |
 | `tts_synthesis` | live synthesis — unmeasurable here (see above) |
 | `llm_endpoint` | the configured LLM endpoint answers |
-| `memory_router` | the always-loaded router file is in its 6000-byte budget and re-read per request |
+| `memory_router` | the always-loaded router is in its 6000-byte budget and re-read per request |
 | `system_prompt` | the assembled prompt carries the memory section, with no problem marker |
 | `calendar` | a deliberate clash is detected and ranked alternatives are proposed |
 | `timers` | a timer starts, lists and fires exactly once |
@@ -152,7 +152,10 @@ Two capabilities deserve a note even though they are `READY`:
 table wraps and prints every word of each `detail` and `fix`; this is a
 condensed transcription of that run, one row per capability, with the same
 text. (Recorded with `COLUMNS=118`, so this is the rendering of a terminal
-that wide.)
+that wide.) The run has the `vault` memory backend selected, so its `vault` and
+`memory_router` rows record that backend's output; a default install reads the
+router from the Postgres store, and its `memory_router` row names the store
+rather than a vault path.
 
 ```
 config              READY       configuration loaded from /home/mana/.config/claire/config.json

@@ -54,6 +54,8 @@ __all__ = [
     "Timer",
     "TimerManager",
     "parse_duration",
+    "default_manager",
+    "set_default_manager",
 ]
 
 
@@ -266,6 +268,31 @@ class Timer:
             )
         return format_spoken(self.remaining_seconds(_validate_now(now)))
 
+    def format_finished(self) -> str:
+        """The one sentence to say when this timer reaches zero.
+
+        An auto-generated label is dropped, because the label already *is* the
+        fact being announced: saying "timer 1 — your 10 minute timer is up"
+        tells the owner it is a timer twice in one breath and sounds like a
+        machine reading a row out of a table. A label the owner chose is kept,
+        because that is the word they will recognise: "pasta — your 10 minute
+        timer is up" says which timer fired *and* how long it was for.
+
+        The em dash is deliberate. It separates the owner's label from the
+        announcement without sounding like a comma (which would read as a list)
+        or a colon (which would read as a heading), and it is the same marker
+        used everywhere else Claire attributes a sentence to a name.
+
+        The span goes through :func:`_attributive` on the way in, so a 25 minute
+        timer is announced as "Your 25 minute timer is up" and not as "25
+        minutes timer", which is the one thing about this sentence that would
+        sound like a machine.
+        """
+        span = _attributive(_humanise(self.seconds))
+        if self.label == f"timer {self.number}":
+            return f"Your {span} timer is up"
+        return f"{self.label} — your {span} timer is up"
+
 
 def _humanise(seconds: float) -> str:
     total = int(round(max(0.0, seconds)))
@@ -289,6 +316,20 @@ def _humanise(seconds: float) -> str:
 def format_spoken(remaining_seconds: float) -> str:
     """Turn a remaining span into something worth saying aloud."""
     return f"{_humanise(remaining_seconds)} left"
+
+
+def _attributive(span: str) -> str:
+    """Make a spoken span fit in front of a noun.
+
+    English drops the plural on a unit that qualifies a noun: a person says "a
+    25 minute timer", never "a 25 minutes timer".  Every unit ``_humanise`` can
+    emit is singularised, so "1 hour 30 minutes" becomes "1 hour 30 minute",
+    which is what the ear expects on the way into "... timer is up".
+    """
+    return " ".join(
+        word[:-1] if word in ("hours", "minutes", "seconds") else word
+        for word in span.split()
+    )
 
 
 # --------------------------------------------------------------------------
@@ -491,3 +532,48 @@ class TimerManager:
     def active_count(self) -> int:
         with self._lock:
             return len(self._timers)
+
+
+# --------------------------------------------------------------------------
+# The process-wide shared manager
+# --------------------------------------------------------------------------
+
+#: The one manager the process shares. The ``timer`` tool starts and cancels
+#: timers here; the announcer loop polls the same object for due ones. Two
+#: independent managers would look like a working feature while behaving like a
+#: broken one: the owner sets a timer that the loop never sees, and it never
+#: fires.
+_default_manager: Optional[TimerManager] = None
+_default_manager_lock = threading.Lock()
+
+
+def default_manager() -> TimerManager:
+    """The process-wide :class:`TimerManager`, created on first use.
+
+    The daemon's timer tool and the timer announcer must both call this so they
+    share one set of timers; a manager built per call site would leave the tool
+    writing to a set the loop never polls.
+
+    Tests must call :func:`set_default_manager` (with ``None`` to forget it) in
+    setup and teardown, or a timer left behind by one test leaks into the next
+    and the two stop being independent.
+    """
+    global _default_manager
+    with _default_manager_lock:
+        if _default_manager is None:
+            _default_manager = TimerManager()
+        return _default_manager
+
+
+def set_default_manager(manager: Optional[TimerManager]) -> None:
+    """Replace the process-wide manager (``None`` forgets it).
+
+    The daemon uses this to install the manager it wired into the tool and the
+    announcer; tests use it to inject a manager on a fake clock and to restore
+    the shared default afterwards. Passing ``None`` does not create anything —
+    the next :func:`default_manager` call makes a fresh empty one, which is the
+    "start from a clean slate" the tests need.
+    """
+    global _default_manager
+    with _default_manager_lock:
+        _default_manager = manager

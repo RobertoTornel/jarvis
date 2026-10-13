@@ -157,12 +157,12 @@ viewer, which is what it is for.
 A `QMainWindow` styled as a futuristic phone with a single contact:
 
 - A translucent, frameless window with a rounded graphite chassis, inset
-  display and amber accents from the shared theme. Its initial portrait size
+  display and pink accent from the shared colour law. Its initial portrait size
   is capped by the available screen, with a 380 × 560 minimum usable size.
 - A draggable top bar with accessible minimise and close controls. Double-click
   toggles maximise/restore; a bottom-right resize grip resizes the window.
   The platform close shortcut also hides the chat without ending the conversation.
-- A vector amber core emblem, compact chat capsule and home indicator complete
+- A vector accent core emblem, compact chat capsule and home indicator complete
   the phone shell. No remote assets, network requests or decorative animations
   are required.
 - An empty conversation shows an introductory panel, never a fabricated message.
@@ -170,11 +170,12 @@ A `QMainWindow` styled as a futuristic phone with a single contact:
 
 - A contact header (avatar, "Claire", and a presence line such as "Online" or
   "Typing…" while a query is in flight).
-- A read-only transcript area: a scrollable stack of speech bubbles (theme
-  colours from `themes.py`). The user's messages are right-aligned accent
-  bubbles, Claire's replies are left-aligned dark bubbles, and local notices
-  are small centred lines. Each bubble carries a small muted timestamp. Sent
-  messages additionally carry a subtle `⟲` rewind button (see **Rewind**
+- A read-only transcript area: a scrollable stack of speech bubbles (the law's
+  roles from `themes.py`). Claire's messages are left-aligned accent bubbles
+  and the owner's are right-aligned neutral-grey bubbles, so the assistant is
+  pink and the owner is grey; local notices are small centred lines. Success
+  green is never a speaker colour. Each bubble carries a small muted timestamp.
+  Sent messages additionally carry a subtle `⟲` rewind button (see **Rewind**
   below) to the left of the bubble. Whenever any user, assistant, or local
   notice message is added, the transcript scrolls to the bottom after layout
   so the latest message stays visible. The transcript mirrors the single

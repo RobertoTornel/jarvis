@@ -42,10 +42,12 @@ default):
 from __future__ import annotations
 
 import base64
+import ctypes
 import errno
 import fcntl
 import glob
 import io
+import mmap
 import os
 import re
 import select
@@ -467,6 +469,44 @@ class CameraAvailability:
         )
 
 
+def _decodable_formats_for(
+    device_path: Union[str, os.PathLike[str]],
+) -> Tuple[str, ...]:
+    """Pixel formats this node exposes that Claire can decode, probed live.
+
+    Runs ``VIDIOC_ENUM_FMT`` on the node itself: a metadata or secondary node
+    (``/dev/video1`` of the same camera) answers ``EINVAL`` at index 0 and
+    yields ``()`` — it exists but can never produce a frame, so it must not be
+    offered as a camera. Never raises: a device that cannot be opened or
+    enumerated simply reports ``()``.
+    """
+    path = str(device_path)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    except OSError:
+        return ()
+    formats: List[str] = []
+    try:
+        for index in range(_MAX_PIXEL_FORMATS):
+            descriptor = bytearray(_V4L2_FMT_DESC_SIZE)
+            struct.pack_into("<II", descriptor, 0, index, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
+            try:
+                fcntl.ioctl(fd, _VIDIOC_ENUM_FMT, descriptor, True)
+            except OSError:
+                # EINVAL at index 0 means "no capture formats at all"; errno
+                # later on just ends the list. Either way: stop probing.
+                break
+            pixel_format = struct.unpack_from(
+                "<I", descriptor, _FMTDESC_PIXELFORMAT_OFFSET
+            )[0]
+            name = _V4L2_PIX_FMT_NAMES.get(pixel_format)
+            if name is not None and name not in formats:
+                formats.append(name)
+    finally:
+        os.close(fd)
+    return tuple(formats)
+
+
 def describe_availability(
     dev_root: Union[str, os.PathLike[str]] = DEV_ROOT,
     *,
@@ -478,19 +518,47 @@ def describe_availability(
     A missing camera is a capability verdict, never an exception and never a
     crash — that is the whole point of separating this from
     :func:`capture_frame`.
+
+    "Exists" means more than a ``/dev/video*`` entry: the node must expose at
+    least one pixel format Claire can decode. A secondary/metadata node of the
+    same camera is scanned but not offered, because capturing from it would
+    fail every time.
     """
     devices = detect_cameras(
         dev_root, sysfs_root=sysfs_root, read_metadata=read_metadata
     )
     scanned = (os.path.join(str(dev_root), VIDEO_DEVICE_PATTERN),)
-    if devices:
-        count = len(devices)
+    capture_ready = tuple(
+        device for device in devices if _decodable_formats_for(device.path)
+    )
+    if capture_ready:
+        count = len(capture_ready)
         plural = "cameras" if count != 1 else "camera"
+        skipped = len(devices) - count
+        reason = f"{count} {plural} detected and ready to capture from."
+        if skipped:
+            reason += (
+                f" {skipped} other video device(s) expose no decodable pixel "
+                "format (metadata/secondary nodes) and are not counted."
+            )
         return CameraAvailability(
             available=True,
-            devices=tuple(devices),
+            devices=capture_ready,
             scanned=scanned,
-            reason=f"{count} {plural} detected and ready to capture from.",
+            reason=reason,
+        )
+    if devices:
+        names = ", ".join(device.path for device in devices)
+        return CameraAvailability(
+            available=False,
+            devices=(),
+            scanned=scanned,
+            reason=(
+                f"{len(devices)} video device(s) exist ({names}), but none "
+                "exposes a pixel format Claire can decode, so none can capture. "
+                "That is a missing capability, not a fault."
+            ),
+            actions=tuple(NO_CAMERA_FIXES),
         )
     return CameraAvailability(
         available=False,
@@ -534,15 +602,264 @@ def diagnose(
 #: :func:`describe_image`, which is network-bound and may take seconds.
 camera_lock = threading.RLock()
 
-#: V4L2 ioctls (single-planar capture, read() I/O).
+# --------------------------------------------------------------------------- #
+# V4L2 ABI, derived rather than assumed.
+#
+# ``struct v4l2_format`` is ``type`` followed by a union that contains
+# ``v4l2_window`` (two pointers), so on 64-bit Linux that union is 8-byte
+# aligned: ``fmt`` starts at offset 8, not 4, and the struct is 208 bytes
+# overall. Packing ``pix`` at +4 is what produced "driver switched to
+# unknown format 0x000001e0" — the driver's height read back as a pixel
+# format. The ctypes mirrors below match the kernel's layouts field for
+# field, so every offset and ioctl number comes from the same source of
+# truth the driver uses.
+# --------------------------------------------------------------------------- #
+
+
+class _V4L2Rect(ctypes.Structure):
+    """``struct v4l2_rect``."""
+
+    _fields_ = [
+        ("left", ctypes.c_int32),
+        ("top", ctypes.c_int32),
+        ("width", ctypes.c_uint32),
+        ("height", ctypes.c_uint32),
+    ]
+
+
+class _V4L2Clip(ctypes.Structure):
+    """``struct v4l2_clip`` (a rect plus a next pointer; fields set below)."""
+
+
+class _V4L2Window(ctypes.Structure):
+    """``struct v4l2_window`` — its two pointers set the union's alignment."""
+
+    _fields_ = [
+        ("w", _V4L2Rect),
+        ("field", ctypes.c_uint32),
+        ("chromakey", ctypes.c_uint32),
+        ("clips", ctypes.POINTER(_V4L2Clip)),
+        ("clipcount", ctypes.c_uint32),
+        ("bitmap", ctypes.c_void_p),
+        ("global_alpha", ctypes.c_uint8),
+    ]
+
+
+_V4L2Clip._fields_ = [("c", _V4L2Rect), ("next", ctypes.POINTER(_V4L2Clip))]
+
+
+class _V4L2PixFormat(ctypes.Structure):
+    """``struct v4l2_pix_format`` (48 bytes: twelve ``__u32`` fields)."""
+
+    _fields_ = [
+        ("width", ctypes.c_uint32),
+        ("height", ctypes.c_uint32),
+        ("pixelformat", ctypes.c_uint32),
+        ("field", ctypes.c_uint32),
+        ("bytesperline", ctypes.c_uint32),
+        ("sizeimage", ctypes.c_uint32),
+        ("colorspace", ctypes.c_uint32),
+        ("priv", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("ycbcr_enc", ctypes.c_uint32),
+        ("quantization", ctypes.c_uint32),
+        ("xfer_func", ctypes.c_uint32),
+    ]
+
+
+class _V4L2FormatUnion(ctypes.Union):
+    """The ``fmt`` union: pixel format, overlay window, or 200 raw bytes."""
+
+    _fields_ = [
+        ("pix", _V4L2PixFormat),
+        ("win", _V4L2Window),
+        ("raw_data", ctypes.c_ubyte * 200),
+    ]
+
+
+class _V4L2Format(ctypes.Structure):
+    """``struct v4l2_format``: ``type`` at 0, ``fmt`` at 8, 208 bytes total."""
+
+    _fields_ = [("type", ctypes.c_uint32), ("fmt", _V4L2FormatUnion)]
+
+
+class _V4L2Timeval(ctypes.Structure):
+    """``struct timeval`` as embedded in ``struct v4l2_buffer``."""
+
+    _fields_ = [("tv_sec", ctypes.c_long), ("tv_usec", ctypes.c_long)]
+
+
+class _V4L2Timecode(ctypes.Structure):
+    """``struct v4l2_timecode``."""
+
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("frames", ctypes.c_uint8),
+        ("seconds", ctypes.c_uint8),
+        ("minutes", ctypes.c_uint8),
+        ("hours", ctypes.c_uint8),
+        ("userbits", ctypes.c_uint8 * 4),
+    ]
+
+
+class _V4L2BufferMemory(ctypes.Union):
+    """The ``m`` union of ``struct v4l2_buffer`` (offset / userptr / planes / fd)."""
+
+    _fields_ = [
+        ("offset", ctypes.c_uint32),
+        ("userptr", ctypes.c_ulong),
+        ("planes", ctypes.c_void_p),
+        ("fd", ctypes.c_int32),
+    ]
+
+
+class _V4L2BufferRequest(ctypes.Union):
+    """The trailing union of ``struct v4l2_buffer`` (request_fd / reserved)."""
+
+    _fields_ = [("request_fd", ctypes.c_int32), ("reserved", ctypes.c_uint32)]
+
+
+class _V4L2Buffer(ctypes.Structure):
+    """``struct v4l2_buffer`` (88 bytes on 64-bit Linux)."""
+
+    _fields_ = [
+        ("index", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("bytesused", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("field", ctypes.c_uint32),
+        ("timestamp", _V4L2Timeval),
+        ("timecode", _V4L2Timecode),
+        ("sequence", ctypes.c_uint32),
+        ("memory", ctypes.c_uint32),
+        ("m", _V4L2BufferMemory),
+        ("length", ctypes.c_uint32),
+        ("reserved2", ctypes.c_uint32),
+        ("request", _V4L2BufferRequest),
+    ]
+
+
+class _V4L2RequestBuffers(ctypes.Structure):
+    """``struct v4l2_requestbuffers`` (20 bytes)."""
+
+    _fields_ = [
+        ("count", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("memory", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint32),
+        ("flags", ctypes.c_uint8),
+        ("reserved", ctypes.c_uint8 * 3),
+    ]
+
+
+class _V4L2Capability(ctypes.Structure):
+    """``struct v4l2_capability`` (104 bytes)."""
+
+    _fields_ = [
+        ("driver", ctypes.c_char * 16),
+        ("card", ctypes.c_char * 32),
+        ("bus_info", ctypes.c_char * 32),
+        ("version", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint32),
+        ("device_caps", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32 * 3),
+    ]
+
+
+class _V4L2FmtDesc(ctypes.Structure):
+    """``struct v4l2_fmtdesc`` (64 bytes; pixelformat at 44)."""
+
+    _fields_ = [
+        ("index", ctypes.c_uint32),
+        ("type", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32),
+        ("description", ctypes.c_char * 32),
+        ("pixelformat", ctypes.c_uint32),
+        ("mbus_code", ctypes.c_uint32),
+        ("reserved", ctypes.c_uint32 * 3),
+    ]
+
+
+#: Single-planar capture buffer type and the one memory model this module uses.
 _V4L2_BUF_TYPE_VIDEO_CAPTURE = 1
-_VIDIOC_S_FMT = 0xC0D05605  # _IOWR('V', 5, struct v4l2_format), sizeof == 208
-_V4L2_FORMAT_BUFFER_SIZE = 208
+_V4L2_MEMORY_MMAP = 1
+
+#: Capability bits this module branches on. A device advertising READWRITE can
+#: be read() from; one advertising STREAMING must be driven with mmap. A
+#: metadata node advertises neither and can never capture a picture.
+_V4L2_CAP_READWRITE = 0x01000000
+_V4L2_CAP_STREAMING = 0x04000000
+_V4L2_CAP_DEVICE_CAPS = 0x80000000
+
+
+def _ioc(direction: int, nr: int, size: int) -> int:
+    """Linux ``_IOC(dir, 'V', nr, size)`` exactly as ``ioctl.h`` builds it."""
+    return (direction << 30) | (size << 16) | (ord("V") << 8) | nr
+
+
+def _offsetof(struct_cls: type, field_name: str) -> int:
+    """Byte offset of a named field in a ctypes Structure or Union.
+
+    ``ctypes.offsetof`` does not exist on every Python build, so read the
+    offset off the member descriptor itself — same ABI answer either way.
+    """
+    return int(getattr(struct_cls, field_name).offset)
+
+
+_IOC_WRITE = 1
+_IOC_READ = 2
+
+#: Derived ABI constants — computed from the mirrors above, never hand-typed.
+_V4L2_FORMAT_BUFFER_SIZE = ctypes.sizeof(_V4L2Format)  # 208
+_V4L2_PIX_OFFSET = _offsetof(_V4L2Format, "fmt")  # 8
+_VIDIOC_G_FMT = _ioc(_IOC_READ | _IOC_WRITE, 4, _V4L2_FORMAT_BUFFER_SIZE)
+_VIDIOC_S_FMT = _ioc(_IOC_READ | _IOC_WRITE, 5, _V4L2_FORMAT_BUFFER_SIZE)
+_VIDIOC_QUERYCAP = _ioc(_IOC_READ, 0, ctypes.sizeof(_V4L2Capability))
+_VIDIOC_ENUM_FMT = _ioc(_IOC_READ | _IOC_WRITE, 2, ctypes.sizeof(_V4L2FmtDesc))
+_VIDIOC_REQBUFS = _ioc(_IOC_READ | _IOC_WRITE, 8, ctypes.sizeof(_V4L2RequestBuffers))
+_VIDIOC_QUERYBUF = _ioc(_IOC_READ | _IOC_WRITE, 9, ctypes.sizeof(_V4L2Buffer))
+_VIDIOC_QBUF = _ioc(_IOC_READ | _IOC_WRITE, 15, ctypes.sizeof(_V4L2Buffer))
+_VIDIOC_DQBUF = _ioc(_IOC_READ | _IOC_WRITE, 17, ctypes.sizeof(_V4L2Buffer))
+_VIDIOC_STREAMON = _ioc(_IOC_WRITE, 18, ctypes.sizeof(ctypes.c_int))
+_VIDIOC_STREAMOFF = _ioc(_IOC_WRITE, 19, ctypes.sizeof(ctypes.c_int))
+
+#: Buffer sizes and field offsets, all from the same ctypes mirrors.
+_V4L2_BUFFER_SIZE = ctypes.sizeof(_V4L2Buffer)  # 88
+_V4L2_REQUESTBUFFERS_SIZE = ctypes.sizeof(_V4L2RequestBuffers)  # 20
+_V4L2_CAPABILITY_SIZE = ctypes.sizeof(_V4L2Capability)  # 104
+_V4L2_FMT_DESC_SIZE = ctypes.sizeof(_V4L2FmtDesc)  # 64
+_BUF_INDEX_OFFSET = _offsetof(_V4L2Buffer, "index")
+_BUF_TYPE_OFFSET = _offsetof(_V4L2Buffer, "type")
+_BUF_BYTESUSED_OFFSET = _offsetof(_V4L2Buffer, "bytesused")
+_BUF_MEMORY_OFFSET = _offsetof(_V4L2Buffer, "memory")
+_BUF_M_OFFSET = _offsetof(_V4L2Buffer, "m")
+_BUF_LENGTH_OFFSET = _offsetof(_V4L2Buffer, "length")
+_CAP_CAPABILITIES_OFFSET = _offsetof(_V4L2Capability, "capabilities")
+_CAP_DEVICE_CAPS_OFFSET = _offsetof(_V4L2Capability, "device_caps")
+_FMTDESC_PIXELFORMAT_OFFSET = _offsetof(_V4L2FmtDesc, "pixelformat")
+
+#: Absolute offsets of the ``fmt.pix`` fields inside a ``v4l2_format`` buffer.
+_PIX_WIDTH_OFFSET = _V4L2_PIX_OFFSET + _offsetof(_V4L2PixFormat, "width")
+_PIX_HEIGHT_OFFSET = _V4L2_PIX_OFFSET + _offsetof(_V4L2PixFormat, "height")
+_PIX_PIXELFORMAT_OFFSET = _V4L2_PIX_OFFSET + _offsetof(
+    _V4L2PixFormat, "pixelformat"
+)
+_PIX_FIELD_OFFSET = _V4L2_PIX_OFFSET + _offsetof(_V4L2PixFormat, "field")
+_PIX_BYTESPERLINE_OFFSET = _V4L2_PIX_OFFSET + _offsetof(
+    _V4L2PixFormat, "bytesperline"
+)
+_PIX_SIZEIMAGE_OFFSET = _V4L2_PIX_OFFSET + _offsetof(_V4L2PixFormat, "sizeimage")
+
 _V4L2_PIX_FMT_MJPEG = struct.unpack("<I", b"MJPG")[0]
 _V4L2_PIX_FMT_YUYV = struct.unpack("<I", b"YUYV")[0]
 _V4L2_PIX_FMT_NAMES = {_V4L2_PIX_FMT_MJPEG: "MJPG", _V4L2_PIX_FMT_YUYV: "YUYV"}
 _MAX_FRAME_BYTES = 16 * 1024 * 1024
 _READ_CHUNK = 256 * 1024
+#: Safety caps: how many formats an ENUM_FMT walk may return, and how many
+#: buffers the streaming path asks the driver for.
+_MAX_PIXEL_FORMATS = 32
+_MMAP_BUFFER_COUNT = 4
 
 
 @dataclass(frozen=True)
@@ -576,15 +893,28 @@ def _negotiate_format(
     for pixel_format in (_V4L2_PIX_FMT_MJPEG, _V4L2_PIX_FMT_YUYV):
         buffer = bytearray(_V4L2_FORMAT_BUFFER_SIZE)
         struct.pack_into("<I", buffer, 0, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
-        # width, height, pixelformat, field (0 == V4L2_FIELD_ANY)
-        struct.pack_into("<IIII", buffer, 4, width, height, pixel_format, 0)
+        # fmt.pix lives at _V4L2_PIX_OFFSET (8 on 64-bit), not 4: the union
+        # holds pointers. width, height, pixelformat, field (0 == FIELD_ANY).
+        struct.pack_into(
+            "<IIII",
+            buffer,
+            _V4L2_PIX_OFFSET,
+            width,
+            height,
+            pixel_format,
+            0,
+        )
         try:
             fcntl.ioctl(fd, _VIDIOC_S_FMT, buffer, True)
         except OSError as exc:
             failures.append(f"{_V4L2_PIX_FMT_NAMES[pixel_format]}: {exc}")
             continue
-        out_width, out_height, out_format, _ = struct.unpack_from("<IIII", buffer, 4)
-        _bytesperline, sizeimage = struct.unpack_from("<II", buffer, 16)
+        out_width, out_height, out_format, _ = struct.unpack_from(
+            "<IIII", buffer, _V4L2_PIX_OFFSET
+        )
+        _bytesperline, sizeimage = struct.unpack_from(
+            "<II", buffer, _PIX_BYTESPERLINE_OFFSET
+        )
         if out_width <= 0 or out_height <= 0:
             failures.append(
                 f"{_V4L2_PIX_FMT_NAMES[pixel_format]}: driver reported "
@@ -630,26 +960,11 @@ def _extract_frame(
     return None
 
 
-def _capture_v4l2_read(
-    device_path: Union[str, os.PathLike[str]],
-    *,
-    width: int = 640,
-    height: int = 480,
-    warmup_frames: int = 2,
-    timeout_sec: float = 5.0,
-) -> CapturedFrame:
-    """Read one frame over V4L2 read() I/O.
-
-    Read I/O rather than mmap/streaming keeps the ioctl surface to a single
-    ``VIDIOC_S_FMT`` and one blocking-read loop; MJPEG frames are
-    self-delimiting and YUYV frames are a fixed size, so no buffer queue is
-    needed. The caller holds :data:`camera_lock` while this runs.
-    """
+def _open_device(device_path: Union[str, os.PathLike[str]]) -> int:
+    """Open a V4L2 node read/write and non-blocking, or raise a named error."""
     path = str(device_path)
-    if warmup_frames < 0:
-        warmup_frames = 0
     try:
-        fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        return os.open(path, os.O_RDWR | os.O_NONBLOCK)
     except OSError as exc:
         raise CameraCaptureError(
             path,
@@ -663,11 +978,227 @@ def _capture_v4l2_read(
             ],
             cause=exc,
         ) from exc
+
+
+def _query_capabilities(fd: int, device_path: str) -> int:
+    """Return this node's effective capability bits from ``VIDIOC_QUERYCAP``.
+
+    When the driver sets ``V4L2_CAP_DEVICE_CAPS`` the answer is ``device_caps``
+    — the capabilities of *this* node (a metadata or secondary node of the same
+    physical camera reports different ones from the capture node).
+    """
+    buffer = bytearray(_V4L2_CAPABILITY_SIZE)
     try:
-        out_width, out_height, pixel_format, _sizeimage = _negotiate_format(
-            fd, int(width), int(height), path
+        fcntl.ioctl(fd, _VIDIOC_QUERYCAP, buffer, True)
+    except OSError as exc:
+        raise CameraCaptureError(
+            device_path,
+            f"the driver would not report its capabilities: {exc}",
+            fixes=[
+                "Check the node is a real capture device: v4l2-ctl --all -d "
+                f"{device_path} (sudo apt-get install -y v4l-utils)",
+                f"Check permissions: ls -l {device_path} (you may need to be in "
+                "the video group: sudo usermod -aG video $USER)",
+            ],
+            cause=exc,
+        ) from exc
+    capabilities = struct.unpack_from("<I", buffer, _CAP_CAPABILITIES_OFFSET)[0]
+    if capabilities & _V4L2_CAP_DEVICE_CAPS:
+        return struct.unpack_from("<I", buffer, _CAP_DEVICE_CAPS_OFFSET)[0]
+    return capabilities
+
+
+def _capture_by_read(
+    fd: int,
+    path: str,
+    pixel_format: str,
+    out_width: int,
+    out_height: int,
+    warmup_frames: int,
+    timeout_sec: float,
+) -> bytes:
+    """Deliver one frame through ``read()`` I/O.
+
+    Only valid when the device advertises ``V4L2_CAP_READWRITE``. MJPEG frames
+    are self-delimiting and YUYV frames are a fixed size, so the loop just
+    accumulates bytes until a complete frame arrives. Returns the frame bytes.
+    """
+    buffer = bytearray()
+    frames_seen = 0
+    deadline = time.monotonic() + max(float(timeout_sec), 0.1)
+    while frames_seen <= warmup_frames:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CameraCaptureError(
+                path,
+                f"no complete {pixel_format} frame arrived within "
+                f"{float(timeout_sec):g}s "
+                f"(read {len(buffer)} byte(s) of a partial frame)",
+            )
+        try:
+            ready, _, _ = select.select([fd], [], [], remaining)
+        except OSError as exc:
+            raise CameraCaptureError(path, f"the device became unusable: {exc}", cause=exc) from exc
+        if not ready:
+            continue
+        try:
+            chunk = os.read(fd, _READ_CHUNK)
+        except BlockingIOError:
+            continue
+        except InterruptedError:
+            continue
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EINTR):
+                continue
+            raise CameraCaptureError(
+                path,
+                f"reading the device failed: {exc}",
+                fixes=[
+                    "If this says 'Device or resource busy', close the other "
+                    "program using the camera",
+                    f"Check permissions: ls -l {path} (you may need to be in the "
+                    "video group: sudo usermod -aG video $USER)",
+                    "Verify the device works at all: v4l2-ctl --all -d "
+                    f"{path} (sudo apt-get install -y v4l-utils)",
+                ],
+                cause=exc,
+            ) from exc
+        if not chunk:
+            continue
+        buffer.extend(chunk)
+        frame = _extract_frame(bytes(buffer), pixel_format, out_width, out_height)
+        if frame is None:
+            if len(buffer) > _MAX_FRAME_BYTES:
+                del buffer[:-_READ_CHUNK]
+            continue
+        frames_seen += 1
+        buffer.clear()
+        if frames_seen > warmup_frames:
+            return frame
+    raise CameraCaptureError(  # pragma: no cover - loop returns or raises
+        path, "the capture loop ended without a frame"
+    )
+
+
+def _capture_by_mmap(
+    fd: int,
+    path: str,
+    pixel_format: str,
+    out_width: int,
+    out_height: int,
+    warmup_frames: int,
+    timeout_sec: float,
+) -> bytes:
+    """Deliver one frame through V4L2 mmap streaming.
+
+    Only valid when the device advertises ``V4L2_CAP_STREAMING``: REQBUFS →
+    QUERYBUF + ``mmap`` per buffer → QBUF all → STREAMON → select → DQBUF →
+    copy exactly ``bytesused`` bytes out of the mapping → QBUF the buffer back.
+    Teardown (STREAMOFF, then unmap every buffer) runs in ``finally``, so the
+    camera's stream is never left running — not even when capture raises.
+    Returns the frame bytes.
+    """
+    request = bytearray(_V4L2_REQUESTBUFFERS_SIZE)
+    struct.pack_into(
+        "<IIII",
+        request,
+        0,
+        _MMAP_BUFFER_COUNT,
+        _V4L2_BUF_TYPE_VIDEO_CAPTURE,
+        _V4L2_MEMORY_MMAP,
+        0,
+    )
+    try:
+        fcntl.ioctl(fd, _VIDIOC_REQBUFS, request, True)
+    except OSError as exc:
+        raise CameraCaptureError(
+            path,
+            f"the driver refused to allocate streaming buffers: {exc}",
+            fixes=[
+                "If this says 'Device or resource busy', close the other program "
+                "using the camera",
+                "Verify the device works at all: v4l2-ctl --all -d "
+                f"{path} (sudo apt-get install -y v4l-utils)",
+            ],
+            cause=exc,
+        ) from exc
+    count = struct.unpack_from("<I", request, 0)[0]
+    if count == 0:
+        raise CameraCaptureError(
+            path,
+            "the driver granted zero streaming buffers, so no frame can be dequeued",
+            fixes=[
+                "Close the other program using the camera and try again",
+                "Verify the device works at all: v4l2-ctl --all -d "
+                f"{path} (sudo apt-get install -y v4l-utils)",
+            ],
         )
-        buffer = bytearray()
+    mappings: List[Any] = []
+    streaming = False
+    try:
+        for index in range(count):
+            buffer = bytearray(_V4L2_BUFFER_SIZE)
+            struct.pack_into("<II", buffer, _BUF_INDEX_OFFSET, index, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
+            struct.pack_into("<I", buffer, _BUF_MEMORY_OFFSET, _V4L2_MEMORY_MMAP)
+            try:
+                fcntl.ioctl(fd, _VIDIOC_QUERYBUF, buffer, True)
+            except OSError as exc:
+                raise CameraCaptureError(
+                    path,
+                    f"the driver could not describe streaming buffer {index}: {exc}",
+                    cause=exc,
+                ) from exc
+            offset = struct.unpack_from("<I", buffer, _BUF_M_OFFSET)[0]
+            length = struct.unpack_from("<I", buffer, _BUF_LENGTH_OFFSET)[0]
+            try:
+                mapping = mmap.mmap(
+                    fd,
+                    length,
+                    flags=mmap.MAP_SHARED,
+                    prot=mmap.PROT_READ | mmap.PROT_WRITE,
+                    offset=offset,
+                )
+            except (OSError, ValueError) as exc:
+                raise CameraCaptureError(
+                    path,
+                    f"streaming buffer {index} could not be mapped: {exc}",
+                    fixes=[
+                        f"Check permissions: ls -l {path} (you may need to be in "
+                        "the video group: sudo usermod -aG video $USER)",
+                        "Verify the device works at all: v4l2-ctl --all -d "
+                        f"{path} (sudo apt-get install -y v4l-utils)",
+                    ],
+                    cause=exc,
+                ) from exc
+            mappings.append(mapping)
+        for index in range(count):
+            buffer = bytearray(_V4L2_BUFFER_SIZE)
+            struct.pack_into("<II", buffer, _BUF_INDEX_OFFSET, index, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
+            struct.pack_into("<I", buffer, _BUF_MEMORY_OFFSET, _V4L2_MEMORY_MMAP)
+            try:
+                fcntl.ioctl(fd, _VIDIOC_QBUF, buffer, True)
+            except OSError as exc:
+                raise CameraCaptureError(
+                    path,
+                    f"the driver refused streaming buffer {index}: {exc}",
+                    cause=exc,
+                ) from exc
+        stream_on = bytearray(ctypes.sizeof(ctypes.c_int))
+        struct.pack_into("<I", stream_on, 0, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
+        try:
+            fcntl.ioctl(fd, _VIDIOC_STREAMON, stream_on, True)
+        except OSError as exc:
+            raise CameraCaptureError(
+                path,
+                f"the driver refused to start streaming: {exc}",
+                fixes=[
+                    "Close the other program using the camera and try again",
+                    "Verify the device works at all: v4l2-ctl --all -d "
+                    f"{path} (sudo apt-get install -y v4l-utils)",
+                ],
+                cause=exc,
+            ) from exc
+        streaming = True
         frames_seen = 0
         deadline = time.monotonic() + max(float(timeout_sec), 0.1)
         while frames_seen <= warmup_frames:
@@ -677,60 +1208,142 @@ def _capture_v4l2_read(
                     path,
                     f"no complete {pixel_format} frame arrived within "
                     f"{float(timeout_sec):g}s "
-                    f"(read {len(buffer)} byte(s) of a partial frame)",
+                    f"(dequeued {frames_seen} frame(s))",
                 )
             try:
                 ready, _, _ = select.select([fd], [], [], remaining)
             except OSError as exc:
-                raise CameraCaptureError(path, f"the device became unusable: {exc}", cause=exc) from exc
+                raise CameraCaptureError(
+                    path, f"the device became unusable: {exc}", cause=exc
+                ) from exc
             if not ready:
                 continue
+            buffer = bytearray(_V4L2_BUFFER_SIZE)
+            struct.pack_into(
+                "<II", buffer, _BUF_INDEX_OFFSET, 0, _V4L2_BUF_TYPE_VIDEO_CAPTURE
+            )
             try:
-                chunk = os.read(fd, _READ_CHUNK)
-            except BlockingIOError:
-                continue
-            except InterruptedError:
-                continue
+                fcntl.ioctl(fd, _VIDIOC_DQBUF, buffer, True)
             except OSError as exc:
                 if exc.errno in (errno.EAGAIN, errno.EINTR):
                     continue
                 raise CameraCaptureError(
                     path,
-                    f"reading the device failed: {exc}",
+                    f"the driver could not hand over a queued frame: {exc}",
                     fixes=[
-                        "If this says 'Device or resource busy', close the other "
-                        "program using the camera",
-                        f"Check permissions: ls -l {path} (you may need to be in the "
-                        "video group: sudo usermod -aG video $USER)",
+                        "Close the other program using the camera and try again",
                         "Verify the device works at all: v4l2-ctl --all -d "
                         f"{path} (sudo apt-get install -y v4l-utils)",
                     ],
                     cause=exc,
                 ) from exc
-            if not chunk:
-                continue
-            buffer.extend(chunk)
-            frame = _extract_frame(bytes(buffer), pixel_format, out_width, out_height)
+            index = struct.unpack_from("<I", buffer, _BUF_INDEX_OFFSET)[0]
+            bytesused = struct.unpack_from("<I", buffer, _BUF_BYTESUSED_OFFSET)[0]
+            if index >= len(mappings):
+                raise CameraCaptureError(
+                    path,
+                    f"the driver returned buffer index {index}, which was never "
+                    f"mapped ({len(mappings)} buffer(s))",
+                )
+            if bytesused <= 0 or bytesused > len(mappings[index]):
+                raise CameraCaptureError(
+                    path,
+                    f"the driver reported {bytesused} byte(s) for a "
+                    f"{len(mappings[index])}-byte buffer",
+                )
+            # Copy exactly bytesused out of the mapping before the buffer goes
+            # back to the driver; only the copy is ever decoded or written.
+            data = bytes(mappings[index][:bytesused])
+            back = bytearray(_V4L2_BUFFER_SIZE)
+            struct.pack_into("<II", back, _BUF_INDEX_OFFSET, index, _V4L2_BUF_TYPE_VIDEO_CAPTURE)
+            struct.pack_into("<I", back, _BUF_MEMORY_OFFSET, _V4L2_MEMORY_MMAP)
+            try:
+                fcntl.ioctl(fd, _VIDIOC_QBUF, back, True)
+            except OSError:
+                # Requeueing is best effort: teardown runs either way.
+                pass
+            frame = _extract_frame(data, pixel_format, out_width, out_height)
             if frame is None:
-                if len(buffer) > _MAX_FRAME_BYTES:
-                    del buffer[:-_READ_CHUNK]
                 continue
             frames_seen += 1
-            buffer.clear()
             if frames_seen > warmup_frames:
-                debug_log(
-                    f"Captured a {out_width}x{out_height} {pixel_format} frame from "
-                    f"{path} after {frames_seen} frame(s)",
-                    "senses",
-                )
-                return CapturedFrame(
-                    data=frame,
-                    pixel_format=pixel_format,
-                    width=out_width,
-                    height=out_height,
-                )
+                return frame
         raise CameraCaptureError(  # pragma: no cover - loop returns or raises
             path, "the capture loop ended without a frame"
+        )
+    finally:
+        if streaming:
+            try:
+                fcntl.ioctl(
+                    fd,
+                    _VIDIOC_STREAMOFF,
+                    bytearray(struct.pack("<I", _V4L2_BUF_TYPE_VIDEO_CAPTURE)),
+                    True,
+                )
+            except OSError as exc:
+                debug_log(f"STREAMOFF on {path} failed: {exc}", "senses")
+        while mappings:
+            mapping = mappings.pop()
+            try:
+                mapping.close()
+            except (OSError, BufferError, ValueError) as exc:
+                debug_log(f"unmapping a buffer of {path} failed: {exc}", "senses")
+
+
+def _capture_v4l2(
+    device_path: Union[str, os.PathLike[str]],
+    *,
+    width: int = 640,
+    height: int = 480,
+    warmup_frames: int = 2,
+    timeout_sec: float = 5.0,
+) -> CapturedFrame:
+    """Capture one frame over V4L2, choosing the I/O method from the device.
+
+    ``read()`` I/O is used only when the device advertises
+    ``V4L2_CAP_READWRITE``; otherwise mmap streaming is used when it advertises
+    ``V4L2_CAP_STREAMING``; a device advertising neither is a named error
+    rather than a guess. The file descriptor is always closed — including when
+    negotiation or capture raises. The caller holds :data:`camera_lock`.
+    """
+    path = str(device_path)
+    if warmup_frames < 0:
+        warmup_frames = 0
+    fd = _open_device(path)
+    try:
+        capabilities = _query_capabilities(fd, path)
+        if capabilities & _V4L2_CAP_READWRITE:
+            method, method_name = _capture_by_read, "read() I/O"
+        elif capabilities & _V4L2_CAP_STREAMING:
+            method, method_name = _capture_by_mmap, "mmap streaming"
+        else:
+            raise CameraCaptureError(
+                path,
+                "the device advertises neither read() I/O nor mmap streaming, "
+                f"so Claire cannot get a frame from it (capabilities {capabilities:#010x})",
+                fixes=[
+                    "Check what the device actually is: v4l2-ctl --all -d "
+                    f"{path} (sudo apt-get install -y v4l-utils)",
+                    "If it is a secondary/metadata node, capture from the other "
+                    "node of the same camera (usually /dev/video0)",
+                ],
+            )
+        out_width, out_height, pixel_format, _sizeimage = _negotiate_format(
+            fd, int(width), int(height), path
+        )
+        data = method(
+            fd, path, pixel_format, out_width, out_height, warmup_frames, timeout_sec
+        )
+        debug_log(
+            f"Captured a {out_width}x{out_height} {pixel_format} frame from "
+            f"{path} via {method_name} ({len(data)} byte(s))",
+            "senses",
+        )
+        return CapturedFrame(
+            data=data,
+            pixel_format=pixel_format,
+            width=out_width,
+            height=out_height,
         )
     finally:
         os.close(fd)
@@ -849,7 +1462,7 @@ def capture_frame(
         raise CameraNotFoundError(scanned=scanned)
     chosen = _select_device(devices, device, scanned)
     with camera_lock:
-        frame = _capture_v4l2_read(
+        frame = _capture_v4l2(
             chosen.path,
             width=width,
             height=height,

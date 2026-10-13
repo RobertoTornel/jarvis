@@ -4,6 +4,12 @@ Pure scheduling logic: :mod:`claire.schedule.calendar` holds every rule and has
 no file I/O, so callers (tool handlers, persistence, tests) can import it
 directly.  See ``schedule.spec.md`` next to this file for the rule set and the
 bugs each rule exists to prevent.
+
+Countdown timers live beside the calendar but are a different model: they are
+deadlines on the monotonic clock and deliberately do not persist
+(:mod:`claire.schedule.timers`).  :func:`default_manager` is the one manager the
+``timer`` tool and :class:`TimerAnnouncer` share, so a timer the owner sets is a
+timer the announcer loop fires.
 """
 
 from claire.schedule.calendar import (
@@ -45,6 +51,20 @@ from claire.schedule.calendar import (
     validate_schedule,
     weekday_of,
 )
+from claire.schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
+from claire.schedule.timer_announcer import TIMER_POLL_INTERVAL_SEC, TimerAnnouncer
+from claire.schedule.timers import (
+    AmbiguousTimerError,
+    InvalidDurationError,
+    InvalidLabelError,
+    Timer,
+    TimerError,
+    TimerManager,
+    UnknownTimerError,
+    default_manager,
+    parse_duration,
+    set_default_manager,
+)
 
 __all__ = [
     "SCHEDULE_VERSION",
@@ -84,4 +104,18 @@ __all__ = [
     "describe_reminder",
     "mark_reminder_fired",
     "validate_schedule",
+    "ReminderAnnouncer",
+    "REMINDER_POLL_INTERVAL_SEC",
+    "TimerAnnouncer",
+    "TIMER_POLL_INTERVAL_SEC",
+    "Timer",
+    "TimerManager",
+    "TimerError",
+    "UnknownTimerError",
+    "AmbiguousTimerError",
+    "InvalidDurationError",
+    "InvalidLabelError",
+    "parse_duration",
+    "default_manager",
+    "set_default_manager",
 ]

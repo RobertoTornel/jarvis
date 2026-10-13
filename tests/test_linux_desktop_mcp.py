@@ -207,6 +207,146 @@ def test_plan_char_detects_shift_and_unmapped_characters():
     assert plan_char(display, "ñ") is None
 
 
+def test_plan_char_never_infers_shift_from_altgr_slot_indices():
+    """Slots 3/4 are AltGr levels, not Shift levels.
+
+    Parity (`index % 2`) would claim Shift for '@' (slot 3 here) and type
+    '"' on this es,us layout, so only the plain and Shift levels of the
+    active group — slots 0 and 1 — may become a direct plan.
+    """
+    from claire.mcp_servers.linux_desktop import plan_char
+
+    class FakeDisplay:
+        def __init__(self, mapping):
+            self._mapping = mapping
+
+        def keysym_to_keycodes(self, keysym):
+            return list(self._mapping.get(keysym, []))
+
+        def keysym_to_keycode(self, keysym):
+            # An index-free fallback exists but cannot prove which level
+            # of the row the keysym sits on.
+            return 26
+
+    display = FakeDisplay(
+        {
+            0x40: [(11, 3), (11, 4), (24, 4)],  # '@' only at AltGr levels
+            0x60: [(49, 2)],  # '`' only at group-2 level
+            0x61: [(38, 0)],  # 'a' plain level
+            0x41: [(38, 1)],  # 'A' Shift level
+        }
+    )
+    assert plan_char(display, "@") is None
+    assert plan_char(display, "`") is None
+    assert plan_char(display, "a") == (38, False)
+    assert plan_char(display, "A") == (38, True)
+    # No slot information at all → no direct plan, caller rebinds instead.
+    assert plan_char(display, "ñ") is None
+
+
+def test_tap_unmapped_char_maps_a_full_row_and_restores_it_when_the_tap_raises(
+    monkeypatch,
+):
+    """The rebind must cover every level of the spare keycode's row.
+
+    A one-element row leaves the other levels stale, and an exception must
+    never leave the owner's keyboard remapped — the original row goes back
+    in a `finally`, with syncs around the tap so the client sees the rebind
+    before the key event and the restore after it.
+    """
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def __init__(self):
+            self.row = [0] * 10  # ten keysyms per keycode, as on the real map
+            self.changes = []  # (keycode, row) in call order
+            self.syncs = 0
+
+        def get_keyboard_mapping(self, first, count):
+            return [list(self.row)]
+
+        def change_keyboard_mapping(self, first, rows):
+            self.changes.append((int(first), list(rows[0])))
+            if int(first) == 248:
+                self.row = list(rows[0])
+
+        def sync(self):
+            self.syncs += 1
+
+    display = FakeDisplay()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("tap exploded")
+
+    monkeypatch.setattr(mod, "_tap", boom)
+    with pytest.raises(RuntimeError):
+        mod._tap_unmapped_char(display, "é", 248)
+
+    assert len(display.changes) == 2, "rebind first, restore second"
+    spare, rebound = display.changes[0]
+    assert spare == 248
+    assert len(rebound) == 10, "a full-length row, like every other keycode's"
+    assert rebound == [0xE9] * 10, "the keysym at every level of every group"
+    restored_keycode, restored = display.changes[1]
+    assert restored_keycode == 248
+    assert restored == [0] * 10, "the original row must return even when the tap raises"
+    assert display.syncs >= 2, "sync before the tap and again after the restore"
+
+
+def test_type_text_never_counts_a_character_it_could_not_send(monkeypatch):
+    """Control characters cannot be produced by a key press, so they are
+    skipped without being counted — the count must match what a client
+    actually receives."""
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def keysym_to_keycodes(self, keysym):
+            return [(38, 0)] if keysym in (0x61, 0x62, 0x63) else []
+
+        def keysym_to_keycode(self, keysym):
+            return 0
+
+        def sync(self):
+            pass
+
+    taps = []
+
+    def record(display, keycode, shift=False):
+        taps.append((int(keycode), bool(shift)))
+
+    monkeypatch.setattr(mod, "_tap", record)
+    typed = mod._type_text(FakeDisplay(), "ab\x07c")
+    assert typed == 3
+    assert len(taps) == 3, "the bell was skipped, not counted as typed"
+
+
+def test_type_text_fails_loudly_when_a_character_cannot_be_sent(monkeypatch):
+    """A character that cannot be produced raises out of `_type_text` — the
+    tool call fails instead of returning a success count that lies."""
+    from claire.mcp_servers import linux_desktop as mod
+
+    class FakeDisplay:
+        def keysym_to_keycodes(self, keysym):
+            return [(38, 0)] if keysym == 0x61 else []
+
+        def keysym_to_keycode(self, keysym):
+            return 0
+
+        def get_keyboard_mapping(self, first, count):
+            return [[0] * 10]
+
+        def sync(self):
+            pass
+
+    def boom(display, ch, spare):
+        raise ValueError(f"cannot type the character {ch!r}")
+
+    monkeypatch.setattr(mod, "_tap", lambda display, keycode, shift=False: None)
+    monkeypatch.setattr(mod, "_tap_unmapped_char", boom)
+    with pytest.raises(ValueError):
+        mod._type_text(FakeDisplay(), "aé")
+
+
 def test_split_launch_command_is_shell_free():
     from claire.mcp_servers.linux_desktop import split_launch
 
@@ -214,6 +354,278 @@ def test_split_launch_command_is_shell_free():
     assert split_launch("firefox --new-window") == ["firefox", "--new-window"]
     with pytest.raises(ValueError):
         split_launch('echo "unterminated')
+
+
+# ---------------------------------------------------------------------------
+# Targeted typing: `window=` raises and focuses before any input lands
+# ---------------------------------------------------------------------------
+
+_WIN_A = {"id": "0x01a00001", "title": "CLAIRE_TARGET_A"}
+_WIN_B = {"id": "0x01b00002", "title": "Discord — general"}
+
+
+def _xid(window):
+    return int(window["id"], 16)
+
+
+class _DesktopStub:
+    """A fake X/wmctrl world: window rows, focus state, recorded input.
+
+    Installed the way the other unit tests here stub the X layer — every
+    piece of the module's display access is a module global — so no display
+    is needed. `events` records what happened in order, which is how the
+    tests prove focus happens *before* typing.
+    """
+
+    def __init__(self, windows, active):
+        self.windows = list(windows)
+        self.active = active  # int xid currently focused
+        self.refuse_focus = False  # wmctrl -a returns, focus never moves
+        self.events = []  # ("focus", id) / ("type", text) / ("key", tokens)
+
+    # --- installed as mod._wmctrl -------------------------------------
+    def wmctrl(self, args, timeout=10.0):
+        if args[:1] == ["-lG"]:
+            lines = [
+                f"{w['id']} 0 0 0 640 480 host {w['title']}"
+                for w in self.windows
+            ]
+            return _Completed("\n".join(lines))
+        if args[:2] == ["-i", "-a"]:
+            target = args[2]
+            self.events.append(("focus", target))
+            if not self.refuse_focus:
+                self.active = int(target, 16)
+            return _Completed("")
+        raise AssertionError(f"unexpected wmctrl call: {args!r}")
+
+    # --- installed as mod._active_window_id / _window_title -----------
+    def active_window_id(self, display):
+        return self.active
+
+    def window_title(self, display, window_id):
+        for w in self.windows:
+            if _xid(w) == window_id:
+                return w["title"]
+        return None
+
+    # --- installed as mod._type_text / mod._press_tokens ---------------
+    def type_text(self, display, text):
+        self.events.append(("type", text))
+        return len(text)
+
+    def press_tokens(self, display, tokens):
+        self.events.append(("key", list(tokens)))
+
+
+class _Completed:
+    def __init__(self, stdout):
+        self.stdout = stdout
+        self.returncode = 0
+
+
+class _FakeX:
+    """Stands in for the module's X11 singleton: runs the closure on None."""
+
+    def run(self, fn):
+        return fn(None)
+
+
+def _stub_desktop(monkeypatch, windows, active):
+    from claire.mcp_servers import linux_desktop as mod
+
+    stub = _DesktopStub(windows, active)
+    monkeypatch.setattr(mod, "_wmctrl", stub.wmctrl)
+    monkeypatch.setattr(mod, "_X", _FakeX())
+    monkeypatch.setattr(mod, "_active_window_id", stub.active_window_id)
+    monkeypatch.setattr(mod, "_window_title", stub.window_title)
+    monkeypatch.setattr(mod, "_type_text", stub.type_text)
+    monkeypatch.setattr(mod, "_press_tokens", stub.press_tokens)
+    return stub
+
+
+def test_type_text_into_named_window_focuses_first_and_names_it(monkeypatch):
+    """The named window is raised and confirmed focused *before* a character
+    is typed, and the result says where the text went."""
+    from claire.mcp_servers import linux_desktop as mod
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    result = json.loads(mod.type_text("hello there", window="Discord"))
+    assert result["ok"] is True
+    assert [e[0] for e in stub.events] == ["focus", "type"], (
+        "focus must happen before typing"
+    )
+    assert stub.events[0][1] == _WIN_B["id"]
+    assert stub.active == _xid(_WIN_B), "the target really took focus"
+    assert result["window"]["id"] == _WIN_B["id"]
+    assert result["window"]["title"] == _WIN_B["title"]
+    assert _WIN_B["title"] in result["detail"]
+
+
+def test_type_text_unknown_window_lists_candidates_and_types_nothing(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    with pytest.raises(WindowError) as exc:
+        mod.type_text("should never land", window="calculator")
+    message = str(exc.value)
+    assert _WIN_A["title"] in message, "the error must list the candidates"
+    assert _WIN_B["title"] in message, "the error must list the candidates"
+    assert stub.events == [], "nothing may be typed (or focused) on a miss"
+
+
+def test_type_text_ambiguous_window_lists_candidates_and_types_nothing(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    voice = {"id": "0x01c00003", "title": "Discord — voice"}
+    afk = {"id": "0x01d00004", "title": "Discord — afk"}
+    stub = _stub_desktop(
+        monkeypatch, [_WIN_A, voice, afk], active=_xid(_WIN_A)
+    )
+    with pytest.raises(WindowError) as exc:
+        mod.type_text("should never land", window="discord")
+    message = str(exc.value)
+    assert voice["title"] in message, "the ambiguity must list candidates"
+    assert afk["title"] in message, "the ambiguity must list candidates"
+    assert stub.events == [], "nothing may be typed on an ambiguous name"
+
+
+def test_type_text_refuses_when_focus_does_not_land(monkeypatch):
+    """Focus that stays elsewhere must *raise* naming both windows, and no
+    character may be typed. A returned ok:false body would reach the harness
+    as a successful tool call — a success this is not."""
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    stub.refuse_focus = True
+    with pytest.raises(WindowError) as exc:
+        mod.type_text("should never land", window="Discord")
+    message = str(exc.value)
+    assert _WIN_B["title"] in message, "names the window aimed at"
+    assert _WIN_A["title"] in message, "names the window focused"
+    assert "nothing was sent" in message
+    assert [e[0] for e in stub.events] == ["focus"], "typing must not happen"
+
+
+def test_type_text_without_window_reports_the_active_window(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_B))
+    result = json.loads(mod.type_text("hi"))
+    assert result["ok"] is True and result["typed"] == 2
+    assert [e[0] for e in stub.events] == ["type"], "no focus request needed"
+    assert result["window"]["id"] == _WIN_B["id"], (
+        "even without `window` the result names where the text went"
+    )
+    assert result["window"]["title"] == _WIN_B["title"]
+    assert _WIN_B["title"] in result["detail"]
+
+
+def test_press_key_into_named_window_focuses_first_and_names_it(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    result = json.loads(mod.press_key("Return", window="Discord"))
+    assert result["ok"] is True
+    assert [e[0] for e in stub.events] == ["focus", "key"], (
+        "focus must happen before the key is pressed"
+    )
+    assert stub.events[0][1] == _WIN_B["id"]
+    assert stub.events[1][1] == ["Return"]
+    assert result["window"]["id"] == _WIN_B["id"]
+    assert result["window"]["title"] == _WIN_B["title"]
+    assert _WIN_B["title"] in result["detail"]
+
+
+def test_press_key_unknown_window_lists_candidates_and_presses_nothing(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    with pytest.raises(WindowError) as exc:
+        mod.press_key("Return", window="calculator")
+    message = str(exc.value)
+    assert _WIN_A["title"] in message
+    assert _WIN_B["title"] in message
+    assert stub.events == [], "no key may be pressed on a missed name"
+
+
+def test_press_key_ambiguous_window_lists_candidates_and_presses_nothing(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    voice = {"id": "0x01c00003", "title": "Discord — voice"}
+    afk = {"id": "0x01d00004", "title": "Discord — afk"}
+    stub = _stub_desktop(
+        monkeypatch, [_WIN_A, voice, afk], active=_xid(_WIN_A)
+    )
+    with pytest.raises(WindowError) as exc:
+        mod.press_key("Return", window="discord")
+    message = str(exc.value)
+    assert voice["title"] in message
+    assert afk["title"] in message
+    assert stub.events == [], "no key may be pressed on an ambiguous name"
+
+
+def test_press_key_refuses_when_focus_does_not_land(monkeypatch):
+    """Same contract for press_key: a non-landing focus raises, both windows
+    are named, and the key is never sent."""
+    from claire.mcp_servers import linux_desktop as mod
+    from claire.mcp_servers.linux_desktop import WindowError
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    stub.refuse_focus = True
+    with pytest.raises(WindowError) as exc:
+        mod.press_key("Return", window="Discord")
+    message = str(exc.value)
+    assert _WIN_B["title"] in message, "names the window aimed at"
+    assert _WIN_A["title"] in message, "names the window focused"
+    assert "nothing was sent" in message
+    assert [e[0] for e in stub.events] == ["focus"], "the key must not be sent"
+
+
+def test_press_key_without_window_reports_the_active_window(monkeypatch):
+    from claire.mcp_servers import linux_desktop as mod
+
+    stub = _stub_desktop(monkeypatch, [_WIN_A, _WIN_B], active=_xid(_WIN_A))
+    result = json.loads(mod.press_key("ctrl+c"))
+    assert result["ok"] is True
+    assert [e[0] for e in stub.events] == ["key"], "no focus request needed"
+    assert result["window"]["id"] == _WIN_A["id"]
+    assert result["window"]["title"] == _WIN_A["title"]
+    assert _WIN_A["title"] in result["detail"]
+
+
+def test_window_parameter_is_visible_in_signature_and_schema():
+    """The planner only learns about `window` from the schema and the tool
+    description, so both must carry it."""
+    import asyncio
+    import inspect
+
+    from claire.mcp_servers import linux_desktop as mod
+
+    for name in ("type_text", "press_key"):
+        params = inspect.signature(getattr(mod, name)).parameters
+        assert "window" in params, f"{name} must accept window="
+        assert params["window"].default is None, "window must be optional"
+
+    tools = {t.name: t for t in asyncio.run(mod.mcp.list_tools())}
+    for name in ("type_text", "press_key"):
+        schema = tools[name].inputSchema
+        assert "window" in schema["properties"], (
+            f"{name}'s schema must expose window"
+        )
+        assert "window" not in schema.get("required", []), (
+            f"window must stay optional in {name}'s schema"
+        )
+        description = tools[name].description or ""
+        assert "window" in description, "the docstring must explain window"
+        assert "focused" in description, (
+            "the description must tell the planner the window is focused first"
+        )
 
 
 # ---------------------------------------------------------------------------

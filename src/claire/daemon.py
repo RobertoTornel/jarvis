@@ -45,6 +45,10 @@ from .memory.conversation import DialogueMemory, update_diary_from_dialogue_memo
 from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
 from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
+from .schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
+from .schedule.timer_announcer import TIMER_POLL_INTERVAL_SEC, TimerAnnouncer
+from .control.server import ControlSocketServer
+from .schedule.timers import default_manager
 from .listening.listener import VoiceListener
 from .listening.wake_detection import is_wake_word_detected
 from .utils.location import get_location_context
@@ -262,6 +266,243 @@ def _dispatch_voice_feedback() -> None:
         _emit_ipc_event(VOICE_IPC_PREFIX, "low_confidence", None, "voice")
 
 
+# ---------------------------------------------------------------------------
+# Reminder announcer
+#
+# The schedule rules (due_reminders/describe_reminder/mark_reminder_fired)
+# existed and were tested while nothing in this daemon ever called them, so
+# "remind me at 6 to call mum" was booked and silently never spoken.  The
+# announcer lives in claire.schedule.announcer; this is the wiring: the shared
+# TTS engine supplies both the speaking and the busy check, and start/stop are
+# small functions so a test can drive them with a fake engine instead of
+# booting the daemon.
+# ---------------------------------------------------------------------------
+
+_reminder_announcer: Optional[Any] = None
+
+
+def _engine_speech_adapter(engine: Any, label: str) -> tuple[Any, Any]:
+    """``(speak, busy)`` callables over a TTS *engine*, for either announcer.
+
+    Both loops need the same two answers from the engine, so the adapter is
+    written once: ``speak`` reports success honestly (the engine queues and
+    returns None, so "spoken" means "the engine was enabled and did not refuse")
+    and ``busy`` treats an engine that cannot answer as not speaking.
+    """
+    def speak(text: str) -> bool:
+        """Report success honestly: the engine queues and returns None, so
+        "spoken" means "the engine was enabled and did not refuse"."""
+        try:
+            if getattr(engine, "enabled", True) is False:
+                return False
+            engine.speak(text)
+        except Exception as exc:  # noqa: BLE001 - a raising engine is a failed speak
+            debug_log(f"{label} speech failed ({type(exc).__name__})", "schedule")
+            return False
+        return True
+
+    def busy() -> bool:
+        try:
+            return bool(engine.is_speaking())
+        except Exception:  # noqa: BLE001 - a broken engine is not "speaking"
+            return False
+
+    return speak, busy
+
+
+def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
+    """A not-yet-started announcer whose speak/busy calls go through *engine*.
+
+    Split out from :func:`_start_reminder_announcer` so a test can exercise the
+    engine adapter deterministically, without a background thread racing it.
+    """
+    speak, busy = _engine_speech_adapter(engine, "reminder")
+    return ReminderAnnouncer(speak, busy, poll_interval=REMINDER_POLL_INTERVAL_SEC)
+
+
+def _start_reminder_announcer(engine: Optional[Any] = None) -> None:
+    """Start the schedule-reminder announcer on the shared TTS engine.
+
+    Args:
+        engine: TTS engine to speak on.  Defaults to :func:`get_tts_engine`
+            (the engine ``main()`` installed); passing one explicitly is what
+            lets a test wire a fake engine without booting the daemon.
+    """
+    global _reminder_announcer
+    if _reminder_announcer is not None:
+        return
+    tts = engine if engine is not None else get_tts_engine()
+    if tts is None:
+        debug_log("reminder announcer not started: no TTS engine", "schedule")
+        return
+    announcer = _build_reminder_announcer(tts)
+    announcer.start()
+    _reminder_announcer = announcer
+    # The whole bug hid in silence: name the interval out loud at startup.
+    print(f"⏰ Reminder announcer polling every {REMINDER_POLL_INTERVAL_SEC}s", flush=True)
+    debug_log("reminder announcer started", "schedule")
+
+
+def _stop_reminder_announcer() -> None:
+    """Stop the announcer, waking its loop instead of waiting an interval."""
+    global _reminder_announcer
+    announcer, _reminder_announcer = _reminder_announcer, None
+    if announcer is not None:
+        announcer.stop()
+        debug_log("reminder announcer stopped", "schedule")
+
+
+_timer_announcer: Optional[Any] = None
+
+
+def _build_timer_announcer(engine: Any) -> TimerAnnouncer:
+    """A not-yet-started timer announcer whose speak/busy calls go through *engine*.
+
+    Split out from :func:`_start_timer_announcer` so a test can exercise the
+    engine adapter deterministically, without a background thread racing it.
+    The manager is the process-wide :func:`default_manager`, the same instance
+    the ``timer`` tool writes to, so a timer the owner sets is one this loop
+    actually fires.
+    """
+    speak, busy = _engine_speech_adapter(engine, "timer")
+    return TimerAnnouncer(
+        speak,
+        busy,
+        poll_interval=TIMER_POLL_INTERVAL_SEC,
+        manager=default_manager(),
+    )
+
+
+def _start_timer_announcer(engine: Optional[Any] = None) -> None:
+    """Start the countdown-timer announcer on the shared TTS engine.
+
+    Args:
+        engine: TTS engine to speak on.  Defaults to :func:`get_tts_engine`
+            (the engine ``main()`` installed); passing one explicitly is what
+            lets a test wire a fake engine without booting the daemon.
+    """
+    global _timer_announcer
+    if _timer_announcer is not None:
+        return
+    tts = engine if engine is not None else get_tts_engine()
+    if tts is None:
+        debug_log("timer announcer not started: no TTS engine", "schedule")
+        return
+    announcer = _build_timer_announcer(tts)
+    announcer.start()
+    _timer_announcer = announcer
+    # The whole bug hid in silence: name the precision out loud at startup.
+    print(
+        f"⏳ Timer announcer armed (fires within {TIMER_POLL_INTERVAL_SEC}s)",
+        flush=True,
+    )
+    debug_log("timer announcer started", "schedule")
+
+
+def _stop_timer_announcer() -> None:
+    """Stop the announcer, waking its loop instead of waiting an interval."""
+    global _timer_announcer
+    announcer, _timer_announcer = _timer_announcer, None
+    if announcer is not None:
+        announcer.stop()
+        debug_log("timer announcer stopped", "schedule")
+
+
+# ---------------------------------------------------------------------------
+# Control socket
+#
+# The channel a supervised Claire was missing.  The desktop app can talk to a
+# daemon it spawned itself over stdin and stdout.  When systemd runs the daemon
+# instead - which is how it runs on the owner's machine - our stdin is
+# /dev/null and our stdout belongs to the journal, so an attached UI had nowhere
+# to send a chat message, and the app said nothing about it: it enabled the chat
+# box, ran the query in its own process, and showed no reply and no error.
+#
+# The socket carries exactly the lines stdin carries, so the handlers below are
+# the stdin handlers, untouched.  Nothing new is accepted, which is the point:
+# there is no second protocol to keep in step with the first.
+# ---------------------------------------------------------------------------
+
+_control_socket_server: Optional[Any] = None
+
+
+def _handle_control_line(line: str) -> bool:
+    """Handle one control-socket line with the daemon's own stdin handlers.
+
+    Returns whether any handler recognised the line, so the server can log the
+    lines that are not part of the protocol instead of silently dropping them.
+    A handler that raises is reported and treated as recognised: the line was
+    ours, it just did not work, and trying the remaining handlers on it would
+    only produce a second, more confusing failure.
+    """
+    for handler in (
+        handle_chat_query_stdin_line,
+        handle_chat_cancel_stdin_line,
+        handle_chat_new_session_stdin_line,
+        handle_chat_rewind_stdin_line,
+        handle_chat_restore_stdin_line,
+    ):
+        try:
+            if handler(line):
+                return True
+        except Exception as exc:  # noqa: BLE001 - one bad line must not drop a client
+            debug_log(
+                f"control socket handler {handler.__name__} raised "
+                f"({type(exc).__name__}: {exc})",
+                "chat_ipc",
+            )
+            return True
+    return False
+
+
+def _build_control_socket_server(path: Optional[str] = None) -> ControlSocketServer:
+    """A not-yet-started control socket server, for a test to drive directly."""
+    return ControlSocketServer(
+        path,
+        handle_line=_handle_control_line,
+        logger=lambda message: debug_log(message, "chat_ipc"),
+    )
+
+
+def _start_control_socket_server(server: Optional[Any] = None) -> None:
+    """Serve the control socket, unless it is switched off.
+
+    Opt out with ``CLAIRE_CONTROL_CHANNEL=0``; relocate it (or keep an isolated
+    instance away from the real one) with ``CLAIRE_CONTROL_SOCKET``.
+    """
+    global _control_socket_server
+    if _control_socket_server is not None:
+        return
+    if os.environ.get("CLAIRE_CONTROL_CHANNEL", "1").strip().lower() in ("0", "false", "no"):
+        debug_log("control socket disabled by CLAIRE_CONTROL_CHANNEL", "chat_ipc")
+        print("🔌 Control socket disabled by CLAIRE_CONTROL_CHANNEL", flush=True)
+        return
+
+    candidate = server if server is not None else _build_control_socket_server()
+    try:
+        candidate.start()
+    except Exception as exc:  # noqa: BLE001 - a missing channel must not stop Claire
+        # Say it loudly rather than leave the UI guessing why chat does nothing.
+        print(f"⚠️  Control socket unavailable: {exc}", flush=True)
+        debug_log(f"control socket failed to start ({type(exc).__name__}: {exc})", "chat_ipc")
+        return
+    _control_socket_server = candidate
+    print(f"🔌 Control socket ready at {candidate.path}", flush=True)
+    debug_log("control socket started", "chat_ipc")
+
+
+def _stop_control_socket_server() -> None:
+    """Stop serving and remove our socket file."""
+    global _control_socket_server
+    server, _control_socket_server = _control_socket_server, None
+    if server is not None:
+        try:
+            server.stop()
+        except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+            debug_log(f"control socket stop failed ({type(exc).__name__}: {exc})", "chat_ipc")
+        debug_log("control socket stopped", "chat_ipc")
+
+
 def _start_voice_feedback_worker() -> None:
     """Keep rejection delivery independent of synchronous diary processing."""
     global _voice_feedback_thread, _voice_feedback_stop
@@ -453,6 +694,12 @@ def _emit_ipc_event(prefix: str, event_type: str, data, debug_tag: str) -> None:
         event = {"type": event_type, "data": data}
         line = f"{prefix}{json.dumps(event)}"
         print(line, flush=True)
+        # An attached UI cannot read that print: under systemd our stdout is the
+        # journal's socket, owned by someone else.  The same line goes to the
+        # control socket, so a chat window gets its token stream either way.
+        server = _control_socket_server
+        if server is not None:
+            server.broadcast(line)
         if event_type != "token":  # Don't spam for tokens
             debug_log(f"IPC event emitted: {event_type}", debug_tag)
     except Exception as e:
@@ -1665,6 +1912,17 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
         return
 
     _start_voice_feedback_worker()
+    # Behind the smoke-test early return on purpose: CI boots must not spawn
+    # a reminder thread, real runs must (this feature was invisible once).
+    _start_reminder_announcer(tts)
+    # Beside the reminder loop and behind the same smoke-test early return: a
+    # timer due during a CI boot must not be spoken, and the loop is useless
+    # without the owner listening.
+    _start_timer_announcer(tts)
+    # Beside the announcers and behind the same smoke-test early return: a CI
+    # boot has no UI to serve, and a second server in the test box would only
+    # fight the developer's own socket for the path.
+    _start_control_socket_server()
 
     # Periodic diary update checking
     last_diary_check = time.time()
@@ -1758,6 +2016,9 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
         debug_log("daemon received KeyboardInterrupt", "claire")
     finally:
         _stop_voice_feedback_worker()
+        _stop_reminder_announcer()
+        _stop_timer_announcer()
+        _stop_control_socket_server()
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "claire")
 

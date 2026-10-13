@@ -289,16 +289,16 @@ class RuntimeStatusDialog(QDialog):
                     layout.addSpacing(8)
                 header = QLabel(section)
                 header.setStyleSheet(
-                    "color: #fbbf24; font-weight: bold; font-size: 13px;"
+                    f"color: {COLORS['text_primary']}; font-weight: bold; font-size: 13px;"
                 )
                 layout.addWidget(header)
                 current_section = section
             row = QHBoxLayout()
             key_label = QLabel(key)
-            key_label.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+            key_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
             value_label = QLabel(value)
             value_label.setStyleSheet(
-                "color: #f4f4f5; font-size: 13px;"
+                f"color: {COLORS['text_primary']}; font-size: 13px;"
                 " font-family: 'SF Mono', 'Menlo', monospace;"
             )
             value_label.setWordWrap(True)
@@ -764,7 +764,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
 
                 # Header
                 header = QLabel("😵 Claire crashed in the previous session")
-                header.setStyleSheet("font-size: 18px; font-weight: bold; color: #f87171;")
+                header.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {COLORS['error_light']};")
                 layout.addWidget(header)
 
                 # Description
@@ -773,26 +773,26 @@ def show_crash_report_dialog(crash_content: str) -> None:
                     "The report will open as a GitHub issue (you can review before submitting)."
                 )
                 desc.setWordWrap(True)
-                desc.setStyleSheet("color: #a1a1aa;")
+                desc.setStyleSheet(f"color: {COLORS['text_secondary']};")
                 layout.addWidget(desc)
 
                 # Crash log preview
                 preview_label = QLabel("📋 Crash details (will be included in report):")
-                preview_label.setStyleSheet("color: #71717a; margin-top: 8px;")
+                preview_label.setStyleSheet(f"color: {COLORS['text_muted']}; margin-top: 8px;")
                 layout.addWidget(preview_label)
 
                 self.log_preview = QTextEdit()
                 self.log_preview.setPlainText(self.crash_info[:3000])  # Limit preview
                 self.log_preview.setReadOnly(True)
-                self.log_preview.setStyleSheet("""
-                    QTextEdit {
-                        background-color: #18181b;
-                        color: #a1a1aa;
+                self.log_preview.setStyleSheet(f"""
+                    QTextEdit {{
+                        background-color: {COLORS['bg_secondary']};
+                        color: {COLORS['text_secondary']};
                         font-family: monospace;
                         font-size: 11px;
-                        border: 1px solid #27272a;
+                        border: 1px solid {COLORS['border']};
                         border-radius: 4px;
-                    }
+                    }}
                 """)
                 self.log_preview.setMaximumHeight(200)
                 layout.addWidget(self.log_preview)
@@ -801,7 +801,7 @@ def show_crash_report_dialog(crash_content: str) -> None:
                 privacy = QLabel(
                     "ℹ️ No personal data is collected. You control what's submitted via GitHub."
                 )
-                privacy.setStyleSheet("color: #71717a; font-size: 11px;")
+                privacy.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 11px;")
                 layout.addWidget(privacy)
 
                 # Buttons
@@ -809,34 +809,34 @@ def show_crash_report_dialog(crash_content: str) -> None:
                 btn_layout.addStretch()
 
                 dismiss_btn = QPushButton("Dismiss")
-                dismiss_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #27272a;
-                        color: #a1a1aa;
+                dismiss_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['bg_tertiary']};
+                        color: {COLORS['text_secondary']};
                         border: none;
                         padding: 8px 16px;
                         border-radius: 4px;
-                    }
-                    QPushButton:hover {
-                        background-color: #3f3f46;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['bg_hover']};
+                    }}
                 """)
                 dismiss_btn.clicked.connect(self.reject)
                 btn_layout.addWidget(dismiss_btn)
 
                 report_btn = QPushButton("📝 Report on GitHub")
-                report_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: white;
+                report_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['accent_primary']};
+                        color: {COLORS['on_accent']};
                         border: none;
                         padding: 8px 16px;
                         border-radius: 4px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #3b82f6;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['accent_muted']};
+                    }}
                 """)
                 report_btn.clicked.connect(self._open_github_issue)
                 btn_layout.addWidget(report_btn)
@@ -951,7 +951,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
 
                 # Header
                 header = QLabel("⚠️ Using Unofficial Model")
-                header.setStyleSheet("font-size: 18px; font-weight: bold; color: #fbbf24;")
+                header.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {COLORS['warning']};")
                 layout.addWidget(header)
 
                 # Description
@@ -963,7 +963,7 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                     "response formatting, or performance."
                 )
                 desc.setWordWrap(True)
-                desc.setStyleSheet("color: #a1a1aa; line-height: 1.5;")
+                desc.setStyleSheet(f"color: {COLORS['text_secondary']}; line-height: 1.5;")
                 desc.setTextFormat(desc.textFormat().RichText)
                 layout.addWidget(desc)
 
@@ -974,34 +974,34 @@ def show_unsupported_model_dialog(model_name: str) -> bool:
                 btn_layout.addStretch()
 
                 continue_btn = QPushButton("Continue Anyway")
-                continue_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #27272a;
-                        color: #a1a1aa;
+                continue_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['bg_tertiary']};
+                        color: {COLORS['text_secondary']};
                         border: none;
                         padding: 10px 20px;
                         border-radius: 4px;
-                    }
-                    QPushButton:hover {
-                        background-color: #3f3f46;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['bg_hover']};
+                    }}
                 """)
                 continue_btn.clicked.connect(self.accept)
                 btn_layout.addWidget(continue_btn)
 
                 wizard_btn = QPushButton("🔧 Open Setup Wizard")
-                wizard_btn.setStyleSheet("""
-                    QPushButton {
-                        background-color: #2563eb;
-                        color: white;
+                wizard_btn.setStyleSheet(f"""
+                    QPushButton {{
+                        background-color: {COLORS['accent_primary']};
+                        color: {COLORS['on_accent']};
                         border: none;
                         padding: 10px 20px;
                         border-radius: 4px;
                         font-weight: bold;
-                    }
-                    QPushButton:hover {
-                        background-color: #3b82f6;
-                    }
+                    }}
+                    QPushButton:hover {{
+                        background-color: {COLORS['accent_muted']};
+                    }}
                 """)
                 wizard_btn.clicked.connect(self._open_wizard)
                 btn_layout.addWidget(wizard_btn)
@@ -1185,6 +1185,17 @@ class LogSignals(QObject):
     low_confidence = pyqtSignal()
 
 
+class ControlLinkSignals(QObject):
+    """Marshals the control link's connection state onto the Qt main thread.
+
+    The link supervises a socket on its own thread, so its state transitions
+    arrive off the GUI thread; this carries them to the slot that updates the
+    chat window's status.
+    """
+
+    state_changed = pyqtSignal(bool, str)
+
+
 class LogViewerWindow(QMainWindow):
     """Window for viewing Claire logs in real-time."""
 
@@ -1217,7 +1228,7 @@ class LogViewerWindow(QMainWindow):
 
         title = QLabel("📝 Claire Logs")
         title.setObjectName("title")
-        title.setStyleSheet("font-size: 20px; font-weight: 600; color: #fbbf24;")
+        title.setStyleSheet(f"font-size: 20px; font-weight: 600; color: {COLORS['text_primary']};")
         title_layout.addWidget(title)
 
         subtitle = QLabel("Activity timeline · downloads stay visible above the log")
@@ -1230,19 +1241,19 @@ class LogViewerWindow(QMainWindow):
         # Clear button
         clear_btn = QPushButton("🗑️ Clear")
         clear_btn.setToolTip("Clear all logs")
-        clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27272a;
-                color: #fafafa;
-                border: 1px solid #3f3f46;
+        clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #3f3f46;
-                border-color: #f59e0b;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_hover']};
+                border-color: {COLORS['accent_primary']};
+            }}
         """)
         clear_btn.clicked.connect(self.clear_logs)
         header_row_layout.addWidget(clear_btn)
@@ -1250,19 +1261,19 @@ class LogViewerWindow(QMainWindow):
         # Report button on the right
         report_btn = QPushButton("🐛 Report Issue")
         report_btn.setToolTip("Report a bug or unexpected behavior on GitHub")
-        report_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27272a;
-                color: #fafafa;
-                border: 1px solid #3f3f46;
+        report_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #3f3f46;
-                border-color: #f59e0b;
-            }
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['bg_hover']};
+                border-color: {COLORS['accent_primary']};
+            }}
         """)
         report_btn.clicked.connect(self._report_issue)
         header_row_layout.addWidget(report_btn)
@@ -1525,10 +1536,10 @@ class MemoryViewerWindow(QMainWindow):
             fallback_layout.addWidget(icon_label)
 
             title_label = QLabel("Memory Viewer")
-            title_label.setStyleSheet("""
+            title_label.setStyleSheet(f"""
                 font-size: 24px;
                 font-weight: 600;
-                color: #fbbf24;
+                color: {COLORS['text_primary']};
                 background: transparent;
                 margin-top: 16px;
             """)
@@ -1541,9 +1552,9 @@ class MemoryViewerWindow(QMainWindow):
                 fallback_message = "PyQt6-WebEngine not installed.\nOpening in your default browser..."
 
             message_label = QLabel(fallback_message)
-            message_label.setStyleSheet("""
+            message_label.setStyleSheet(f"""
                 font-size: 14px;
-                color: #71717a;
+                color: {COLORS['text_muted']};
                 background: transparent;
                 margin-top: 8px;
             """)
@@ -1737,13 +1748,13 @@ class MemoryViewerWindow(QMainWindow):
             error_html = f"""
             <html>
             <head><style>
-                body {{ background: #18181b; color: #e4e4e7; font-family: system-ui;
+                body {{ background: {COLORS['bg_secondary']}; color: {COLORS['text_primary']}; font-family: system-ui;
                        display: flex; justify-content: center; align-items: center;
                        height: 100vh; margin: 0; }}
                 .error {{ text-align: center; padding: 40px; }}
                 .icon {{ font-size: 64px; margin-bottom: 20px; }}
-                h1 {{ color: #fbbf24; margin-bottom: 16px; }}
-                p {{ color: #71717a; max-width: 400px; line-height: 1.6; }}
+                h1 {{ color: {COLORS['text_primary']}; margin-bottom: 16px; }}
+                p {{ color: {COLORS['text_muted']}; max-width: 400px; line-height: 1.6; }}
             </style></head>
             <body><div class="error">
                 <div class="icon">⚠️</div>
@@ -1913,6 +1924,13 @@ class ClaireSystemTray:
         self._chat_ipc_signals = ChatIpcSignals()
         self._chat_ipc_signals.line_received.connect(self._on_chat_ipc_line)
 
+        # The channel to a daemon this app did not start (a systemd unit). It is
+        # created only when we attach to one; until then there is nothing to
+        # talk to and ``_chat_submit_fn`` stays None.
+        self._control_link = None
+        self._control_link_signals = ControlLinkSignals()
+        self._control_link_signals.state_changed.connect(self._on_control_link_state)
+
         # Same bridge for the runtime-status dialog: the snapshot is
         # gathered on a worker thread because it makes a blocking network
         # call, and only the rendering belongs on the GUI thread.
@@ -1986,6 +2004,8 @@ class ClaireSystemTray:
             self.memory_viewer.stop_server()
         # Stop following a supervised daemon's journal, if we were doing that
         self._stop_daemon_log_tail()
+        # And let go of the control socket to that daemon, if we held one.
+        self._stop_control_link()
         # Safety net: if daemon process exists but is_listening was False, still clean up
         # (This shouldn't happen in normal operation, but handles edge cases)
         if self.daemon_process:
@@ -2329,20 +2349,124 @@ class ClaireSystemTray:
             from desktop_app.chat_window import ChatWindow
             self.chat_window = ChatWindow(
                 submit_fn=self._chat_submit_fn,
-                daemon_available=self.is_listening,
+                daemon_available=self._chat_transport_status() == "running",
                 cancel_fn=getattr(self, "_chat_cancel_fn", None),
                 control_fn=getattr(self, "_chat_control_fn", None),
+                # Only a bundled daemon runs in this process; with a supervised
+                # one, chat must go through the control socket or say why not.
+                in_process_daemon=getattr(self, "is_bundled", False),
             )
         else:
             self.chat_window._submit_fn = self._chat_submit_fn
             self.chat_window._cancel_fn = getattr(self, "_chat_cancel_fn", None)
             self.chat_window._control_fn = getattr(self, "_chat_control_fn", None)
-            self.chat_window.set_daemon_status(
-                "running" if self.is_listening else "stopped"
-            )
+            self.chat_window.set_daemon_status(self._chat_transport_status())
         self.chat_window.show()
         self.chat_window.raise_()
         self.chat_window.activateWindow()
+
+    def _chat_transport_status(self) -> str:
+        """What the chat window's status should be, given who owns the daemon.
+
+        ``running`` is a promise that a typed message has somewhere to go, so it
+        is only returned when there is a working transport: the daemon in this
+        process (bundled), a stdin we own (subprocess, in which case
+        ``_chat_submit_fn`` is set), or an answering control socket.
+        """
+        if not self.is_listening:
+            return "stopped"
+        link = getattr(self, "_control_link", None)
+        if link is not None:
+            return "running" if link.available else "unreachable"
+        return "running"
+
+    def _mark_attached_daemon_listening(self) -> None:
+        """Show that she is listening, for a daemon systemd owns.
+
+        The attach branch used to return before ``is_listening`` was set, so the
+        tray read "Status: Stopped" and offered "▶️ Start Listening" while Claire
+        was running and answering: pressing it re-attached and changed nothing.
+        It also left the chat window disabled with "Start Listening from the tray
+        to use chat", an instruction that could not work. Attaching to a running
+        daemon *is* listening, so say so.
+
+        The tray pieces are looked up rather than assumed: a few tests drive this
+        path on a partially built tray object.
+        """
+        self.is_listening = True
+        toggle = getattr(self, "toggle_action", None)
+        if toggle is not None:
+            toggle.setText("⏸️ Stop Listening")
+        status = getattr(self, "status_action", None)
+        if status is not None:
+            status.setText("🟢 Status: Listening")
+        if getattr(self, "tray_icon", None) is not None:
+            self.update_icon()
+
+    def _start_control_link(self) -> None:
+        """Open the channel to a daemon this app did not start.
+
+        Chat was broken precisely here: the app attached to the systemd daemon,
+        owned neither its stdin nor its stdout, and still offered a chat box.
+        """
+        existing = getattr(self, "_control_link", None)
+        if existing is not None:
+            existing.close()
+
+        ipc_signals = getattr(self, "_chat_ipc_signals", None)
+        state_signals = getattr(self, "_control_link_signals", None)
+        if ipc_signals is None or state_signals is None:
+            # No signal bridge means nowhere for the reply events to land, so a
+            # link would be a channel that can send and never hear. Leave chat
+            # off instead of offering a box that cannot receive its answer.
+            debug_log("control link not started: no IPC signal bridge", "desktop")
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            return
+
+        from desktop_app.control_link import ControlLink
+
+        link = ControlLink(
+            on_line=ipc_signals.line_received.emit,
+            on_state_change=state_signals.state_changed.emit,
+            logger=lambda message: debug_log(message, "desktop"),
+        )
+        connected = link.start()
+        self._control_link = link
+        if connected:
+            self._chat_submit_fn = link.submit
+            self._chat_cancel_fn = link.cancel
+        else:
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            self.log_signals.new_log.emit(
+                "⚠️ Chat is unavailable: Claire's control socket is not "
+                f"answering ({link.reason}). Chat will reconnect on its own if "
+                "she comes back.\n"
+            )
+        debug_log(f"control link started (available={connected})", "desktop")
+
+    def _on_control_link_state(self, available: bool, reason: str) -> None:
+        """Slot for the link's transitions; runs on the Qt main thread."""
+        link = getattr(self, "_control_link", None)
+        if available:
+            self._chat_submit_fn = link.submit if link is not None else None
+            self._chat_cancel_fn = link.cancel if link is not None else None
+            self.log_signals.new_log.emit("🔌 Chat reconnected to Claire's control socket\n")
+        else:
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            debug_log(f"control link unavailable: {reason}", "desktop")
+        if self.chat_window is not None:
+            self._set_chat_daemon_status(self._chat_transport_status())
+
+    def _stop_control_link(self) -> None:
+        """Drop the control socket, if we hold one."""
+        link, self._control_link = getattr(self, "_control_link", None), None
+        if link is not None:
+            link.close()
+        self._chat_submit_fn = None
+        self._chat_cancel_fn = None
 
     def _set_chat_daemon_available(self, available: bool) -> None:
         """Update an existing chat window when the daemon starts or stops."""
@@ -2433,7 +2557,7 @@ class ClaireSystemTray:
             painter = QPainter(pixmap)
 
             # Draw a circle
-            color = QColor("#4CAF50" if self.is_listening else "#9E9E9E")
+            color = QColor(COLORS['accent_primary'] if self.is_listening else COLORS['text_muted'])
             painter.setBrush(color)
             painter.setPen(color)
             painter.drawEllipse(4, 4, 56, 56)
@@ -2502,7 +2626,15 @@ class ClaireSystemTray:
                 # writes to - otherwise the log window would show nothing but
                 # this app's own chatter while Claire is running.
                 self._start_daemon_log_tail()
-                self._set_chat_daemon_status("running")
+                # And we do not own its stdin either, so chat needs the control
+                # socket the daemon serves. Without this the chat box used to be
+                # enabled with no channel behind it: a typed message ran in this
+                # process, which has no daemon, and produced no reply and no
+                # error. Chat is announced as available only if that socket
+                # answers.
+                self._start_control_link()
+                self._mark_attached_daemon_listening()
+                self._set_chat_daemon_status(self._chat_transport_status())
                 return
             if self.is_bundled:
                 # When bundled, run daemon in a QThread since Qt components may be used

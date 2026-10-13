@@ -7,8 +7,7 @@
          Dark-only rather than DayNight on purpose.  The app is used in a dark room
          and through a notification shade, and a second light scheme would be a
          second palette nobody has ever seen.  The roles below are the whole colour
-         system; no layout hard-codes a colour except the four semantic state
-         colours. -->
+         system; no layout hard-codes a colour. -->
     <style name="AppTheme" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/accent</item>
         <item name="colorOnPrimary">@color/on_accent</item>

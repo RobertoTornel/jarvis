@@ -82,12 +82,13 @@ anything is injected.
 | `double_click` | `x`, `y` | `click(..., double=True)` |
 | `move_mouse` | `x`, `y` | Absolute motion only |
 | `scroll` | `x`, `y`, `amount=3`, `direction="up"` | Moves to `(x, y)` first, then presses buttons 4/5/6/7 (up/down/left/right); `amount` is 1–20 |
-| `type_text` | `text` | Types literally, layout-aware; `\n` → Return, `\t` → Tab; text longer than 4096 chars is rejected |
-| `press_key` | `key` | One key or a `+` combo: `Return`, `ctrl+shift+t`, `alt+tab`, `super`. A literal `+` must be written `plus`. Aliases: `enter`, `esc`, `space`, `backspace`, `delete`, arrows, `pageup`/`pagedown`, `f1`–`f12`, `win`/`cmd` → super |
+| `type_text` | `text`, `window=None` | Types literally, layout-aware; `\n` → Return, `\t` → Tab; text longer than 4096 chars is rejected. With `window` (title substring or id) the window is raised and the focus confirmed *before* any character is typed; focus that does not land raises, naming both windows, with nothing typed. The result always carries the destination window (`id`, `title`), even without `window` |
+| `press_key` | `key`, `window=None` | One key or a `+` combo: `Return`, `ctrl+shift+t`, `alt+tab`, `super`. A literal `+` must be written `plus`. Aliases: `enter`, `esc`, `space`, `backspace`, `delete`, arrows, `pageup`/`pagedown`, `f1`–`f12`, `win`/`cmd` → super. `window` behaves as in `type_text`: raise, focus, confirm — then press; the result names the receiving window |
 | `launch_app` | `command` | `.desktop` id → `gtk-launch`; PATH binary → `Popen` (own session, no shell); existing file/URI → `xdg-open`; anything else is an error |
 | `wait` | `seconds` | Sleep at most 10 s so the model can let a GUI settle |
 
-**Window matching** (for the three window tools) is pure and shared:
+**Window matching** (for the three window tools, and for the `window`
+argument of `type_text`/`press_key`) is pure and shared:
 case-insensitive **exact** title wins outright; otherwise a case-insensitive
 substring must match exactly one window — several matches raise an ambiguity
 error listing candidates, none raise a not-found error listing the visible
@@ -107,6 +108,10 @@ config entry itself is the consent switch: no `mcps` entry, no server.
   button mapping, window matching (exact beats substring, ambiguity and
   not-found errors), char planning against a *fake* keymap (shift detection,
   unmapped character → `None`), launch command splitting;
+- targeted typing units (no display): `window=` resolves and focuses *before*
+  typing/pressing, unknown and ambiguous names fail with the candidate list
+  and no input, a focus that does not land raises naming both windows, every
+  result names the receiving window, and the schema exposes `window`;
 - contract: the module exists, carries no postponed annotations, the
   catalogue entry converts to a valid `stdio` config with `DISPLAY`;
 - integration (skipped without `DISPLAY`): the real server is launched

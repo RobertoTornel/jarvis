@@ -15,7 +15,10 @@ impossible to construct.
 from __future__ import annotations
 
 import base64
+import errno
 import io
+import os
+import struct
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,9 +185,14 @@ def test_describe_availability_without_a_camera_is_a_plain_report_not_an_error(m
     assert "What you can do" in verdict.render()
 
 
-def test_describe_availability_with_a_camera_reports_it(tmp_path):
+def test_describe_availability_with_a_camera_reports_it(tmp_path, monkeypatch):
     dev_root, sysfs = _dev_root_with(
         tmp_path, ["video0"], labels=[("video0", "Integrated Camera")]
+    )
+    # A regular file in a fake dev root cannot answer VIDIOC_ENUM_FMT, so the
+    # live probe is stood in for with what a real capture node reports.
+    monkeypatch.setattr(
+        camera, "_decodable_formats_for", lambda path: ("MJPG", "YUYV")
     )
     verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
     assert verdict.available is True
@@ -193,6 +201,46 @@ def test_describe_availability_with_a_camera_reports_it(tmp_path):
     assert "1 camera" in verdict.reason
     assert verdict.spoken_summary().startswith("Yes")
     assert verdict.actions == ()
+
+
+def test_describe_availability_skips_a_device_with_no_decodable_format(
+    tmp_path, monkeypatch
+):
+    """A metadata node exists but cannot capture: scanned, never offered."""
+    dev_root, sysfs = _dev_root_with(
+        tmp_path,
+        ["video0", "video1"],
+        labels=[("video0", "W4DS: W4DS"), ("video1", "W4DS: W4DS")],
+    )
+    monkeypatch.setattr(
+        camera,
+        "_decodable_formats_for",
+        lambda path: ("MJPG",) if path.endswith("video0") else (),
+    )
+    verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
+    assert verdict.available is True
+    assert [device.path for device in verdict.devices] == [
+        str(dev_root / "video0")
+    ]
+    assert "1 camera" in verdict.reason
+    assert "not counted" in verdict.reason
+
+
+def test_describe_availability_when_no_device_can_capture_says_so_plainly(
+    tmp_path, monkeypatch
+):
+    """Two nodes exist, neither decodes: no ready camera is claimed."""
+    dev_root, sysfs = _dev_root_with(tmp_path, ["video0", "video1"])
+    monkeypatch.setattr(camera, "_decodable_formats_for", lambda path: ())
+    verdict = camera.describe_availability(dev_root, sysfs_root=sysfs)
+    assert verdict.available is False
+    assert verdict.devices == ()
+    assert "2 video device(s) exist" in verdict.reason
+    assert "none" in verdict.reason
+    assert "ready" not in verdict.reason
+    assert "detected and ready" not in verdict.reason
+    assert verdict.spoken_summary()
+    assert verdict.actions == tuple(camera.NO_CAMERA_FIXES)
 
 
 def test_diagnose_matches_describe_availability(monkeypatch):
@@ -229,7 +277,7 @@ def test_capture_frame_never_opens_a_device_when_the_scan_is_empty(monkeypatch):
     def _tripwire(*args, **kwargs):
         raise AssertionError("capture_frame opened a device with no camera present")
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", _tripwire)
+    monkeypatch.setattr(camera, "_capture_v4l2", _tripwire)
     with pytest.raises(camera.CameraNotFoundError):
         camera.capture_frame()
 
@@ -264,7 +312,7 @@ def test_capture_frame_saves_a_real_jpeg_from_a_fake_driver_under_the_lock(tmp_p
             data=jpeg, pixel_format="MJPG", width=64, height=48
         )
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", fake_capture)
+    monkeypatch.setattr(camera, "_capture_v4l2", fake_capture)
     out_dir = tmp_path / "frames"
     saved = camera.capture_frame(
         dev_root=dev_root, sysfs_root=sysfs, out_dir=out_dir
@@ -291,7 +339,7 @@ def test_capture_frame_selects_by_index_and_by_name(tmp_path, monkeypatch):
             data=_jpeg_bytes(), pixel_format="MJPG", width=64, height=48
         )
 
-    monkeypatch.setattr(camera, "_capture_v4l2_read", fake_capture)
+    monkeypatch.setattr(camera, "_capture_v4l2", fake_capture)
     camera.capture_frame(1, dev_root=dev_root, sysfs_root=sysfs, out_dir=tmp_path)
     camera.capture_frame("usb webcam", dev_root=dev_root, sysfs_root=sysfs, out_dir=tmp_path)
     assert seen == [str(dev_root / "video1"), str(dev_root / "video1")]
@@ -304,7 +352,7 @@ def test_captured_frame_refuses_to_be_empty():
 
 def test_unopenable_device_is_a_named_error_with_the_permission_fix():
     with pytest.raises(camera.CameraCaptureError) as info:
-        camera._capture_v4l2_read("/dev/video-does-not-exist")
+        camera._capture_v4l2("/dev/video-does-not-exist")
     error = info.value
     assert error.device_path == "/dev/video-does-not-exist"
     assert "could not be opened" in str(error)
@@ -332,6 +380,286 @@ def test_missing_pillow_error_names_the_install_command():
     assert error.package == "pillow"
     assert "-m pip install pillow" in str(error)
     assert error.remedy == error.command
+
+
+# --------------------------------------------------------------------------- #
+# V4L2 ABI: 64-bit layout, capability-driven dispatch, streaming teardown
+# --------------------------------------------------------------------------- #
+
+
+def test_v4l2_abi_constants_are_derived_from_the_ctypes_mirrors():
+    """Pin the 64-bit kernel ABI every packed ioctl buffer depends on.
+
+    On 64-bit Linux ``struct v4l2_format`` is 208 bytes and its ``fmt`` union
+    starts at offset 8 — not 4, which is where a 32-bit-minded guess lands.
+    Every size, offset and ioctl number below was derived from the ctypes
+    mirror structs, and each matches the value a compiled C probe reports.
+    """
+    # struct v4l2_format
+    assert camera._V4L2_FORMAT_BUFFER_SIZE == 208
+    assert camera._V4L2_PIX_OFFSET == 8
+    # fmt.pix fields, absolute inside the ioctl buffer
+    assert camera._PIX_WIDTH_OFFSET == 8
+    assert camera._PIX_HEIGHT_OFFSET == 12
+    assert camera._PIX_PIXELFORMAT_OFFSET == 16
+    assert camera._PIX_FIELD_OFFSET == 20
+    assert camera._PIX_BYTESPERLINE_OFFSET == 24
+    assert camera._PIX_SIZEIMAGE_OFFSET == 28
+    # sibling structs
+    assert camera._V4L2_BUFFER_SIZE == 88
+    assert camera._V4L2_REQUESTBUFFERS_SIZE == 20
+    assert camera._V4L2_CAPABILITY_SIZE == 104
+    assert camera._V4L2_FMT_DESC_SIZE == 64
+    # ioctl numbers, all _IOC(dir, 'V', nr, sizeof(struct))
+    assert camera._VIDIOC_G_FMT == 0xC0D05604
+    assert camera._VIDIOC_S_FMT == 0xC0D05605
+    assert camera._VIDIOC_QUERYCAP == 0x80685600
+    assert camera._VIDIOC_ENUM_FMT == 0xC0405602
+    assert camera._VIDIOC_REQBUFS == 0xC0145608
+    assert camera._VIDIOC_QUERYBUF == 0xC0585609
+    assert camera._VIDIOC_QBUF == 0xC058560F
+    assert camera._VIDIOC_DQBUF == 0xC0585611
+    assert camera._VIDIOC_STREAMON == 0x40045612
+    assert camera._VIDIOC_STREAMOFF == 0x40045613
+    # field offsets inside the packed buffers
+    assert camera._BUF_BYTESUSED_OFFSET == 8
+    assert camera._BUF_MEMORY_OFFSET == 60
+    assert camera._BUF_M_OFFSET == 64
+    assert camera._BUF_LENGTH_OFFSET == 72
+    assert camera._CAP_CAPABILITIES_OFFSET == 84
+    assert camera._CAP_DEVICE_CAPS_OFFSET == 88
+    assert camera._FMTDESC_PIXELFORMAT_OFFSET == 44
+
+
+def test_negotiate_format_speaks_the_64_bit_kernel_layout(monkeypatch):
+    """Model the kernel's side of S_FMT: fmt.pix at 8, padding at 4.
+
+    The fake driver reads width/height/pixelformat exactly where the kernel
+    reads them (offsets 8/12/16) and answers in place, leaving its own 0xAA
+    padding bytes at offset 4. Code that packs at offset 4 feeds the driver
+    garbage here and negotiates the wrong geometry — which is the bug.
+    """
+    seen = {}
+
+    def kernel_s_fmt(fd, request, buffer, mutate=True):
+        assert request == camera._VIDIOC_S_FMT
+        width, height, pixelformat, field = struct.unpack_from("<IIII", buffer, 8)
+        seen["request"] = (width, height, pixelformat, field)
+        seen["userspace_padding_at_4"] = struct.unpack("<I", buffer[4:8])[0]
+        if pixelformat in (camera._V4L2_PIX_FMT_MJPEG, camera._V4L2_PIX_FMT_YUYV):
+            agreed = pixelformat
+        else:
+            agreed = 0x000001E0  # what a driver switches to for an unknown format
+        buffer[4:8] = b"\xaa\xaa\xaa\xaa"
+        struct.pack_into("<IIII", buffer, 8, width, height, agreed, 1)
+        struct.pack_into("<II", buffer, 24, width * 2, 614989)
+        return 0
+
+    monkeypatch.setattr(camera, "fcntl", SimpleNamespace(ioctl=kernel_s_fmt))
+    result = camera._negotiate_format(-1, 640, 480, "/dev/video0")
+    # The driver must have been asked for 640x480 MJPG *at the kernel offsets*.
+    assert seen["request"][:3] == (640, 480, camera._V4L2_PIX_FMT_MJPEG)
+    # Userspace must never write a pix field into the union's padding at 4.
+    assert seen["userspace_padding_at_4"] == 0
+    assert result == (640, 480, "MJPG", 614989)
+
+
+def _dispatch_harness(monkeypatch, capabilities):
+    """Stand in for device open/caps/negotiation and both capture methods."""
+    harness = SimpleNamespace(read=[], mmap=[], fds=[])
+
+    def fake_open(path):
+        fd = os.open(os.devnull, os.O_RDONLY)
+        harness.fds.append(fd)
+        return fd
+
+    def fake_read(fd, path, pixel_format, width, height, warmup, timeout):
+        harness.read.append(path)
+        return _jpeg_bytes()
+
+    def fake_mmap(fd, path, pixel_format, width, height, warmup, timeout):
+        harness.mmap.append(path)
+        return _jpeg_bytes()
+
+    monkeypatch.setattr(camera, "_open_device", fake_open)
+    monkeypatch.setattr(camera, "_query_capabilities", lambda fd, path: capabilities)
+    monkeypatch.setattr(
+        camera,
+        "_negotiate_format",
+        lambda fd, width, height, path="": (640, 480, "MJPG", 614989),
+    )
+    monkeypatch.setattr(camera, "_capture_by_read", fake_read)
+    monkeypatch.setattr(camera, "_capture_by_mmap", fake_mmap)
+    return harness
+
+
+def test_capture_dispatch_uses_read_io_when_readwrite_is_advertised(monkeypatch):
+    caps = camera._V4L2_CAP_READWRITE | camera._V4L2_CAP_STREAMING
+    harness = _dispatch_harness(monkeypatch, caps)
+    frame = camera._capture_v4l2("/dev/video0")
+    assert isinstance(frame, camera.CapturedFrame)
+    assert harness.read == ["/dev/video0"]
+    assert harness.mmap == []
+    # the device must be closed on the way out, success or failure
+    with pytest.raises(OSError):
+        os.fstat(harness.fds[0])
+
+
+def test_capture_dispatch_uses_mmap_streaming_when_only_streaming_is_advertised(
+    monkeypatch,
+):
+    harness = _dispatch_harness(monkeypatch, camera._V4L2_CAP_STREAMING)
+    frame = camera._capture_v4l2("/dev/video0")
+    assert isinstance(frame, camera.CapturedFrame)
+    assert harness.mmap == ["/dev/video0"]
+    assert harness.read == []
+    with pytest.raises(OSError):
+        os.fstat(harness.fds[0])
+
+
+def test_capture_dispatch_names_a_device_advertising_neither_io_method(monkeypatch):
+    # 0x80000001: DEVICE_CAPS | VIDEO_CAPTURE but neither READWRITE nor STREAMING
+    harness = _dispatch_harness(monkeypatch, 0x80000001)
+    with pytest.raises(camera.CameraCaptureError) as info:
+        camera._capture_v4l2("/dev/video2")
+    error = info.value
+    assert "neither read() I/O nor mmap streaming" in str(error)
+    assert "0x80000001" in str(error)
+    assert error.remedy
+    assert harness.read == []
+    assert harness.mmap == []
+    # a named error must not leak the file descriptor either
+    with pytest.raises(OSError):
+        os.fstat(harness.fds[0])
+
+
+class _FakeMap:
+    """Stands in for one mmap'd streaming buffer."""
+
+    def __init__(self, payload: bytes):
+        self._payload = payload
+        self.closed = False
+        self.reads = []
+
+    def __len__(self):
+        return len(self._payload)
+
+    def __getitem__(self, item):
+        self.reads.append(item)
+        return self._payload[item]
+
+    def close(self):
+        self.closed = True
+
+
+def _streaming_harness(monkeypatch, *, on_dqbuf, select_ready, payload=b""):
+    """Fake fcntl/mmap/select around one streaming session."""
+    state = SimpleNamespace(ioctls=[], mappings=[], qbufs=[])
+
+    def fake_ioctl(fd, request, buffer, mutate=True):
+        state.ioctls.append(request)
+        if request == camera._VIDIOC_REQBUFS:
+            struct.pack_into("<I", buffer, 0, 2)
+        elif request == camera._VIDIOC_QUERYBUF:
+            index = struct.unpack_from("<I", buffer, camera._BUF_INDEX_OFFSET)[0]
+            struct.pack_into("<I", buffer, camera._BUF_M_OFFSET, 4096 * (index + 1))
+            struct.pack_into("<I", buffer, camera._BUF_LENGTH_OFFSET, 4096)
+        elif request == camera._VIDIOC_QBUF:
+            state.qbufs.append(
+                struct.unpack_from("<I", buffer, camera._BUF_INDEX_OFFSET)[0]
+            )
+        elif request == camera._VIDIOC_DQBUF:
+            on_dqbuf(buffer)
+        return 0
+
+    def fake_mmap(fd, length, flags=None, prot=None, offset=0):
+        body = payload if len(payload) >= length else payload + b"\x00" * (length - len(payload))
+        mapping = _FakeMap(body)
+        state.mappings.append(mapping)
+        return mapping
+
+    monkeypatch.setattr(camera, "fcntl", SimpleNamespace(ioctl=fake_ioctl))
+    monkeypatch.setattr(
+        camera,
+        "mmap",
+        SimpleNamespace(mmap=fake_mmap, MAP_SHARED=1, PROT_READ=1, PROT_WRITE=2),
+    )
+    monkeypatch.setattr(
+        camera,
+        "select",
+        SimpleNamespace(select=lambda r, w, x, t: ((list(r) if select_ready else []), [], [])),
+    )
+    return state
+
+
+def _dqbuf_one_jpeg(buffer, jpeg):
+    struct.pack_into(
+        "<II", buffer, camera._BUF_INDEX_OFFSET, 0, camera._V4L2_BUF_TYPE_VIDEO_CAPTURE
+    )
+    struct.pack_into("<I", buffer, camera._BUF_BYTESUSED_OFFSET, len(jpeg))
+
+
+def test_mmap_capture_copies_exactly_bytesused_and_tears_down_after_a_frame(
+    monkeypatch,
+):
+    jpeg = _jpeg_bytes()
+    state = _streaming_harness(
+        monkeypatch,
+        on_dqbuf=lambda buffer: _dqbuf_one_jpeg(buffer, jpeg),
+        select_ready=True,
+        payload=jpeg + b"\x00" * 64,
+    )
+    frame = camera._capture_by_mmap(
+        -1, "/dev/video0", "MJPG", 640, 480, warmup_frames=0, timeout_sec=1.0
+    )
+    assert frame == jpeg
+    # only bytesused bytes were read out of the mapping
+    assert [read.stop for read in state.mappings[0].reads] == [len(jpeg)]
+    # teardown: stream stopped after it was started, every buffer unmapped
+    assert camera._VIDIOC_STREAMON in state.ioctls
+    assert camera._VIDIOC_STREAMOFF in state.ioctls
+    assert state.ioctls.index(camera._VIDIOC_STREAMOFF) > state.ioctls.index(
+        camera._VIDIOC_STREAMON
+    )
+    assert state.mappings and all(mapping.closed for mapping in state.mappings)
+    # the dequeued buffer went back to the driver before teardown
+    assert state.qbufs[:2] == [0, 1] and 0 in state.qbufs[2:]
+
+
+def test_mmap_capture_tears_down_when_an_ioctl_fails_mid_frame(monkeypatch):
+    def fail_dqbuf(buffer):
+        raise OSError(errno.EIO, "I/O error")
+
+    state = _streaming_harness(
+        monkeypatch, on_dqbuf=fail_dqbuf, select_ready=True
+    )
+    with pytest.raises(camera.CameraCaptureError) as info:
+        camera._capture_by_mmap(
+            -1, "/dev/video0", "MJPG", 640, 480, warmup_frames=0, timeout_sec=1.0
+        )
+    assert "could not hand over a queued frame" in str(info.value)
+    assert info.value.remedy
+    # a camera left streaming is a camera left on: STREAMOFF must still run
+    assert camera._VIDIOC_STREAMOFF in state.ioctls
+    assert state.mappings and all(mapping.closed for mapping in state.mappings)
+
+
+def test_mmap_capture_tears_down_when_the_frame_never_arrives(monkeypatch):
+    state = _streaming_harness(
+        monkeypatch,
+        on_dqbuf=lambda buffer: None,
+        select_ready=False,
+    )
+    with pytest.raises(camera.CameraCaptureError) as info:
+        camera._capture_by_mmap(
+            -1, "/dev/video0", "MJPG", 640, 480, warmup_frames=0, timeout_sec=0.1
+        )
+    assert "no complete MJPG frame arrived" in str(info.value)
+    assert camera._VIDIOC_STREAMOFF in state.ioctls
+    assert state.ioctls.index(camera._VIDIOC_STREAMOFF) > state.ioctls.index(
+        camera._VIDIOC_STREAMON
+    )
+    assert state.mappings and all(mapping.closed for mapping in state.mappings)
 
 
 # --------------------------------------------------------------------------- #

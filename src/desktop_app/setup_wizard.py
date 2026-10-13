@@ -382,7 +382,7 @@ try:
     from PyQt6.QtGui import QFont, QColor, QPalette, QPixmap, QPainter
 
     from desktop_app.qt_worker import KeepAliveWorker
-    from desktop_app.themes import CLAIRE_THEME_STYLESHEET, WIZARD_STYLESHEET, COLORS, _ensure_icons, _ICON_STYLESHEET_TEMPLATE
+    from desktop_app.themes import CLAIRE_THEME_STYLESHEET, WIZARD_STYLESHEET, COLORS, law_style, _ensure_icons, _ICON_STYLESHEET_TEMPLATE
     from desktop_app.mcp_catalogue import get_wizard_entries, MCPEntry
 
     _PYQT6_AVAILABLE = True
@@ -589,49 +589,49 @@ class SetupWizard(QWizard):
         """Apply the shared Claire theme with SVG indicator icons."""
         icons = _ensure_icons()
         icon_css = _ICON_STYLESHEET_TEMPLATE.format(**icons)
-        self.setStyleSheet(CLAIRE_THEME_STYLESHEET + icon_css + """
+        self.setStyleSheet(CLAIRE_THEME_STYLESHEET + icon_css + law_style("""
             /* Additional wizard-specific overrides */
             QLabel#title {
-                color: #fbbf24;
+                color: {text_primary};
                 font-size: 24px;
                 font-weight: bold;
             }
             QLabel#subtitle {
-                color: #a1a1aa;
+                color: {text_secondary};
                 font-size: 16px;
             }
             QLabel#status-success {
-                color: #4ade80;
+                color: {success_light};
                 font-size: 14px;
             }
             QLabel#status-warning {
-                color: #fbbf24;
+                color: {warning_light};
                 font-size: 14px;
             }
             QLabel#status-error {
-                color: #f87171;
+                color: {error_light};
                 font-size: 14px;
             }
             QPushButton#secondary {
-                background-color: #1a1d26;
-                color: #f4f4f5;
+                background-color: {bg_tertiary};
+                color: {text_primary};
             }
             QPushButton#secondary:hover {
-                background-color: #1e222c;
-                border-color: #f59e0b;
-                color: #fbbf24;
+                background-color: {bg_hover};
+                border-color: {accent_primary};
+                color: {accent_primary};
             }
             QPushButton#success {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #22c55e, stop:1 #16a34a);
-                color: #0a0b0f;
+                    stop:0 {success}, stop:1 {success});
+                color: {bg_primary};
                 border: none;
             }
             QPushButton#success:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #4ade80, stop:1 #22c55e);
+                    stop:0 {success_light}, stop:1 {success});
             }
-        """ + WIZARD_STYLESHEET)
+        """) + WIZARD_STYLESHEET)
 
 
 class WelcomePage(ScrollableWizardPage):
@@ -710,7 +710,7 @@ class WelcomePage(ScrollableWizardPage):
         info = QLabel("Click 'Next' to continue with the setup process.")
         info.setWordWrap(True)
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info.setStyleSheet("color: #a1a1aa;")
+        info.setStyleSheet(f"color: {COLORS['text_secondary']};")
         layout.addWidget(info)
 
         self.setLayout(layout)
@@ -732,7 +732,7 @@ class WelcomePage(ScrollableWizardPage):
         layout.addStretch()
 
         status = QLabel(status_text)
-        status.setStyleSheet("font-size: 14px; color: #a1a1aa; background: transparent;")
+        status.setStyleSheet(f"font-size: 14px; color: {COLORS['text_secondary']}; background: transparent;")
         status.setObjectName("status_label")
         layout.addWidget(status)
 
@@ -744,9 +744,9 @@ class WelcomePage(ScrollableWizardPage):
         if status_label:
             status_label.setText(status_text)
             if is_success:
-                status_label.setStyleSheet("font-size: 14px; color: #4ade80; background: transparent;")
+                status_label.setStyleSheet(f"font-size: 14px; color: {COLORS['success_light']}; background: transparent;")
             else:
-                status_label.setStyleSheet("font-size: 14px; color: #fbbf24; background: transparent;")
+                status_label.setStyleSheet(f"font-size: 14px; color: {COLORS['warning_light']}; background: transparent;")
 
     def initializePage(self):
         """Called when page is shown."""
@@ -762,7 +762,7 @@ class WelcomePage(ScrollableWizardPage):
             status_label = row.findChild(QLabel, "status_label")
             if status_label:
                 status_label.setText("Checking...")
-                status_label.setStyleSheet("font-size: 14px; color: #a1a1aa; background: transparent;")
+                status_label.setStyleSheet(f"font-size: 14px; color: {COLORS['text_secondary']}; background: transparent;")
 
         # Start background check
         self.worker = StatusCheckWorker()
@@ -908,7 +908,7 @@ class ProviderChoicePage(ScrollableWizardPage):
         card_layout.addWidget(radio)
         desc = QLabel(desc_text)
         desc.setWordWrap(True)
-        desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+        desc.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
         card_layout.addWidget(desc)
         card_layout.addStretch()
         def update_selection():
@@ -1150,7 +1150,7 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         self._openai_link_cb = QCheckBox(
             "Use chat model for fast tasks")
         self._openai_link_cb.setChecked(False)
-        self._openai_link_cb.setStyleSheet("font-size: 13px; color: #e4e4e7; padding: 4px 0;")
+        self._openai_link_cb.setStyleSheet(f"font-size: 13px; color: {COLORS['text_primary']}; padding: 4px 0;")
         self._openai_link_cb.toggled.connect(self._on_openai_link_toggled)
         form.addWidget(self._openai_link_cb)
 
@@ -1265,9 +1265,9 @@ class OpenAICompatiblePage(ScrollableWizardPage):
         )
         tip.setWordWrap(True)
         tip.setStyleSheet(
-            "background: rgba(245, 158, 11, 0.10);"
-            "border: 1px solid rgba(245, 158, 11, 0.25);"
-            "border-radius: 8px; padding: 12px 16px; color: #fbbf24; font-size: 13px;"
+            f"background: {COLORS['warning_wash']};"
+            f"border: 1px solid {COLORS['warning_border']};"
+            f"border-radius: 8px; padding: 12px 16px; color: {COLORS['warning_light']}; font-size: 13px;"
         )
         layout.addWidget(tip)
 
@@ -1746,7 +1746,7 @@ class OllamaInstallPage(ScrollableWizardPage):
         card_layout.setSpacing(12)
 
         instructions_title = QLabel("📥 Installation Instructions")
-        instructions_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
+        instructions_title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLORS['text_primary']};")
         card_layout.addWidget(instructions_title)
         card_layout.addSpacing(8)
 
@@ -1805,7 +1805,7 @@ class OllamaInstallPage(ScrollableWizardPage):
         """Open Ollama download page in browser."""
         webbrowser.open("https://ollama.ai/download")
         self.status_label.setText("📝 Download page opened. Please install Ollama and then click 'Verify Installation'.")
-        self.status_label.setStyleSheet("color: #a1a1aa;")
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
 
     def _verify_installation(self):
         """Verify Ollama installation."""
@@ -1817,7 +1817,7 @@ class OllamaInstallPage(ScrollableWizardPage):
         if is_installed:
             self._is_installed = True
             self.status_label.setText(f"✅ Ollama is installed at: {path}")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
 
             # Update wizard status
             wizard = self.wizard()
@@ -1827,7 +1827,7 @@ class OllamaInstallPage(ScrollableWizardPage):
         else:
             self._is_installed = False
             self.status_label.setText("❌ Ollama not found. Please install it and try again.")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
 
         self.verify_btn.setEnabled(True)
         self.verify_btn.setText("✅ Verify Installation")
@@ -1844,7 +1844,7 @@ class OllamaInstallPage(ScrollableWizardPage):
 
         if is_installed:
             self.status_label.setText(f"✅ Ollama is already installed at: {path}")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
         else:
             self.status_label.setText("")
 
@@ -1889,7 +1889,7 @@ class OllamaServerPage(ScrollableWizardPage):
         card_layout.setSpacing(12)
 
         instructions_title = QLabel("🚀 Starting the Server")
-        instructions_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
+        instructions_title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLORS['text_primary']};")
         card_layout.addWidget(instructions_title)
         card_layout.addSpacing(8)
 
@@ -1946,7 +1946,7 @@ class OllamaServerPage(ScrollableWizardPage):
         self.start_btn.setEnabled(False)
         self.start_btn.setText("⏳ Starting...")
         self.status_label.setText("Starting Ollama server...")
-        self.status_label.setStyleSheet("color: #a1a1aa;")
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
 
         try:
             # Get ollama path
@@ -1996,7 +1996,7 @@ class OllamaServerPage(ScrollableWizardPage):
 
         except Exception as e:
             self.status_label.setText(f"❌ Failed to start server: {str(e)}")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
             self.start_btn.setEnabled(True)
             self.start_btn.setText("🚀 Start Server")
 
@@ -2011,7 +2011,7 @@ class OllamaServerPage(ScrollableWizardPage):
         if is_running:
             self._is_running = True
             self.status_label.setText(f"✅ Ollama server is running (version {version})")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
 
             # Update wizard status
             wizard = self.wizard()
@@ -2021,7 +2021,7 @@ class OllamaServerPage(ScrollableWizardPage):
         else:
             self._is_running = False
             self.status_label.setText("❌ Server not responding. Please try starting it again.")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
 
         self.verify_btn.setEnabled(True)
         self.verify_btn.setText("✅ Verify Server")
@@ -2040,7 +2040,7 @@ class OllamaServerPage(ScrollableWizardPage):
 
         if is_running:
             self.status_label.setText(f"✅ Ollama server is already running (version {version})")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
         else:
             self.status_label.setText("")
 
@@ -2112,7 +2112,7 @@ class ModelsPage(ScrollableWizardPage):
         # Link toggle (off by default — separate models recommended)
         self._link_cb = QCheckBox("\u2699\ufe0f Use same model for both roles")
         self._link_cb.setChecked(False)
-        self._link_cb.setStyleSheet("font-size: 14px; color: #e4e4e7; padding: 4px 0;")
+        self._link_cb.setStyleSheet(f"font-size: 14px; color: {COLORS['text_primary']}; padding: 4px 0;")
         self._link_cb.toggled.connect(self._on_link_toggled)
         layout.addWidget(self._link_cb)
 
@@ -2122,7 +2122,7 @@ class ModelsPage(ScrollableWizardPage):
             "fast model."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("font-size: 11px; color: #71717a; padding: 0 0 0 24px;")
+        hint.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']}; padding: 0 0 0 24px;")
         layout.addWidget(hint)
         layout.addSpacing(8)
 
@@ -2139,7 +2139,7 @@ class ModelsPage(ScrollableWizardPage):
 
         # Chat model dropdown
         chat_label = QLabel("🎯 Chat Model (conversations)")
-        chat_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #fbbf24;")
+        chat_label.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {COLORS['text_primary']};")
         card_layout.addWidget(chat_label)
 
         self._chat_combo = QComboBox()
@@ -2158,7 +2158,7 @@ class ModelsPage(ScrollableWizardPage):
 
         # Fast model dropdown
         fast_label = QLabel("⚡ Fast Model (voice intent, tool routing)")
-        fast_label.setStyleSheet("font-size: 15px; font-weight: bold; color: #a78bfa;")
+        fast_label.setStyleSheet(f"font-size: 15px; font-weight: bold; color: {COLORS['text_primary']};")
         card_layout.addWidget(fast_label)
 
         self._fast_combo = QComboBox()
@@ -2181,11 +2181,11 @@ class ModelsPage(ScrollableWizardPage):
         vl.setContentsMargins(24, 16, 24, 16)
         vl.setSpacing(4)
         self._vram_label = QLabel("")
-        self._vram_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #e4e4e7;")
+        self._vram_label.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {COLORS['text_primary']};")
         vl.addWidget(self._vram_label)
         self._vram_detail = QLabel("")
         self._vram_detail.setWordWrap(True)
-        self._vram_detail.setStyleSheet("font-size: 12px; color: #71717a;")
+        self._vram_detail.setStyleSheet(f"font-size: 12px; color: {COLORS['text_muted']};")
         vl.addWidget(self._vram_detail)
         layout.addWidget(self._vram_bar)
 
@@ -2196,7 +2196,7 @@ class ModelsPage(ScrollableWizardPage):
         cl.setContentsMargins(18, 16, 18, 16)
         cl.setSpacing(12)
         mt = QLabel("📦 Required Models")
-        mt.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
+        mt.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLORS['text_primary']};")
         cl.addWidget(mt)
         cl.addSpacing(8)
         self.models_label = QLabel("Loading...")
@@ -2361,11 +2361,11 @@ class ModelsPage(ScrollableWizardPage):
                     "Switch to smaller models or use CPU fallback."
                 )
                 self._vram_detail.setStyleSheet(
-                    "font-size: 12px; color: #f87171; padding-top: 2px;"
+                    f"font-size: 12px; color: {COLORS['error_light']}; padding-top: 2px;"
                 )
             else:
                 self._vram_detail.setText(detail)
-                self._vram_detail.setStyleSheet("font-size: 12px; color: #71717a; padding-top: 2px;")
+                self._vram_detail.setStyleSheet(f"font-size: 12px; color: {COLORS['text_muted']}; padding-top: 2px;")
         else:
             self._vram_label.setText(f"Total VRAM Required: {tg:.1f} GB")
             self._vram_detail.setText(detail)
@@ -2445,7 +2445,7 @@ class ModelsPage(ScrollableWizardPage):
     def _install_models(self):
         if not self._save_model_to_config():
             self.status_label.setText("Could not save model selection. Continuing...")
-            self.status_label.setStyleSheet("color: #fbbf24;")
+            self.status_label.setStyleSheet(f"color: {COLORS['warning_light']};")
         if not self._missing_models:
             self._is_complete = True
             self.completeChanged.emit()
@@ -2460,7 +2460,7 @@ class ModelsPage(ScrollableWizardPage):
             self.log_output.clear()
             self._update_models_display()
             self.status_label.setText("All models installed!")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
             return
         m = self._missing_models[self._current_model_index]
         self.install_btn.setEnabled(False)
@@ -2469,7 +2469,7 @@ class ModelsPage(ScrollableWizardPage):
         self.progress.setRange(0, 0)
         self.log_output.setVisible(True)
         self.status_label.setText(f"Installing {m}... ({self._current_model_index + 1}/{len(self._missing_models)})")
-        self.status_label.setStyleSheet("color: #a1a1aa;")
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         op = "ollama"
         w = self.wizard()
         if isinstance(w, SetupWizard) and w.ollama_status and w.ollama_status.cli_path:
@@ -2495,14 +2495,14 @@ class ModelsPage(ScrollableWizardPage):
         else:
             self.progress.setVisible(False)
             self.status_label.setText(f"Failed to install model. {message}")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
             self.install_btn.setEnabled(True)
             self.skip_btn.setEnabled(True)
 
     def _skip_models(self):
         self._is_complete = True
         self.status_label.setText("Skipped model installation. Claire may not work correctly.")
-        self.status_label.setStyleSheet("color: #fbbf24;")
+        self.status_label.setStyleSheet(f"color: {COLORS['warning_light']};")
         self.completeChanged.emit()
 
     def isComplete(self):
@@ -2666,26 +2666,26 @@ class WhisperSetupPage(ScrollableWizardPage):
         self._multilingual_btn.setFixedHeight(36)
         self._multilingual_btn.clicked.connect(lambda: self._on_language_changed(False))
 
-        lang_btn_style = """
+        lang_btn_style = law_style("""
             QPushButton {
                 text-align: center;
                 padding: 6px 12px;
-                border: 2px solid #27272a;
+                border: 2px solid {border};
                 border-radius: 6px;
-                background: #1a1d26;
-                color: #e4e4e7;
+                background: {bg_tertiary};
+                color: {text_primary};
                 font-size: 12px;
             }
             QPushButton:hover {
-                border-color: #f59e0b;
-                background: #1e222c;
+                border-color: {accent_primary};
+                background: {bg_hover};
             }
             QPushButton:checked {
-                border-color: #f59e0b;
-                background: rgba(245, 158, 11, 0.15);
-                color: #fbbf24;
+                border-color: {accent_primary};
+                background: {accent_glow};
+                color: {accent_primary};
             }
-        """
+        """)
         self._english_btn.setStyleSheet(lang_btn_style)
         self._multilingual_btn.setStyleSheet(lang_btn_style)
 
@@ -2696,7 +2696,7 @@ class WhisperSetupPage(ScrollableWizardPage):
         # Language info label
         self._lang_info_label = QLabel()
         self._lang_info_label.setWordWrap(True)
-        self._lang_info_label.setStyleSheet("font-size: 10px; color: #71717a; background: transparent;")
+        self._lang_info_label.setStyleSheet(f"font-size: 10px; color: {COLORS['text_muted']}; background: transparent;")
         lang_layout.addWidget(self._lang_info_label)
 
         layout.addWidget(lang_card)
@@ -2730,20 +2730,20 @@ class WhisperSetupPage(ScrollableWizardPage):
         self._model_slider = QSlider(Qt.Orientation.Horizontal)
         self._model_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._model_slider.setTickInterval(1)
-        self._model_slider.setStyleSheet("""
+        self._model_slider.setStyleSheet(law_style("""
             QSlider {
                 background: transparent;
                 height: 32px;
             }
             QSlider::groove:horizontal {
-                border: 1px solid #27272a;
+                border: 1px solid {border};
                 height: 4px;
-                background: #1a1d26;
+                background: {bg_tertiary};
                 border-radius: 2px;
                 margin: 0;
             }
             QSlider::handle:horizontal {
-                background: #f59e0b;
+                background: {accent_primary};
                 border: none;
                 width: 16px;
                 height: 16px;
@@ -2751,16 +2751,16 @@ class WhisperSetupPage(ScrollableWizardPage):
                 border-radius: 8px;
             }
             QSlider::handle:horizontal:hover {
-                background: #fbbf24;
+                background: {accent_primary};
             }
             QSlider::sub-page:horizontal {
-                background: rgba(245, 158, 11, 0.4);
+                background: {accent_primary};
                 border-radius: 2px;
             }
             QSlider::tick-mark {
-                background: #71717a;
+                background: {text_muted};
             }
-        """)
+        """))
         self._model_slider.valueChanged.connect(self._on_slider_changed)
         slider_inner.addWidget(self._model_slider)
         selection_layout.addWidget(slider_container)
@@ -2777,13 +2777,13 @@ class WhisperSetupPage(ScrollableWizardPage):
         self._model_info_label = QLabel()
         self._model_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._model_info_label.setWordWrap(True)
-        self._model_info_label.setStyleSheet("""
+        self._model_info_label.setStyleSheet(law_style("""
             font-size: 11px;
-            color: #e4e4e7;
+            color: {text_primary};
             padding: 6px 10px;
-            background: #1a1d26;
+            background: {bg_tertiary};
             border-radius: 6px;
-        """)
+        """))
         selection_layout.addWidget(self._model_info_label)
 
         layout.addWidget(selection_card)
@@ -2938,7 +2938,7 @@ class WhisperSetupPage(ScrollableWizardPage):
                 label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             else:
                 label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("font-size: 11px; color: #e4e4e7; background: transparent;")
+            label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_primary']}; background: transparent;")
             label.setFixedHeight(18)
             self._labels_layout.addWidget(label)
 
@@ -2950,7 +2950,7 @@ class WhisperSetupPage(ScrollableWizardPage):
                 size_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             else:
                 size_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            size_label.setStyleSheet("font-size: 9px; color: #71717a; background: transparent;")
+            size_label.setStyleSheet(f"font-size: 9px; color: {COLORS['text_muted']}; background: transparent;")
             size_label.setFixedHeight(16)
             self._size_layout.addWidget(size_label)
 
@@ -3023,7 +3023,7 @@ class WhisperSetupPage(ScrollableWizardPage):
         row_layout.addStretch()
 
         status = QLabel(status_text)
-        status.setStyleSheet("font-size: 12px; color: #a1a1aa; background: transparent;")
+        status.setStyleSheet(f"font-size: 12px; color: {COLORS['text_secondary']}; background: transparent;")
         status.setObjectName("status_label")
         row_layout.addWidget(status)
 
@@ -3035,9 +3035,9 @@ class WhisperSetupPage(ScrollableWizardPage):
         if status_label:
             status_label.setText(status_text)
             if is_success:
-                status_label.setStyleSheet("font-size: 12px; color: #4ade80; background: transparent;")
+                status_label.setStyleSheet(f"font-size: 12px; color: {COLORS['success_light']}; background: transparent;")
             else:
-                status_label.setStyleSheet("font-size: 12px; color: #fbbf24; background: transparent;")
+                status_label.setStyleSheet(f"font-size: 12px; color: {COLORS['warning_light']}; background: transparent;")
 
     def _save_whisper_model_to_config(self):
         """Save the selected whisper model to config file."""
@@ -3116,11 +3116,11 @@ class WhisperSetupPage(ScrollableWizardPage):
         # Update status message based on setup state
         if status.is_fully_setup:
             self.status_label.setText("✅ MLX Whisper is ready! GPU-accelerated speech recognition enabled.")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
         elif self._is_bundled and not status.is_mlx_whisper_installed:
             # In bundled mode without MLX, faster-whisper is used automatically
             self.status_label.setText("✅ Speech recognition ready using faster-whisper.")
-            self.status_label.setStyleSheet("color: #4ade80;")
+            self.status_label.setStyleSheet(f"color: {COLORS['success_light']};")
         else:
             if not status.is_ffmpeg_installed:
                 self.status_label.setText(
@@ -3130,7 +3130,7 @@ class WhisperSetupPage(ScrollableWizardPage):
                 self.status_label.setText(
                     "💡 Install MLX Whisper for GPU acceleration, or continue to save your model selection."
                 )
-            self.status_label.setStyleSheet("color: #a1a1aa;")
+            self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
 
         self.completeChanged.emit()
 
@@ -3143,7 +3143,7 @@ class WhisperSetupPage(ScrollableWizardPage):
                 "❌ Homebrew not found. Please install Homebrew first:\n"
                 "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
             )
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
             return
 
         self.install_ffmpeg_btn.setEnabled(False)
@@ -3190,7 +3190,7 @@ class WhisperSetupPage(ScrollableWizardPage):
             self._refresh_mlx_status()
         else:
             self.status_label.setText(f"❌ Failed to install FFmpeg: {message}")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
 
     def _on_mlx_installed(self, success: bool, message: str):
         """Handle MLX Whisper installation completion."""
@@ -3205,7 +3205,7 @@ class WhisperSetupPage(ScrollableWizardPage):
             self._rebuild_slider_ui()
         else:
             self.status_label.setText(f"❌ Failed to install MLX Whisper: {message}")
-            self.status_label.setStyleSheet("color: #f87171;")
+            self.status_label.setStyleSheet(f"color: {COLORS['error_light']};")
 
     def isComplete(self) -> bool:
         """Page is complete when setup is done or skipped."""
@@ -3254,15 +3254,15 @@ class MCPPage(ScrollableWizardPage):
         # Node.js availability warning
         self._node_warning = QLabel(
             "⚠️  <b>Node.js not found.</b> The MCP servers below require Node.js to run. "
-            "<a href='https://nodejs.org/' style='color: #f59e0b;'>Download Node.js</a> "
+            f"<a href='https://nodejs.org/' style='color: {COLORS['accent_primary']};'>Download Node.js</a> "
             "and restart Claire, or skip this page for now."
         )
         self._node_warning.setOpenExternalLinks(True)
         self._node_warning.setWordWrap(True)
         self._node_warning.setStyleSheet(
-            "background: rgba(239, 68, 68, 0.12);"
-            "border: 1px solid rgba(239, 68, 68, 0.35);"
-            "border-radius: 8px; padding: 12px 16px; color: #fca5a5; font-size: 13px;"
+            f"background: {COLORS['error_wash']};"
+            f"border: 1px solid {COLORS['error_border']};"
+            f"border-radius: 8px; padding: 12px 16px; color: {COLORS['error_light']}; font-size: 13px;"
         )
         self._node_warning.setVisible(not self._is_node_available())
         layout.addWidget(self._node_warning)
@@ -3297,7 +3297,7 @@ class MCPPage(ScrollableWizardPage):
 
             desc_label = QLabel(entry.description)
             desc_label.setWordWrap(True)
-            desc_label.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+            desc_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
             text_layout.addWidget(desc_label)
 
             card_layout.addLayout(text_layout, 1)
@@ -3315,9 +3315,9 @@ class MCPPage(ScrollableWizardPage):
         tip.setWordWrap(True)
         tip.setStyleSheet(
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 rgba(245, 158, 11, 0.12), stop:1 rgba(139, 92, 246, 0.08));"
-            "border: 1px solid rgba(245, 158, 11, 0.25);"
-            "border-radius: 8px; padding: 12px 16px; color: #fbbf24; font-size: 13px;"
+            f"stop:0 {COLORS['warning_wash']}, stop:1 transparent);"
+            f"border: 1px solid {COLORS['warning_border']};"
+            f"border-radius: 8px; padding: 12px 16px; color: {COLORS['warning_light']}; font-size: 13px;"
         )
         layout.addWidget(tip)
 
@@ -3431,11 +3431,11 @@ class SearchProvidersPage(ScrollableWizardPage):
             "DuckDuckGo is rate-limited. Free tier: 2,000 queries/month. "
             "Get a key at "
             "<a href='https://api.search.brave.com/app/keys' "
-            "style='color: #f59e0b;'>api.search.brave.com</a>."
+            f"style='color: {COLORS['accent_primary']};'>api.search.brave.com</a>."
         )
         brave_desc.setOpenExternalLinks(True)
         brave_desc.setWordWrap(True)
-        brave_desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+        brave_desc.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
         brave_layout.addWidget(brave_desc)
 
         self._brave_input = QLineEdit()
@@ -3463,7 +3463,7 @@ class SearchProvidersPage(ScrollableWizardPage):
             "your utterance, so a Turkish question gets a Turkish answer."
         )
         wiki_desc.setWordWrap(True)
-        wiki_desc.setStyleSheet("color: #a1a1aa; font-size: 13px;")
+        wiki_desc.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
         wiki_layout.addWidget(wiki_desc)
 
         self._wiki_check = QCheckBox("  Enable Wikipedia fallback")
@@ -3479,9 +3479,9 @@ class SearchProvidersPage(ScrollableWizardPage):
         tip.setWordWrap(True)
         tip.setStyleSheet(
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 rgba(245, 158, 11, 0.12), stop:1 rgba(139, 92, 246, 0.08));"
-            "border: 1px solid rgba(245, 158, 11, 0.25);"
-            "border-radius: 8px; padding: 12px 16px; color: #fbbf24; font-size: 13px;"
+            f"stop:0 {COLORS['warning_wash']}, stop:1 transparent);"
+            f"border: 1px solid {COLORS['warning_border']};"
+            f"border-radius: 8px; padding: 12px 16px; color: {COLORS['warning_light']}; font-size: 13px;"
         )
         layout.addWidget(tip)
 
@@ -3589,7 +3589,7 @@ class CompletePage(ScrollableWizardPage):
         card_layout.setSpacing(12)
 
         tips_title = QLabel("💡 Quick Tips")
-        tips_title.setStyleSheet("font-size: 16px; font-weight: bold; color: #fbbf24;")
+        tips_title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {COLORS['text_primary']};")
         card_layout.addWidget(tips_title)
         card_layout.addSpacing(8)
 
@@ -3607,16 +3607,16 @@ class CompletePage(ScrollableWizardPage):
         # Memory viewer tip with special styling
         brain_tip = QLabel("🧠  Peek inside Claire's brain — open the Memory Viewer to see what he remembers")
         brain_tip.setWordWrap(True)
-        brain_tip.setStyleSheet("""
+        brain_tip.setStyleSheet(law_style("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 rgba(245, 158, 11, 0.15), stop:1 rgba(139, 92, 246, 0.1));
-            border: 1px solid rgba(245, 158, 11, 0.3);
+                stop:0 {warning_glow}, stop:1 transparent);
+            border: 1px solid {warning_border};
             border-radius: 8px;
             padding: 12px 16px;
             margin-top: 8px;
-            color: #fbbf24;
+            color: {warning_light};
             font-style: italic;
-        """)
+        """))
         card_layout.addWidget(brain_tip)
 
         layout.addWidget(card)

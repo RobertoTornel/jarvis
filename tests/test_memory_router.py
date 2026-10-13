@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -281,6 +283,65 @@ def test_render_does_not_mutate_the_body_it_reports_on(tmp_path: Path) -> None:
     assert router.body.lstrip("\n") == _body_from_lines(lines)
     assert router.over_budget is True
     assert router.render_for_prompt().count("WARNING") == 1
+
+# --------------------------------------------------------------------------
+# The over-budget warning is prompt text, so it must describe the router and
+# not the backend that happens to hold it.
+# --------------------------------------------------------------------------
+
+def _warning_block(rendered: str) -> str:
+    """The loud banner the model reads before the header and body."""
+    return rendered.split("\n\n", 1)[0]
+
+@pytest.mark.unit
+def test_over_budget_warning_names_no_file_or_notes_directory_on_either_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget = 300
+    body = _body_from_lines(_over_budget_lines())
+
+    # Vault backend: the router is a file on disk.
+    path = _write(
+        _router_path(tmp_path),
+        f"---\nbudget_bytes: {budget}\n---\n\n" + body,
+    )
+    vault_router = load_router(path)
+    vault_rendered = vault_router.render_for_prompt()
+    assert vault_router.over_budget is True
+
+    # Store backend: the router is a row, read through the same render path.
+    from claire.memory import pg_router
+
+    document = SimpleNamespace(frontmatter={"budget_bytes": str(budget)}, body=body)
+    monkeypatch.setattr(pg_router.pg, "get_router", lambda dsn=None: document)
+    store_router = pg_router.PostgresMemoryRouter(dsn="postgresql://unused")
+    store_rendered = store_router.render_for_prompt()
+    assert store_router.over_budget is True
+
+    for backend, rendered, router in (
+        ("vault", vault_rendered, vault_router),
+        ("store", store_rendered, store_router),
+    ):
+        warning = _warning_block(rendered)
+        # Still loud, and still honest about the three real numbers.
+        assert warning.startswith("!" * 72)
+        assert warning.endswith("!" * 72)
+        assert "OVER BUDGET" in warning
+        assert "TRUNCATED" in warning
+        assert f"Real size: {router.size_bytes} bytes" in warning
+        assert f"Budget: {router.budget_bytes} bytes" in warning
+        assert f"Dropped: {router.dropped_bytes} bytes" in warning
+        assert router.dropped_bytes > 0
+        # True in both backends: no file, no vault, no notes/ directory.
+        lowered = warning.lower()
+        for untrue in ("claire.md", "notes/", "vault", "file"):
+            assert untrue not in lowered, f"{backend} warning names {untrue!r}: {warning}"
+
+    # The facts are the same on both backends, so the notice is the same too,
+    # once its three numbers are set aside.
+    assert re.sub(r"\d+", "N", _warning_block(vault_rendered)) == re.sub(
+        r"\d+", "N", _warning_block(store_rendered)
+    )
 
 # --------------------------------------------------------------------------
 # Edit without restart: no caching, ever

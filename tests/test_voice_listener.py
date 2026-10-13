@@ -1111,6 +1111,14 @@ class TestSampleRateFallback:
                             mock_cfg.whisper_min_audio_duration = 0.3
                             listener._check_query_timeout = MagicMock()
                             get_calls = [0]
+
+                            def _utterance_was_decoded() -> bool:
+                                """True once the worker has decoded the 0.4 s utterance."""
+                                return any(
+                                    len(call[0][0]) == 6400
+                                    for call in mock_whisper_model.transcribe.call_args_list
+                                )
+
                             def fake_get(timeout=0.2):
                                 get_calls[0] += 1
                                 if get_calls[0] == 1:
@@ -1121,6 +1129,17 @@ class TestSampleRateFallback:
                                 if get_calls[0] == 2:
                                     from claire.listening.listener import _CapturedAudio
                                     return _CapturedAudio(np.zeros((4410, input_channels), dtype=np.float32), listener._audio_generation)
+                                # The utterance is decoded on the serial transcription
+                                # worker, and that worker *drops* a queued job once
+                                # `_should_stop` is set (`_transcription_is_current`).
+                                # Stopping the capture loop first is therefore a race,
+                                # and on a loaded machine the worker loses it: the
+                                # decode never happens and the only call the mock saw
+                                # was the warmup. Wait for the decode before stopping —
+                                # this loop is only sleeping, so the worker does run.
+                                deadline = time.monotonic() + 10.0
+                                while not _utterance_was_decoded() and time.monotonic() < deadline:
+                                    time.sleep(0.01)
                                 listener._should_stop = True
                                 raise q.Empty()
 
@@ -1140,8 +1159,23 @@ class TestSampleRateFallback:
                             assert listener._stream_samplerate == 44100
                             assert listener._frame_samples == 44100 * mock_cfg.vad_frame_ms // 1000
                             assert capture_kwargs['blocksize'] == listener._frame_samples
-                            assert len(mock_whisper_model.transcribe.call_args[0][0]) == 6400
-                            np.testing.assert_allclose(mock_whisper_model.transcribe.call_args[0][0], .1, atol=.001)
+
+                            # The listener warms faster-whisper on its model
+                            # preparation thread with one second of seeded noise
+                            # (`default_rng(0).standard_normal(samplerate) * .01`).
+                            # That warmup decode races the real one: under CPU
+                            # contention it lands *after* the utterance, so
+                            # `transcribe.call_args` — the last call — can be the
+                            # warmup instead of the audio this test drove through.
+                            # Take the decode that carries the utterance, and say
+                            # which lengths were seen if it is not there.
+                            decoded = [call[0][0] for call in mock_whisper_model.transcribe.call_args_list]
+                            utterances = [audio for audio in decoded if len(audio) == 6400]
+                            assert len(utterances) == 1, (
+                                f"expected exactly one 6400-sample decode of the utterance, "
+                                f"got decodes of {[len(audio) for audio in decoded]} samples"
+                            )
+                            np.testing.assert_allclose(utterances[0], .1, atol=.001)
 
                             captured = capsys.readouterr()
                             assert "44100" in captured.out

@@ -753,7 +753,7 @@ def test_render_is_parseable_and_matches_the_checks() -> None:
         current_title = match.group("title")
         parsed[current_title] = match.group("status")
     assert parsed["Browser (chromium)"] == "MISSING"
-    assert parsed["Memory vault"] == "READY"
+    assert parsed["Memory store"] == "READY"
     assert fixes["Browser (chromium)"] == "playwright install chromium"
 
 

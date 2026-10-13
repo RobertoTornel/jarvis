@@ -214,7 +214,7 @@ CHECK_ORDER: tuple[str, ...] = (
 
 CHECK_TITLES: Mapping[str, str] = {
     "config": "Configuration",
-    "vault": "Memory vault",
+    "vault": "Memory store",
     "key_store": "Key store",
     "audio_device": "Audio input device",
     "stt_model": "Speech-to-text model",
@@ -795,8 +795,63 @@ def probe_llm_endpoint(ctx: AcceptanceContext) -> ProbeResult:
     return ProbeResult(mapped.state, detail, mapped.fix, data)
 
 
+def _memory_backend() -> str:
+    """Which long-term memory backend is configured: ``postgres`` or ``vault``."""
+    try:
+        from claire.system_prompt import _memory_backend as configured
+
+        return configured()
+    except Exception:  # pragma: no cover - a diagnostic must still report
+        return "postgres"
+
 def probe_memory_router(ctx: AcceptanceContext) -> ProbeResult:
     """The always-loaded router: present, readable, re-read, inside its budget."""
+
+    if _memory_backend() == "postgres":
+        # The router lives in the store now, not in a file. Probing a path would
+        # report a healthy install as BLOCKED and send the owner to recreate a
+        # vault that was deliberately retired.
+        pg_router = _require(
+            "claire.memory.pg_router", _import_fix("claire.memory.pg_router")
+        )
+        source = "postgres:memory_documents/router"
+        try:
+            router = pg_router.load_router_from_postgres()
+        except Exception as exc:
+            return ProbeResult.blocked(
+                f"the memory store holds no router ({type(exc).__name__}: {exc}), so "
+                "Claire has nothing always-loaded to point at her notes and facts.",
+                fix=(
+                    "Import it, or create it in the panel's memory editor: "
+                    f"`{PY} -m claire.memory.migrate_md_to_pg`"
+                ),
+                router_source=source,
+            )
+        data = {
+            "router_source": source,
+            "size_bytes": router.size_bytes,
+            "budget_bytes": router.budget_bytes,
+            "over_budget": router.over_budget,
+            "dropped_bytes": router.dropped_bytes,
+            "reread_per_request": True,
+        }
+        if router.over_budget:
+            return ProbeResult.blocked(
+                f"the stored router is {router.size_bytes} bytes, over its "
+                f"{router.budget_bytes}-byte budget; {router.dropped_bytes} bytes would "
+                "be dropped from the prompt.",
+                fix=(
+                    f"Trim it to {router.budget_bytes} bytes or fewer in the panel's "
+                    "memory editor (the budget can be raised in its frontmatter with "
+                    "`budget_bytes:`)."
+                ),
+                **data,
+            )
+        return ProbeResult.ready(
+            f"router in the memory store: {router.size_bytes} bytes of a "
+            f"{router.budget_bytes}-byte budget, re-read on every request",
+            **data,
+        )
 
     notes = _require("claire.memory.notes", _import_fix("claire.memory.notes"))
     router_mod = _require("claire.memory.router", _import_fix("claire.memory.router"))

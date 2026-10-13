@@ -1,8 +1,13 @@
 """
 🎨 Claire UI Themes
 
-Shared stylesheets for Qt interfaces, matching the Memory Viewer's
-deep space theme with amber accents.
+The one colour law for every surface, in one place.  Dark grey and light grey
+carry all structure and text, and a single pink accent marks Claire and the
+things the owner can act on.  Green, amber and red stay status colours: success
+is green, warning amber and danger red, and pink never stands in for any of
+them.  The panel and the Android companion express the same values under their
+own names; the Qt surfaces express them here and reference ``COLORS`` rather
+than writing a hex of their own.
 """
 
 from __future__ import annotations
@@ -10,33 +15,101 @@ from __future__ import annotations
 import os
 import tempfile
 
-# Color palette
-COLORS = {
-    "bg_primary": "#0a0b0f",
-    "bg_secondary": "#12141a",
-    "bg_tertiary": "#1a1d26",
-    "bg_card": "#161920",
-    "bg_hover": "#1e222c",
-    
-    "accent_primary": "#f59e0b",
-    "accent_secondary": "#fbbf24",
-    "accent_glow": "rgba(245, 158, 11, 0.15)",
-    "accent_muted": "#92400e",
-    
-    "text_primary": "#f4f4f5",
-    "text_secondary": "#a1a1aa",
-    "text_muted": "#71717a",
-    
-    "border": "#27272a",
-    "border_glow": "rgba(245, 158, 11, 0.3)",
-    
-    "success": "#22c55e",
-    "success_light": "#4ade80",
-    "warning": "#f59e0b",
-    "warning_light": "#fbbf24",
-    "error": "#ef4444",
-    "error_light": "#f87171",
+# --------------------------------------------------------------------------- #
+# The law, role by role.  These are the canonical values; every other entry in
+# this module is derived from them, so a change lands in exactly one place.
+# --------------------------------------------------------------------------- #
+COLOUR_LAW = {
+    # Background and the surfaces above it, darkest to lightest.
+    "bg": "#131417",
+    "surface": "#1b1d21",
+    "surface_alt": "#24262b",
+    "surface_high": "#2e3138",
+
+    # Borders, the stronger component border first and the hairline after it.
+    "line": "#31343a",
+    "line_soft": "#26282d",
+
+    # Text, strongest to faintest.
+    "text": "#e8eaed",
+    "text_dim": "#a8adb5",
+    "text_faint": "#878d96",
+
+    # The one accent, its pressed step and the ink that sits on it.
+    "accent": "#e562a4",
+    "accent_dim": "#cf4b92",
+    "accent_ink": "#150a12",
+
+    # Status colours.  These keep their own hues; the accent never replaces one.
+    "success": "#4cc38a",
+    "warning": "#d9a441",
+    "danger": "#ef6a6a",
 }
+
+
+def _tint(role: str, alpha: float) -> str:
+    """A soft ``rgba`` tint of a law colour, for washes and glows."""
+    value = COLOUR_LAW[role].lstrip("#")
+    red, green, blue = (int(value[index:index + 2], 16) for index in (0, 2, 4))
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+# The Qt role names.  Each one names a role in the law above and carries no
+# value of its own; the catch-all names keep the elevation order the stylesheets
+# already reason about.
+COLORS = {
+    "bg_primary": COLOUR_LAW["bg"],
+    "bg_secondary": COLOUR_LAW["surface"],
+    "bg_tertiary": COLOUR_LAW["surface_alt"],
+    "bg_card": COLOUR_LAW["surface"],
+    "bg_hover": COLOUR_LAW["surface_high"],
+    "bg_scrim": _tint("bg", 0.85),
+
+    "accent_primary": COLOUR_LAW["accent"],
+    "accent_secondary": COLOUR_LAW["accent"],
+    "accent_glow": _tint("accent", 0.15),
+    "accent_wash": _tint("accent", 0.10),
+    "accent_selection": _tint("accent", 0.3),
+    "accent_muted": COLOUR_LAW["accent_dim"],
+    "on_accent": COLOUR_LAW["accent_ink"],
+
+    "text_primary": COLOUR_LAW["text"],
+    "text_secondary": COLOUR_LAW["text_dim"],
+    "text_muted": COLOUR_LAW["text_faint"],
+
+    "border": COLOUR_LAW["line"],
+    "border_soft": COLOUR_LAW["line_soft"],
+    "border_glow": _tint("accent", 0.3),
+
+    "success": COLOUR_LAW["success"],
+    "success_light": COLOUR_LAW["success"],
+    "success_glow": _tint("success", 0.15),
+    "success_border": _tint("success", 0.3),
+    "warning": COLOUR_LAW["warning"],
+    "warning_light": COLOUR_LAW["warning"],
+    "warning_glow": _tint("warning", 0.15),
+    "warning_wash": _tint("warning", 0.10),
+    "warning_border": _tint("warning", 0.25),
+    "error": COLOUR_LAW["danger"],
+    "error_light": COLOUR_LAW["danger"],
+    "error_glow": _tint("danger", 0.15),
+    "error_wash": _tint("danger", 0.12),
+    "error_border": _tint("danger", 0.35),
+}
+
+
+def law_style(template: str) -> str:
+    """Resolve ``{role}`` markers in a Qt stylesheet from :data:`COLORS`.
+
+    The markers keep the stylesheet free of raw hex while leaving its own
+    braces untouched, and let the CSS read close to the law's role names.
+    """
+    for role, value in COLORS.items():
+        template = template.replace("{" + role + "}", value)
+    return template
+
+
+_style = law_style
 
 CHAT_THEME_STYLESHEET = f"""
     QMainWindow#chatWindow, QWidget#phoneShell {{ background: transparent; }}
@@ -68,141 +141,141 @@ CHAT_THEME_STYLESHEET = f"""
 
 
 # Comprehensive Qt stylesheet matching the Memory Viewer's design
-CLAIRE_THEME_STYLESHEET = """
+CLAIRE_THEME_STYLESHEET = _style("""
     QWidget#download_card {
-        background-color: #161920;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        border: 1px solid {border};
         border-radius: 12px;
     }
     QMainWindow, QDialog, QWizard, QWizardPage {
-        background-color: #0a0b0f;
+        background-color: {bg_primary};
     }
     
     QWidget {
-        background-color: #0a0b0f;
-        color: #f4f4f5;
+        background-color: {bg_primary};
+        color: {text_primary};
         font-family: '.AppleSystemUIFont', 'Segoe UI', sans-serif;
     }
     
     QLabel {
-        color: #f4f4f5;
+        color: {text_primary};
         background: transparent;
     }
     
     QLabel#title {
         font-size: 18px;
         font-weight: 600;
-        color: #f4f4f5;
+        color: {text_primary};
     }
     
     QLabel#subtitle {
         font-size: 12px;
-        color: #71717a;
+        color: {text_muted};
     }
     
     QLabel#section_title {
         font-size: 16px;
         font-weight: bold;
-        color: #fbbf24;
+        color: {text_primary};
     }
     
     QTextEdit, QPlainTextEdit {
-        background-color: #12141a;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 10px;
         padding: 12px;
-        selection-background-color: rgba(245, 158, 11, 0.3);
-        selection-color: #fbbf24;
+        selection-background-color: {accent_selection};
+        selection-color: {accent_primary};
     }
     
     QTextEdit:focus, QPlainTextEdit:focus {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QLineEdit {
-        background-color: #12141a;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
         padding: 8px 12px;
-        selection-background-color: rgba(245, 158, 11, 0.3);
+        selection-background-color: {accent_selection};
     }
     
     QLineEdit:focus {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QLineEdit::placeholder {
-        color: #71717a;
+        color: {text_muted};
     }
     
     QPushButton {
-        background-color: #1a1d26;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_tertiary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
         padding: 10px 20px;
         font-weight: 500;
     }
     
     QPushButton:hover {
-        background-color: #1e222c;
-        border-color: #f59e0b;
-        color: #fbbf24;
+        background-color: {bg_hover};
+        border-color: {accent_primary};
+        color: {accent_primary};
     }
     
     QPushButton:pressed {
-        background-color: rgba(245, 158, 11, 0.15);
+        background-color: {accent_glow};
     }
     
     QPushButton:disabled {
-        background-color: #12141a;
-        color: #71717a;
-        border-color: #1a1d26;
+        background-color: {bg_secondary};
+        color: {text_muted};
+        border-color: {bg_tertiary};
     }
     
     QPushButton#primary {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 #f59e0b, stop:1 #d97706);
-        color: #0a0b0f;
+            stop:0 {accent_primary}, stop:1 {accent_muted});
+        color: {on_accent};
         border: none;
         font-weight: 600;
     }
     
     QPushButton#primary:hover {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 #fbbf24, stop:1 #f59e0b);
+            stop:0 {accent_primary}, stop:1 {accent_primary});
     }
     
     QPushButton#primary:disabled {
-        background: #27272a;
-        color: #71717a;
+        background: {bg_tertiary};
+        color: {text_muted};
     }
     
     QPushButton#danger {
-        background-color: #1a1d26;
-        border-color: #ef4444;
-        color: #ef4444;
+        background-color: {bg_tertiary};
+        border-color: {error};
+        color: {error};
     }
     
     QPushButton#danger:hover {
-        background-color: rgba(239, 68, 68, 0.15);
-        border-color: #f87171;
-        color: #f87171;
+        background-color: {error_glow};
+        border-color: {error_light};
+        color: {error_light};
     }
     
     QComboBox {
-        background-color: #12141a;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
         padding: 8px 12px;
         min-width: 120px;
     }
     
     QComboBox:hover {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QComboBox::drop-down {
@@ -214,21 +287,21 @@ CLAIRE_THEME_STYLESHEET = """
         image: none;
         border-left: 5px solid transparent;
         border-right: 5px solid transparent;
-        border-top: 6px solid #71717a;
+        border-top: 6px solid {text_muted};
         margin-right: 8px;
     }
     
     QComboBox QAbstractItemView {
-        background-color: #161920;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
-        selection-background-color: rgba(245, 158, 11, 0.15);
-        selection-color: #fbbf24;
+        selection-background-color: {accent_glow};
+        selection-color: {accent_primary};
     }
     
     QCheckBox {
-        color: #f4f4f5;
+        color: {text_primary};
         spacing: 8px;
         background: transparent;
     }
@@ -236,22 +309,22 @@ CLAIRE_THEME_STYLESHEET = """
     QCheckBox::indicator {
         width: 18px;
         height: 18px;
-        border: 1px solid #27272a;
+        border: 1px solid {border};
         border-radius: 4px;
         background-color: transparent;
     }
     
     QCheckBox::indicator:hover {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QCheckBox::indicator:checked {
-        background-color: #f59e0b;
-        border-color: #f59e0b;
+        background-color: {accent_primary};
+        border-color: {accent_primary};
     }
     
     QRadioButton {
-        color: #f4f4f5;
+        color: {text_primary};
         spacing: 8px;
         background: transparent;
     }
@@ -259,23 +332,23 @@ CLAIRE_THEME_STYLESHEET = """
     QRadioButton::indicator {
         width: 18px;
         height: 18px;
-        border: 1px solid #27272a;
+        border: 1px solid {border};
         border-radius: 9px;
-        background-color: #12141a;
+        background-color: {bg_secondary};
     }
     
     QRadioButton::indicator:hover {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QRadioButton::indicator:checked {
-        background-color: #f59e0b;
-        border-color: #f59e0b;
+        background-color: {accent_primary};
+        border-color: {accent_primary};
     }
     
     QProgressBar {
-        background-color: #12141a;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        border: 1px solid {border};
         border-radius: 6px;
         height: 8px;
         text-align: center;
@@ -283,7 +356,7 @@ CLAIRE_THEME_STYLESHEET = """
     
     QProgressBar::chunk {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-            stop:0 #f59e0b, stop:1 #fbbf24);
+            stop:0 {accent_primary}, stop:1 {accent_primary});
         border-radius: 5px;
     }
     
@@ -293,20 +366,20 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QScrollBar:vertical {
-        background-color: #12141a;
+        background-color: {bg_secondary};
         width: 10px;
         border-radius: 5px;
         margin: 0;
     }
     
     QScrollBar::handle:vertical {
-        background-color: #27272a;
+        background-color: {bg_tertiary};
         border-radius: 5px;
         min-height: 30px;
     }
     
     QScrollBar::handle:vertical:hover {
-        background-color: #f59e0b;
+        background-color: {accent_primary};
     }
     
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -314,19 +387,19 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QScrollBar:horizontal {
-        background-color: #12141a;
+        background-color: {bg_secondary};
         height: 10px;
         border-radius: 5px;
     }
     
     QScrollBar::handle:horizontal {
-        background-color: #27272a;
+        background-color: {bg_tertiary};
         border-radius: 5px;
         min-width: 30px;
     }
     
     QScrollBar::handle:horizontal:hover {
-        background-color: #f59e0b;
+        background-color: {accent_primary};
     }
     
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
@@ -334,8 +407,8 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QGroupBox {
-        background-color: #161920;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        border: 1px solid {border};
         border-radius: 12px;
         margin-top: 12px;
         padding: 16px;
@@ -347,23 +420,23 @@ CLAIRE_THEME_STYLESHEET = """
         subcontrol-origin: margin;
         left: 16px;
         padding: 0 8px;
-        color: #a1a1aa;
+        color: {text_secondary};
         font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
     
     QTabWidget::pane {
-        background-color: #161920;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        border: 1px solid {border};
         border-radius: 12px;
         top: -1px;
     }
     
     QTabBar::tab {
-        background-color: #12141a;
-        color: #a1a1aa;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_secondary};
+        border: 1px solid {border};
         border-bottom: none;
         border-top-left-radius: 8px;
         border-top-right-radius: 8px;
@@ -372,46 +445,46 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QTabBar::tab:selected {
-        background-color: #161920;
-        color: #fbbf24;
-        border-color: #27272a;
-        border-bottom-color: #161920;
+        background-color: {bg_card};
+        color: {accent_primary};
+        border-color: {border};
+        border-bottom-color: {bg_card};
     }
     
     QTabBar::tab:hover:!selected {
-        background-color: #1a1d26;
-        color: #f4f4f5;
+        background-color: {bg_tertiary};
+        color: {text_primary};
     }
     
     QSpinBox, QDoubleSpinBox {
-        background-color: #12141a;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
         padding: 8px 12px;
     }
     
     QSpinBox:focus, QDoubleSpinBox:focus {
-        border-color: #f59e0b;
+        border-color: {accent_primary};
     }
     
     QSpinBox::up-button, QDoubleSpinBox::up-button,
     QSpinBox::down-button, QDoubleSpinBox::down-button {
-        background-color: #1a1d26;
+        background-color: {bg_tertiary};
         border: none;
         width: 20px;
     }
 
     QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
     QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-        background-color: #f59e0b;
+        background-color: {accent_primary};
     }
 
     
     QListWidget {
-        background-color: #12141a;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_secondary};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 10px;
         padding: 8px;
     }
@@ -422,34 +495,34 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QListWidget::item:selected {
-        background-color: rgba(245, 158, 11, 0.15);
-        color: #fbbf24;
+        background-color: {accent_glow};
+        color: {accent_primary};
     }
     
     QListWidget::item:hover:!selected {
-        background-color: #1e222c;
+        background-color: {bg_hover};
     }
     
     QMessageBox {
-        background-color: #0a0b0f;
+        background-color: {bg_primary};
     }
     
     QMessageBox QLabel {
-        color: #f4f4f5;
+        color: {text_primary};
     }
     
     QToolTip {
-        background-color: #161920;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 6px;
         padding: 6px 10px;
     }
     
     QMenu {
-        background-color: #161920;
-        color: #f4f4f5;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        color: {text_primary};
+        border: 1px solid {border};
         border-radius: 8px;
         padding: 4px;
     }
@@ -460,13 +533,13 @@ CLAIRE_THEME_STYLESHEET = """
     }
     
     QMenu::item:selected {
-        background-color: rgba(245, 158, 11, 0.15);
-        color: #fbbf24;
+        background-color: {accent_glow};
+        color: {accent_primary};
     }
     
     QMenu::separator {
         height: 1px;
-        background-color: #27272a;
+        background-color: {border};
         margin: 4px 8px;
     }
     
@@ -481,13 +554,12 @@ CLAIRE_THEME_STYLESHEET = """
     
     /* Card-style container */
     QFrame#card {
-        background-color: #161920;
-        border: 1px solid #27272a;
+        background-color: {bg_card};
+        border: 1px solid {border};
         border-radius: 12px;
         padding: 16px;
     }
-"""
-
+""")
 
 WIZARD_STYLESHEET = f"""
     QWizard {{ background: {COLORS['bg_primary']}; }}
@@ -533,24 +605,24 @@ WIZARD_STYLESHEET = f"""
 
 _CHECKMARK_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18">'
-    '<path d="M4 9l3.5 3.5L14 5" stroke="#0a0b0f" stroke-width="2.5" '
+    '<path d="M4 9l3.5 3.5L14 5" stroke="{on_accent}" stroke-width="2.5" '
     'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'
 )
 
 _RADIO_DOT_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18">'
-    '<circle cx="9" cy="9" r="4" fill="#0a0b0f"/></svg>'
+    '<circle cx="9" cy="9" r="4" fill="{on_accent}"/></svg>'
 )
 
 _ARROW_UP_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12">'
-    '<path d="M2.5 7.5L6 4l3.5 3.5" stroke="#a1a1aa" stroke-width="1.5" '
+    '<path d="M2.5 7.5L6 4l3.5 3.5" stroke="{text_secondary}" stroke-width="1.5" '
     'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'
 )
 
 _ARROW_DOWN_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12">'
-    '<path d="M2.5 4.5L6 8l3.5-3.5" stroke="#a1a1aa" stroke-width="1.5" '
+    '<path d="M2.5 4.5L6 8l3.5-3.5" stroke="{text_secondary}" stroke-width="1.5" '
     'stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>'
 )
 
@@ -595,7 +667,7 @@ def _ensure_icons() -> dict[str, str]:
         path = os.path.join(_icon_dir, f"{name}.svg")
         if not os.path.exists(path):
             with open(path, "w") as f:
-                f.write(svg)
+                f.write(_style(svg))
         paths[name] = path.replace("\\", "/")
     return paths
 

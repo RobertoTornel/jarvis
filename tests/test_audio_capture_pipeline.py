@@ -15,12 +15,20 @@ pytestmark = pytest.mark.unit
 
 
 def listener(rate=48000):
+    from unittest.mock import Mock
+
     obj = VoiceListener.__new__(VoiceListener)
     # These tests drive the pipeline through ``_transcribe_audio``, which is the
     # opt-in Whisper decode entry point: Whisper is not reachable unless
     # ``stt_engine`` names it (Parakeet is the one authoritative recogniser).
     obj.cfg = SimpleNamespace(voice_min_energy=0.0045, voice_debug=False,
                               stt_engine="faster_whisper")
+    # ``_finalize_utterance`` notes the capture-time voice moment on the state
+    # manager, which is what starts the follow-up silence window from when the
+    # voice stopped rather than from when the transcript arrived. Production
+    # always has one — it is built in ``VoiceListener.__init__`` — so the
+    # partially constructed listener these tests use needs a stand-in.
+    obj.state_manager = Mock()
     obj._samplerate = 16000
     obj._stream_samplerate = rate
     obj._frame_samples = rate * 20 // 1000

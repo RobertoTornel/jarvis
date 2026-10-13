@@ -1119,8 +1119,10 @@ class ScheduleTool(Tool):
                 "reminder_minutes": {
                     "type": "integer",
                     "description": (
-                        "For add: minutes before the event to remind the user, so the "
-                        "'due' action can surface it later."
+                        "For add: minutes before the event to remind the user, spoken "
+                        "by Claire when due. Set it for reminder requests ('remind "
+                        "me...'); 0 means at the time the event starts. Leave it out "
+                        "for a plain calendar entry with no reminder."
                     ),
                 },
             },
@@ -1141,7 +1143,7 @@ class ScheduleTool(Tool):
                     "schedule needs an 'action': one of add, list, move, cancel, due."
                 )
             if action in ("add", "create", "book", "schedule"):
-                return self._action_add(args)
+                return self._action_add(args, context)
             if action in ("list", "agenda", "upcoming", "whats_on"):
                 return self._action_list(args)
             if action in ("move", "reschedule", "shift"):
@@ -1276,6 +1278,21 @@ class ScheduleTool(Tool):
             )
         return minutes
 
+    @staticmethod
+    def _request_is_a_reminder(context: Optional[ToolContext]) -> bool:
+        """Whether the owner's own words asked for a reminder.
+
+        The utterance arrives on the tool context as ``original_prompt``
+        (``redacted_text`` is the redacted fallback of the same text). Outside
+        the voice path — evals, plain tool calls — neither carries a string,
+        and there is no reminder phrasing to act on, so the answer is False.
+        """
+        for attr in ("original_prompt", "redacted_text"):
+            value = getattr(context, attr, None)
+            if isinstance(value, str) and re.search(r"\bremind", value, re.IGNORECASE):
+                return True
+        return False
+
     def _resolve_slot(
         self,
         args: Dict[str, Any],
@@ -1389,7 +1406,9 @@ class ScheduleTool(Tool):
         )
 
     # -- Actions -------------------------------------------------------------
-    def _action_add(self, args: Dict[str, Any]) -> ToolExecutionResult:
+    def _action_add(
+        self, args: Dict[str, Any], context: Optional[ToolContext] = None
+    ) -> ToolExecutionResult:
         title = self._require_text(
             args, "title", "add", "Give the event a short name, for example 'Dentist'."
         )
@@ -1418,6 +1437,15 @@ class ScheduleTool(Tool):
             )
 
         reminder_minutes = self._reminder_arg(args)
+        if reminder_minutes is None and self._request_is_a_reminder(context):
+            # The owner asked to BE reminded but no offset was passed. `None`
+            # means "no reminder", so the request would be silently dead: the
+            # words are right here on the context, and a voice reminder with no
+            # stated lead time means "when the thing happens" -> fire at the
+            # event's start (reminder_minutes 0, which due_reminders now
+            # honours). A plain calendar entry without reminder phrasing keeps
+            # `None` and gets no reminder at all, exactly as before.
+            reminder_minutes = 0
         events = self._load_events()
         proposals = self._backend_propose(
             events,
@@ -1463,7 +1491,11 @@ class ScheduleTool(Tool):
         spoken_start = view.start if view and view.start is not None else start
         spoken_duration = view.duration_minutes if view else duration
         reminder = f" It repeats {repeat} until {format_spoken(until)}." if repeat and until else ""
-        if reminder_minutes is not None:
+        if reminder_minutes == 0:
+            # "0 minutes before" is not a sentence a person says; the offset
+            # means "when it starts", so say that.
+            reminder += " I'll remind you when it starts."
+        elif reminder_minutes is not None:
             reminder += f" I'll remind you {reminder_minutes} minutes before."
         return ToolExecutionResult(
             success=True,

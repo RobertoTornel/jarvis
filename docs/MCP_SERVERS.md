@@ -136,8 +136,8 @@ sudo apt install wmctrl        # or the equivalent for your distribution
 | `list_windows` | Open windows with ids, titles and geometry |
 | `focus_window`, `close_window`, `move_resize_window` | Window management by title or id |
 | `click`, `double_click`, `move_mouse`, `scroll` | Pointer actions at screen coordinates |
-| `type_text` | Types literal text, layout-aware |
-| `press_key` | One key or a chord such as `ctrl+shift+t` |
+| `type_text` | Types literal text, layout-aware; optional `window` raises and focuses the destination first |
+| `press_key` | One key or a chord such as `ctrl+shift+t`; optional `window` raises and focuses the destination first |
 | `launch_app` | A desktop entry, a program on PATH, a file or a URL |
 | `wait` | Pause up to 10 s so the interface can settle |
 

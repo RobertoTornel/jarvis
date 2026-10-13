@@ -6,6 +6,12 @@ This creates idle and listening state icons.
 from PIL import Image, ImageDraw, ImageFont
 
 from pathlib import Path
+import sys
+
+# The icons carry the law's roles, so the tray reads the same as every other
+# surface: idle is a faint grey and listening is the one pink accent.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from desktop_app.themes import COLORS
 
 # Deterministic, cross-platform icon font.
 #
@@ -55,7 +61,7 @@ def create_icon(color: str, filename: str, size: int = 256) -> None:
     x = (size - text_width) // 2 - bbox[0]
     y = (size - text_height) // 2 - bbox[1]
 
-    draw.text((x, y), text, fill='white', font=font)
+    draw.text((x, y), text, fill=COLORS['on_accent'], font=font)
 
     # Save in multiple sizes for better cross-platform support
     img.save(filename)
@@ -94,12 +100,12 @@ if __name__ == '__main__':
     # Get the directory where this script is located
     script_dir = Path(__file__).parent
 
-    # Create idle icon (gray)
-    create_icon('#9E9E9E', str(script_dir / 'icon_idle.png'))
+    # Create idle icon (faint grey)
+    create_icon(COLORS['text_muted'], str(script_dir / 'icon_idle.png'))
     print("Created icon_idle.png")
 
-    # Create listening icon (green)
-    create_icon('#4CAF50', str(script_dir / 'icon_listening.png'))
+    # Create listening icon (the accent)
+    create_icon(COLORS['accent_primary'], str(script_dir / 'icon_listening.png'))
     print("Created icon_listening.png")
 
     print("\nIcon generation complete!")

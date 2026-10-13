@@ -1676,6 +1676,49 @@ class TestDisabledHotWindowRejectsFollowUp:
 
 
 @pytest.mark.unit
+class TestDisabledHotWindowNotice:
+    """A window that never arms must say so — once, in the journal.
+
+    The armed path prints "👂 Listening for follow-up" and the closing path
+    prints "🔒 Follow-up window closed", but the disabled branch returned
+    silently, so a follow-up window being off looked exactly like one that
+    never opens. This pins the notice and its once-per-process budget:
+    repeated TTS-finished callbacks must not repeat the same line, and the
+    enabled path must gain no extra line of its own.
+    """
+
+    @patch("builtins.print")
+    def test_disabled_window_announces_itself_once(self, _print):
+        listener, _ = _create_listener(echo_tolerance=0.02, hot_window_seconds=3.0)
+        listener.cfg.hot_window_enabled = False
+
+        # The TTS-finished callback can fire more than once per process.
+        listener.activate_hot_window()
+        listener.activate_hot_window()
+
+        notices = [call for call in _print.call_args_list
+                   if "Follow-up window is off" in str(call)]
+        assert len(notices) == 1, notices
+        listener.state_manager.stop()
+
+    @patch("builtins.print")
+    def test_enabled_window_prints_no_disabled_notice(self, _print):
+        listener, _ = _create_listener()  # hot_window_enabled=True
+        listener.cfg.hot_window_enabled = True
+
+        listener.activate_hot_window()
+        listener.activate_hot_window()
+
+        # The enabled branch must actually schedule the window (the call
+        # did not return early) while printing no disabled-mode notice —
+        # the existing "👂 Listening for follow-up" line covers it.
+        assert listener.state_manager._hot_window_activation_timer is not None
+        assert not any("Follow-up window is off" in str(call)
+                       for call in _print.call_args_list)
+        listener.state_manager.stop()
+
+
+@pytest.mark.unit
 class TestStrictHotWindowRequireDirected:
     """hot_window_require_directed is the opt-in strict mode.
 

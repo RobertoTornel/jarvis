@@ -1,7 +1,7 @@
 import os
 import json
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dotenv import load_dotenv
@@ -99,6 +99,18 @@ def _default_vault_dir() -> str:
     return str(Path("~") / ".local" / "share" / "claire" / "vault")
 
 
+#: Settings fields whose value must never appear in a log, an error message or a
+#: bug report. Listed by name on purpose — see ``Settings.__repr__`` for why a
+#: substring rule would be wrong (``dialogue_memory_max_tokens`` is a count, not
+#: a credential). A path such as ``fish_key_file`` is not a secret and stays
+#: readable, because it is the first thing worth knowing when Fish fails.
+SECRET_SETTING_FIELDS = frozenset({
+    "llm_api_key",
+    "embedding_api_key",
+    "brave_search_api_key",
+})
+
+
 @dataclass(frozen=True)
 class Settings:
     # Database & Storage
@@ -109,6 +121,12 @@ class Settings:
     # ``CLAIRE_VAULT_DIR`` still overrides it for a single run.  See
     # ``claire.memory.notes.resolve_vault_dir`` and docs/OBSIDIAN.md.
     vault_dir: str
+    # Long-term memory backend. "postgres" reads/writes the pgvector store
+    # (the source of truth since the vault was retired); "vault" is the
+    # legacy Markdown path, kept only so a rollback is a flag flip.
+    memory_backend: str
+    # Optional DSN override; empty means read CLAIRE_PG_DSN / pg.env.
+    pg_dsn: str
 
     # LLM & AI Models
     # Provider-aware fields (see src/claire/llm/llm.spec.md). The
@@ -382,6 +400,30 @@ class Settings:
     # MCP Integration
     mcps: Dict[str, Any]
 
+    def __repr__(self) -> str:
+        """A repr that never prints a secret.
+
+        This repr is not cosmetic: it is what ends up in a log line, an error
+        message or a pasted-bug report. A TTS factory error that interpolated a
+        Settings object put the live ``llm_api_key`` into the journal on this
+        machine, and the same thing would happen in any traceback that carries
+        settings. Redacting by field name here protects every one of those paths
+        at once, instead of hoping each call site remembers to be careful.
+
+        The names are listed explicitly rather than matched by substring:
+        ``dialogue_memory_max_tokens`` contains "token" and is a harmless count,
+        so a rule like "redact anything with 'token' or 'key' in the name" would
+        hide useful configuration. ``tests/test_config_secret_repr.py`` fails if
+        a new ``*_api_key`` field is added without being listed.
+        """
+        rendered = []
+        for field in dataclass_fields(self):
+            value = getattr(self, field.name)
+            if field.name in SECRET_SETTING_FIELDS and value:
+                value = "<redacted>"
+            rendered.append(f"{field.name}={value!r}")
+        return f"{type(self).__name__}({', '.join(rendered)})"
+
 
 
 def default_config_path() -> Path:
@@ -603,6 +645,10 @@ def get_default_config() -> Dict[str, Any]:
         # Markdown memory vault. Portable "~/..." form on purpose: this value
         # is shipped in examples/config.json; load_settings() expands it.
         "vault_dir": _default_vault_dir(),
+        # The vault is retired, so "postgres" is the correct default: defaulting
+        # to "vault" would point at a directory that no longer exists.
+        "memory_backend": "postgres",
+        "pg_dsn": "",
 
         # LLM & AI Models
         # Provider-aware fields. Fresh installs default to OmniRouter
@@ -948,6 +994,13 @@ def load_settings() -> Settings:
     vault_dir = (
         _expand_path(merged.get("vault_dir")) or _expand_path(_default_vault_dir())
     )
+    # Fail safe: an unrecognised backend must never silently select an
+    # unverified store, and a missing database must be a visible failure.
+    _memory_backend = str(merged.get("memory_backend", "postgres") or "").strip().lower()
+    if _memory_backend not in ("postgres", "vault"):
+        _memory_backend = "postgres"
+    memory_backend = _memory_backend
+    pg_dsn = str(merged.get("pg_dsn", "") or "").strip()
 
     ollama_base_url = str(merged.get("ollama_base_url"))
     ollama_embed_model = str(merged.get("ollama_embed_model"))
@@ -1307,6 +1360,8 @@ def load_settings() -> Settings:
         db_path=db_path,
         sqlite_vss_path=sqlite_vss_path,
         vault_dir=vault_dir,
+        memory_backend=memory_backend,
+        pg_dsn=pg_dsn,
 
         # LLM & AI Models — provider-aware
         llm_provider=llm_provider,

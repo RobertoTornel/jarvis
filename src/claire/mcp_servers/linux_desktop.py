@@ -289,23 +289,25 @@ def match_window(windows: List[Dict[str, Any]], query: str) -> Dict[str, Any]:
 def plan_char(display: Any, ch: str) -> Optional[Tuple[int, bool]]:
     """Return ``(keycode, needs_shift)`` for typing ``ch``, or None.
 
-    ``None`` means the current layout has no key for this character; the
-    caller falls back to a temporarily rebound spare keycode. The keymap's
-    slot index is what identifies Shift: odd slots are the shifted level.
+    ``None`` means the layout has no *direct* key for this character; the
+    caller falls back to a temporarily rebound spare keycode. Only slots 0
+    and 1 — the plain and Shift levels of the active group — become a
+    direct plan: higher slots are AltGr or extra-group levels whose
+    modifier cannot be derived from the slot index (on a two-group
+    ``es,us`` map ``@`` sits at slot 3, and parity would claim Shift,
+    typing ``"`` instead).
     """
     keysym = _keysym_for_char(ch)
     if not keysym:
         return None
     try:
         pairs = list(display.keysym_to_keycodes(keysym))
-    except Exception:  # noqa: BLE001 - fall through to the single lookup
+    except Exception:  # noqa: BLE001 - fall through to the rebind path
         pairs = []
-    if pairs:
-        keycode, index = pairs[0]
-        return int(keycode), bool(index % 2)
-    keycode = display.keysym_to_keycode(keysym)
-    if keycode:
-        return int(keycode), False
+    for want_shift, wanted_slot in ((False, 0), (True, 1)):
+        for keycode, slot in pairs:
+            if int(slot) == wanted_slot:
+                return int(keycode), want_shift
     return None
 
 
@@ -514,23 +516,52 @@ def _spare_keycode(display: Any) -> Optional[int]:
     return None
 
 
+# Seconds to hold the rebind before the tap, and again before the restore.
+# The client re-reads the keymap only when it processes our MappingNotify,
+# and it reads whatever row the server holds *at that moment* — so if the
+# client's event loop lags past the restore it types from the stale row
+# (empty: character dropped) or the next rebind's row (wrong character).
+# The whole install→restore window must outlast that lag; under heavy load
+# on this machine 0.1 s demonstrably was not enough, 0.4 s is.
+_REBIND_SETTLE_SECONDS = 0.2
+
+
 def _tap_unmapped_char(display: Any, ch: str, spare: int) -> None:
     """Type a character the layout lacks via a temporarily rebound keycode.
 
-    The mapping is changed and restored on one X connection, so the server
-    (and every client watching MappingNotify) sees the rebind *before* the
-    key event and the restore *after* it — the same ordering xdotool relies
-    on.
+    The spare keycode gets a *full-length* row — the same width every
+    other keycode has (ten keysyms on this machine) — with the character's
+    keysym at every level of every group, so the tap resolves to it
+    whatever group/level state the client is in. Each mapping change is
+    followed by a sync and a settle: the server must have processed the
+    rebind before the key event, and the client must have seen both
+    before the original row is restored. The restore itself runs in a
+    ``finally`` so an exception can never leave the keyboard remapped.
     """
     keysym = _keysym_for_char(ch)
     if not keysym:
         raise ValueError(f"cannot type the character {ch!r}")
-    original = display.get_keyboard_mapping(spare, 1)[0]
-    display.change_keyboard_mapping(spare, [(keysym,)])
+    original = tuple(display.get_keyboard_mapping(spare, 1)[0])
+    if not original:
+        raise ValueError(f"cannot read the keymap row for keycode {spare}")
+    rebound = tuple(keysym for _ in original)
     try:
+        display.change_keyboard_mapping(spare, [rebound])
+        display.sync()
+        time.sleep(_REBIND_SETTLE_SECONDS)
         _tap(display, spare)
+        display.sync()
+        time.sleep(_REBIND_SETTLE_SECONDS)
     finally:
         display.change_keyboard_mapping(spare, [tuple(original)])
+        display.sync()
+        # Our own connection also receives a MappingNotify for every
+        # mapping change; drain them so they cannot pile up.
+        try:
+            while display.pending_events():
+                display.next_event()
+        except Exception:  # noqa: BLE001 - draining is hygiene, never fatal
+            pass
 
 
 def _type_text(display: Any, text: str) -> int:
@@ -669,6 +700,81 @@ def _windows_with_focus() -> List[Dict[str, Any]]:
 
 def _require_window(title: str) -> Dict[str, Any]:
     return match_window(_window_rows(), title)
+
+
+# Focus changes are asynchronous: the WM applies our raise request whenever
+# it next gets around to it, and ``_NET_ACTIVE_WINDOW`` lags behind that
+# request. Settle briefly and re-read a few times (same reasoning as
+# ``_REBIND_SETTLE_SECONDS`` above) before deciding focus did not land.
+_FOCUS_SETTLE_SECONDS = 0.2
+_FOCUS_ATTEMPTS = 3
+
+
+def _focused_window() -> Optional[Dict[str, Any]]:
+    """The focused window as ``{"id", "title"}``, or None if there is none."""
+
+    def read(display: Any) -> Optional[Dict[str, Any]]:
+        active = _active_window_id(display)
+        if not active:
+            return None
+        return {
+            "id": f"0x{active:08x}",
+            "title": _window_title(display, active),
+        }
+
+    return _X.run(read)
+
+
+def _window_label(window: Optional[Dict[str, Any]]) -> str:
+    """How a destination window reads inside a result string."""
+    if window and window.get("title"):
+        return repr(str(window["title"]))
+    if window and window.get("id"):
+        return str(window["id"])
+    return "an unidentified window"
+
+
+def _focus_window_for_input(window: Dict[str, Any]) -> None:
+    """Raise ``window`` and confirm the focus actually landed on it.
+
+    Returns only when the window really is focused (input may proceed);
+    otherwise raises ``WindowError`` naming both the window we tried to
+    focus and the window that is focused instead. Nothing is typed or
+    pressed while the target does not hold focus, and the refusal is a
+    raised error — a returned body would be recorded as a successful tool
+    call, and a success this is not.
+    """
+    _wmctrl(["-i", "-a", window["id"]])
+    wanted = str(window["id"]).lower()
+    focused: Optional[Dict[str, Any]] = None
+    for attempt in range(_FOCUS_ATTEMPTS):
+        if attempt:
+            time.sleep(_FOCUS_SETTLE_SECONDS)
+        focused = _focused_window()
+        if focused and str(focused.get("id", "")).lower() == wanted:
+            return
+    raise WindowError(
+        f"refusing to send input: {window['title']!r} ({window['id']}) did not "
+        f"take focus — {_window_label(focused)} is focused instead; "
+        "nothing was sent"
+    )
+
+
+def _destination_for_input(window: Optional[str]) -> Dict[str, Any]:
+    """Where keystrokes are about to go: the destination window's dict.
+
+    With ``window`` given, the window is resolved first (a name that matches
+    nothing or several windows raises with the candidate list) and then
+    raised, focus confirmed — a raise that does not land raises too, so no
+    input can follow a destination that was never reached. With ``window``
+    omitted the currently focused window is the destination, reported so the
+    transcript never leaves it silent.
+    """
+    if window is None:
+        return _focused_window() or {"id": None, "title": None}
+    target = _require_window(window)
+    _focus_window_for_input(target)
+    return target
 
 
 # ---------------------------------------------------------------------------
@@ -848,12 +954,27 @@ def scroll(x: int, y: int, amount: int = 3, direction: str = "up") -> str:
 
 
 @mcp.tool()
-def type_text(text: str) -> str:
-    """Type `text` into whatever window has focus, exactly as written.
+def type_text(text: str, window: Optional[str] = None) -> str:
+    """Type `text` into the window you name, or into the focused window.
 
-    Newlines become Return and tabs become Tab. Up to 4096 characters at a
-    time; characters the keyboard layout cannot produce are typed through a
-    temporary keymap binding, so they still arrive correctly.
+    Args:
+        text: What to type, exactly as written. Newlines become Return and
+            tabs become Tab. Up to 4096 characters at a time; characters the
+            keyboard layout cannot produce are typed through a temporary
+            keymap binding, so they still arrive correctly.
+        window: The window that must receive the text — a title substring or
+            a window id from list_windows. Pass it whenever the text has a
+            destination: the window is raised and focused *first* and the
+            focus is confirmed before any character is typed, so the text can
+            never land in whatever happened to be focused. A focus that does
+            not land raises an error naming both windows with nothing typed,
+            and a name that matches no window or several windows raises with
+            the candidate list. Omit it only when the already-focused window
+            is the right destination.
+
+    The result always names the window that received the text (its `window`
+    dict has the id and title), so the transcript never leaves the
+    destination silent.
     """
     if not isinstance(text, str) or not text.strip():
         return json.dumps({"ok": True, "typed": 0, "detail": "nothing to type"})
@@ -862,30 +983,61 @@ def type_text(text: str) -> str:
             f"text is {len(text)} characters long; the limit is {MAX_TEXT_CHARS} — "
             "send it in smaller pieces"
         )
+    destination = _destination_for_input(window)
     normalised = text.replace("\r\n", "\n").replace("\r", "\n")
     typed = _X.run(lambda display: _type_text(display, normalised))
     debug_log(f"typed {typed} characters", "mcp")
     return json.dumps(
-        {"ok": True, "typed": typed, "detail": f"typed {typed} characters"}
+        {
+            "ok": True,
+            "typed": typed,
+            "detail": (
+                f"typed {typed} characters into {_window_label(destination)}"
+            ),
+            "window": destination,
+        }
     )
 
 
 @mcp.tool()
-def press_key(key: str) -> str:
+def press_key(key: str, window: Optional[str] = None) -> str:
     """Press one key or a chord: "Return", "Tab", "ctrl+c", "ctrl+shift+t".
 
     Modifiers are held while the final key is pressed and released after it.
     Write a literal plus sign as "plus". Aliases such as enter, esc, space,
     pageup/pagedown and the arrow names all work.
+
+    Args:
+        key: The key or `+`-separated chord to press.
+        window: The window that must receive the key — a title substring or
+            a window id from list_windows. Pass it whenever the key has a
+            destination: the window is raised and focused *first* and the
+            focus is confirmed before the key is pressed, so Return can never
+            be sent to whatever happened to be focused. A focus that does not
+            land raises an error naming both windows with nothing pressed,
+            and a name that matches no window or several windows raises with
+            the candidate list. Omit it only when the already-focused window
+            is the right destination.
+
+    The result always names the window that received the key (its `window`
+    dict has the id and title), so the transcript never leaves the
+    destination silent.
     """
     tokens = parse_combo(key)
     # Resolve every token before touching the display: an unknown key must
     # fail without half-pressing a chord.
     for token in tokens:
         keysym_for(token)
+    destination = _destination_for_input(window)
     _X.run(lambda display: _press_tokens(display, tokens))
     debug_log(f"pressed {key}", "mcp")
-    return json.dumps({"ok": True, "detail": f"pressed {key}"})
+    return json.dumps(
+        {
+            "ok": True,
+            "detail": f"pressed {key} in {_window_label(destination)}",
+            "window": destination,
+        }
+    )
 
 
 @mcp.tool()

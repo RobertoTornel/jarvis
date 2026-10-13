@@ -15,6 +15,7 @@ from .nutrition.delete_meal import DeleteMealTool
 from .time_tool import TimeTool
 from .stop import StopTool
 from .schedule import ScheduleTool
+from .timer import TimerTool
 from .senses import BrowseWebTool, LookThroughCameraTool, ReadScreenTool
 
 # Import supporting functions that may still be used elsewhere
@@ -31,6 +32,7 @@ __all__ = [
     'TimeTool',
     'StopTool',
     'ScheduleTool',
+    'TimerTool',
     'ReadScreenTool',
     'LookThroughCameraTool',
     'BrowseWebTool',

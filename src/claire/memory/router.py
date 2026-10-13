@@ -93,16 +93,22 @@ _BUDGET_BANNER = "!" * 72
 def _budget_warning(*, size_bytes: int, budget: int, dropped_bytes: int) -> str:
     """The loud, unmissable notice prepended to truncated memory.
 
-    It names the **real** size, the budget and the number of bytes dropped, so
-    the owner can see exactly how much memory is no longer reaching Claire.
+    It names the **real** size, the budget and the number of bytes the cut
+    drops, so the owner can see exactly how much memory is kept out of the
+    prompt. The wording describes the router itself, never the backend that
+    holds it: size, budget and dropped bytes are the same facts for a vault
+    file and for a store row, so one message stays true on both.
     """
     return (
         f"{_BUDGET_BANNER}\n"
-        "!! WARNING: YOUR ALWAYS-LOADED MEMORY (CLAIRE.md) IS OVER BUDGET AND WAS TRUNCATED\n"
+        "!! WARNING: YOUR ALWAYS-LOADED MEMORY ROUTER IS OVER BUDGET AND WAS "
+        "TRUNCATED\n"
         f"!! Real size: {size_bytes} bytes. Budget: {budget} bytes. "
         f"Dropped: {dropped_bytes} bytes.\n"
-        "!! Those dropped bytes are NOT being loaded: the end of the file is invisible to me.\n"
-        "!! Fix it by moving detail into notes/ and keeping only one-line pointers here.\n"
+        "!! Those dropped bytes are NOT being loaded: the end of the router is "
+        "invisible to me.\n"
+        "!! Fix it by shortening the router and keeping detail in separate "
+        "notes, which are searched on demand instead of always loaded.\n"
         f"{_BUDGET_BANNER}"
     )
 
@@ -229,6 +235,10 @@ class MemoryRouter:
     path: Path
     frontmatter: Dict[str, str] = field(default_factory=dict)
     body: str = ""
+    #: The header shown to the model. Overridable because it must describe where
+    #: the memory actually lives: once the vault is retired there is no
+    #: ``CLAIRE.md`` to point the model at.
+    memory_header: str = MEMORY_HEADER
     #: True only on the call that created the file from the template.
     created_from_template: bool = False
 
@@ -293,8 +303,8 @@ class MemoryRouter:
                 budget=self.budget_bytes,
                 dropped_bytes=dropped,
             )
-            return f"{warning}\n\n{MEMORY_HEADER}\n\n{kept}"
-        return f"{MEMORY_HEADER}\n\n{self.body}".rstrip("\n") + "\n"
+            return f"{warning}\n\n{self.memory_header}\n\n{kept}"
+        return f"{self.memory_header}\n\n{self.body}".rstrip("\n") + "\n"
 
 # --------------------------------------------------------------------------
 # Entry points

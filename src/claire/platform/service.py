@@ -116,7 +116,7 @@ CHECK_ORDER: tuple[str, ...] = (
 #: Human titles, so the rendered report is readable without the source.
 CHECK_TITLES: Mapping[str, str] = {
     "stt_model": "STT model",
-    "vault": "Memory vault",
+    "vault": "Memory store",
     "key_store": "Key store",
     "audio_device": "Audio input",
     "tesseract": "Tesseract OCR",
@@ -140,6 +140,12 @@ KEYRING_SERVICE_NAME = "claire"
 #: The LLM endpoint probe is the only one that talks to the network; keep its
 #: budget short enough that ``--self-check`` stays a diagnostic, not a hang.
 DEFAULT_LLM_TIMEOUT_SECONDS = 2.0
+
+#: Reading the model catalogue is a different job from asking "are you up?", and
+#: it needs its own, larger budget. Measured on this machine: OmniRouter answers
+#: ``GET /healthz`` in ~5 ms, but ``GET /v1/models`` returns a ~4.5 MB catalogue
+#: in ~5 s. One 2 s budget for both made a healthy endpoint report as MISSING.
+DEFAULT_MODELS_TIMEOUT_SECONDS = 20.0
 
 #: Handed to a probe that crashed and named no fix of its own.
 FIX_PROBE_CRASHED = (
@@ -562,8 +568,118 @@ def probe_stt_model(sc: "SelfCheck") -> CheckResult:
     )
 
 
+def _memory_backend() -> str:
+    """Which long-term memory backend is configured: ``postgres`` or ``vault``.
+
+    Imported lazily and defensively. A self-check is needed most when something
+    is broken, so a failure to import the memory layer must not stop the probe
+    from reporting: it falls back to the default, which is ``postgres``.
+    """
+    try:
+        from ..system_prompt import _memory_backend as configured
+
+        return configured()
+    except Exception:  # pragma: no cover - defensive: reported as a store fault
+        return "postgres"
+
+def probe_memory_store(sc: "SelfCheck") -> CheckResult:  # noqa: ARG001 - probe contract
+    """Is the PostgreSQL + pgvector memory store reachable, migrated and populated?
+
+    This is what "the memory vault" means now: the Markdown vault was retired and
+    Postgres is the source of truth. The probe measures the store for real rather
+    than trusting configuration, and it never renders the DSN -- a DSN carries a
+    password, so it is reported only as a presence or a count.
+    """
+    try:
+        from ..memory import pg
+    except Exception as exc:  # pragma: no cover - defensive
+        return CheckResult(
+            name="vault",
+            status=STATUS_MISSING,
+            detail=f"the memory store module could not be imported: {type(exc).__name__}: {exc}",
+            fix="Reinstall Claire's dependencies: pip install -r requirements.txt",
+            data={"backend": "postgres"},
+        )
+
+    reachable, detail = pg.health()
+    if not reachable:
+        return CheckResult(
+            name="vault",
+            status=STATUS_MISSING,
+            detail=f"the PostgreSQL memory store is not usable: {detail}",
+            fix=(
+                "Start PostgreSQL and make sure the DSN is set: see "
+                "deploy/pgvector/README.md and docs/PGVECTOR.md. This probe never "
+                "prints the DSN."
+            ),
+            data={"backend": "postgres", "reachable": False},
+        )
+
+    try:
+        documents = pg.count_documents()
+        chunks = pg.count_chunks()
+        router = pg.get_router()
+    except Exception as exc:
+        return CheckResult(
+            name="vault",
+            status=STATUS_MISSING,
+            detail=(
+                "the database answered but has no usable memory schema "
+                f"({type(exc).__name__}: {exc}), so Claire has nothing to remember with."
+            ),
+            fix=(
+                "Create the schema and import the memory: "
+                "python -m claire.memory.migrate_md_to_pg"
+            ),
+            data={"backend": "postgres", "reachable": True},
+        )
+
+    if router is None:
+        return CheckResult(
+            name="vault",
+            status=STATUS_MISSING,
+            detail=(
+                f"the memory store is healthy ({detail}) and holds {documents} "
+                "document(s), but no router, so Claire has no always-loaded memory."
+            ),
+            fix=(
+                "Import it, or create it in the panel's memory editor: "
+                "python -m claire.memory.migrate_md_to_pg"
+            ),
+            data={
+                "backend": "postgres",
+                "documents": documents,
+                "chunks": chunks,
+                "router_present": False,
+            },
+        )
+
+    return CheckResult(
+        name="vault",
+        status=STATUS_READY,
+        detail=(
+            f"PostgreSQL store ({detail}); {documents} document(s), {chunks} "
+            f"chunk(s); router {router.name!r} {router.body_bytes} bytes"
+        ),
+        data={
+            "backend": "postgres",
+            "documents": documents,
+            "chunks": chunks,
+            "router_present": True,
+            "router_bytes": router.body_bytes,
+        },
+    )
+
 def probe_vault(sc: "SelfCheck") -> CheckResult:  # noqa: ARG001 - probe contract
-    """Is the memory vault present and writable?"""
+    """Is Claire's long-term memory present and usable?
+
+    The Markdown vault was retired in favour of PostgreSQL + pgvector, so the
+    answer depends on which backend is configured. Probing the retired directory
+    would report a healthy install as BLOCKED and send the owner to recreate a
+    directory that is deliberately gone.
+    """
+    if _memory_backend() == "postgres":
+        return probe_memory_store(sc)
 
     from ..memory.notes import resolve_vault_dir
 
@@ -857,6 +973,26 @@ def probe_browser(sc: "SelfCheck") -> CheckResult:  # noqa: ARG001 - probe contr
     )
 
 
+def _probe_gateway_health(sc: "SelfCheck", base_url: str, parts) -> "str | None":
+    """Ask the gateway's own liveness endpoint, when it has one.
+
+    Returns a short phrase naming the URL and status when it answered, else
+    ``None`` so the caller falls back to probing the catalogue. Deliberately
+    cheap: this is how "is the endpoint up?" gets answered in milliseconds
+    instead of by downloading several megabytes of model list.
+    """
+    health_url = f"{parts.scheme}://{parts.netloc}/healthz"
+    try:
+        status_code, _body = sc.http_get(
+            health_url, {"Accept": "text/plain"}, DEFAULT_LLM_TIMEOUT_SECONDS
+        )
+    except Exception:
+        # No such endpoint (a plain Ollama, for instance) or nothing listening.
+        return None
+    if 200 <= status_code < 300:
+        return f"{redact_url(health_url)} answered {status_code}"
+    return None
+
 def probe_llm_endpoint(sc: "SelfCheck") -> CheckResult:
     """Does the configured LLM endpoint answer?
 
@@ -924,9 +1060,31 @@ def probe_llm_endpoint(sc: "SelfCheck") -> CheckResult:
         "api_key": secret_fingerprint(key),
     }
 
+    gateway = _probe_gateway_health(sc, base_url, parts)
+    if gateway:
+        data["gateway_health"] = gateway
+
     try:
-        status_code, body = sc.http_get(models_url, headers, sc.llm_timeout)
+        status_code, body = sc.http_get(
+            models_url, headers, DEFAULT_MODELS_TIMEOUT_SECONDS
+        )
     except Exception as exc:
+        if gateway:
+            # The gateway is demonstrably up; only the catalogue read was too
+            # slow. Calling this MISSING produced a false "NOT READY" on a
+            # healthy install, which is worse than saying the truth out loud:
+            # up, catalogue unread, model unconfirmed.
+            return CheckResult(
+                name="llm_endpoint",
+                status=STATUS_READY,
+                detail=(
+                    f"{safe} is up ({gateway}), but its model catalogue could not "
+                    f"be read within {DEFAULT_MODELS_TIMEOUT_SECONDS:.0f}s "
+                    f"({type(exc).__name__}: {exc}), so the configured "
+                    f"model={model or 'unset'} could not be confirmed."
+                ),
+                data={**data, "catalogue_read": False},
+            )
         return CheckResult(
             name="llm_endpoint",
             status=STATUS_MISSING,

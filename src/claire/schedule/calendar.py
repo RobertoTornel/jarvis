@@ -955,6 +955,12 @@ def due_reminders(schedule: Any, now: Any) -> List[Dict[str, Any]]:
     Pure: it does not mark anything as fired.  Keys already present in
     ``schedule['fired_reminders']`` are skipped so a caller can commit with
     :func:`mark_reminder_fired`.
+
+    A ``reminder_minutes == 0`` reminder ("remind me *at* 6") fires during the
+    event's start minute: ``start <= now < start + 1``.  The generic window
+    below would be empty for zero (``start <= now < start``), which is how a
+    zero-offset reminder used to be able to never fire at all.  Every non-zero
+    offset keeps the original ``remind <= now < start`` window unchanged.
     """
     _require_schedule(schedule)
     now_date, now_minutes = _coerce_now(now)
@@ -969,7 +975,11 @@ def due_reminders(schedule: Any, now: Any) -> List[Dict[str, Any]]:
         for occurrence in expand_event(event, event["date"], now_date):
             start_absolute = _absolute_minutes(occurrence["date"], occurrence["start"])
             remind_absolute = start_absolute - reminder_minutes
-            if not remind_absolute <= now_absolute < start_absolute:
+            if reminder_minutes == 0:
+                in_window = start_absolute <= now_absolute < start_absolute + 1
+            else:
+                in_window = remind_absolute <= now_absolute < start_absolute
+            if not in_window:
                 continue
             key = f"{occurrence['event_id']}|{occurrence['date']}"
             if key in already_fired:

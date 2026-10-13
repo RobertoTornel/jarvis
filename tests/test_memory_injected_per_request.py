@@ -1,4 +1,4 @@
-"""Memory is a router re-read from disk on every request, never a chat message.
+"""Memory is a router re-read on every request, never a chat message.
 
 These tests pin the contract of ``claire.system_prompt.build_system_prompt``:
 

@@ -58,6 +58,13 @@ keyring>=25.0.0
 # --- Vector search ---------------------------------------------------------
 faiss-cpu>=1.7.4
 
+# --- Long-term memory store: PostgreSQL + pgvector -------------------------
+# The vault (.md) memory was replaced by Postgres with pgvector embeddings.
+# `pool` is required: the store uses psycopg_pool.ConnectionPool. See
+# docs/PGVECTOR.md and deploy/pgvector/README.md.
+psycopg[binary,pool]>=3.2
+pgvector>=0.3
+
 # --- MCP -------------------------------------------------------------------
 mcp==1.13.1
 

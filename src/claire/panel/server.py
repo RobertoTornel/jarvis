@@ -3,8 +3,9 @@
 Why this module exists
 ----------------------
 Half of Claire's behaviour is buried in files the owner never opens: which
-provider and model are selected, whether ``CLAIRE.md`` has rotted past its byte
-budget, what is on the calendar today, whether anything is broken, and what
+provider and model are selected, whether the always-loaded memory router has
+rotted past its byte budget, what is on the calendar today, whether anything is
+broken, and what
 Claire actually did in the last few actions.  This module serves that as **one
 server-rendered page** with the standard library alone — no Flask, no
 JavaScript framework, no build step.  ``python -m claire.panel.server`` starts
@@ -42,6 +43,12 @@ The five invariants this module is built around
 
 State is **injected** (:class:`PanelState`), so every route is testable without
 a socket or a real key store.  See ``panel.spec.md`` next to this file.
+
+The page also carries **Claire's face**: a small animated status mirror of the
+five-state file the daemon already writes — ``$XDG_RUNTIME_DIR/claire/claire_state``,
+because ``PrivateTmp=yes`` on the units makes ``/tmp`` private to each service.
+That file is the single channel, and ``GET /face/state`` serves it as JSON so
+the page can follow it without a reload.  See ``docs/PANEL_FACE.md``.
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 from collections import deque
@@ -126,7 +134,9 @@ __all__ = [
     # rendering / dispatch
     "dispatch",
     "handle_chat",
+    "read_face_state",
     "render_error_page",
+    "render_face_state",
     "render_index",
     "render_health",
     "render_self_check_text",
@@ -184,6 +194,7 @@ FORBIDDEN_KEY_FIELDS = frozenset(
 ROUTE_INDEX = "/"
 ROUTE_SELF_CHECK = "/self-check"
 ROUTE_HEALTH = "/healthz"
+ROUTE_FACE_STATE = "/face/state"
 ROUTE_FAVICON = "/favicon.ico"
 ROUTE_SELECT = "/select"
 ROUTE_CHAT = "/chat"
@@ -199,6 +210,7 @@ GET_ROUTES: tuple[str, ...] = (
     ROUTE_INDEX,
     ROUTE_SELF_CHECK,
     ROUTE_HEALTH,
+    ROUTE_FACE_STATE,
     ROUTE_FAVICON,
     ROUTE_MEMORY,
 )
@@ -211,6 +223,66 @@ POST_ROUTES: tuple[str, ...] = (
     ROUTE_MEMORY_SAVE,
     ROUTE_MEMORY_DELETE,
 )
+
+# -- the face ------------------------------------------------------------- #
+#
+# The desktop app's face follows five states that the daemon publishes to a
+# plain file (``ClaireStateManager`` in ``desktop_app.face_widget.py`` writes
+# the state's lowercase name, no newline, every time it changes).  The panel is
+# a different process from the daemon, so that file is the single channel: no
+# socket, no service, no second writer.  The panel reads it and never writes it.
+#
+# **Where the file lives, and why not ``/tmp``.**  The obvious location,
+# ``tempfile.gettempdir()``, does not work between systemd units: ``claire.service``
+# and ``claire-panel.service`` both set ``PrivateTmp=yes``, so each process sees
+# its own private ``/tmp`` and a file written by one is invisible to the other.
+# ``$XDG_RUNTIME_DIR`` (``/run/user/<uid>``) is *not* isolated by ``PrivateTmp``
+# and is shared by all of the user's units, so the state travels through
+# ``$XDG_RUNTIME_DIR/claire/claire_state`` (the writer creates the directory).
+# When ``XDG_RUNTIME_DIR`` is not set — a dev run, a non-systemd machine — the
+# reader falls back to the old temp-dir path, where writer and reader share one
+# namespace anyway.
+#
+# The read is **total**: a missing, empty, unreadable or unrecognised file means
+# ``asleep``, because a status indicator must never guess a busier state than it
+# can prove and a read failure must never break the page.  This deliberately
+# does not go through :class:`PanelState`: the path is a fixed, well-known
+# channel with no owner configuration in it, and a total fallback is part of the
+# contract, so there is nothing for an injected state to refuse.
+
+#: The five states, in the order the desktop app's ``ClaireState`` declares them.
+FACE_STATES: tuple[str, ...] = ("asleep", "idle", "listening", "thinking", "speaking")
+
+#: What to report when no state file says anything usable.
+FACE_STATE_DEFAULT = "asleep"
+
+#: The state file's path under ``$XDG_RUNTIME_DIR``: directory, then file name.
+FACE_STATE_RUNTIME_DIR = "claire"
+FACE_STATE_FILE_NAME = "claire_state"
+
+#: The fallback path when ``XDG_RUNTIME_DIR`` is absent: the same location the
+#: desktop app has always used, where both sides share one ``/tmp`` namespace.
+FACE_STATE_FILE = str(Path(tempfile.gettempdir()) / FACE_STATE_FILE_NAME)
+
+#: How often the page re-reads the state, in milliseconds: twice a second is
+#: responsive behind speech and still trivial work for a loopback server.
+FACE_POLL_MILLISECONDS = 500
+
+
+def _face_state_paths() -> tuple[str, ...]:
+    """The state files to try, most authoritative first.
+
+    The shared runtime path wins when it exists at all: a newer writer's file
+    decides, and its garbage is reported as ``asleep`` rather than masked by a
+    stale fallback file.  The temp-dir path is consulted only when the shared
+    one does not exist (older daemon build, or no ``XDG_RUNTIME_DIR``).
+    """
+    candidates: list[str] = []
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        candidates.append(str(Path(runtime_dir) / FACE_STATE_RUNTIME_DIR / FACE_STATE_FILE_NAME))
+    candidates.append(FACE_STATE_FILE)
+    return tuple(candidates)
 
 #: The longest message the chat box will forward to the model.  Bounded so a
 #: pasted file cannot be pushed into the prompt (or the backend's timeout) by
@@ -616,7 +688,7 @@ class ConfigCredential:
 
 @dataclass(frozen=True)
 class RouterStatus:
-    """``CLAIRE.md`` — path, bytes against the budget, and the loud framing."""
+    """The always-loaded router — path, bytes against the budget, loud framing."""
 
     path: str = ""
     exists: bool = False
@@ -634,6 +706,33 @@ class RouterStatus:
         if self.budget_bytes <= 0:
             return 0.0
         return self.size_bytes / float(self.budget_bytes)
+
+
+#: Rule drawn before and after the over-budget warning, so it cannot be missed
+#: or mistaken for ordinary memory content.
+_BUDGET_BANNER = "!" * 72
+
+
+def _store_budget_warning(*, size_bytes: int, budget: int, dropped_bytes: int) -> str:
+    """The over-budget framing for a router that lives in the store, not a file.
+
+    A router row is re-read from the store on every request and hard-capped at
+    its byte budget, so the same notice is owed: the real size, the budget and
+    the bytes the cut drops.  It names the router document rather than a file
+    because there is no file to open.
+    """
+    return (
+        f"{_BUDGET_BANNER}\n"
+        "!! WARNING: YOUR ALWAYS-LOADED MEMORY ROUTER IS OVER BUDGET AND WAS "
+        "TRUNCATED\n"
+        f"!! Real size: {size_bytes} bytes. Budget: {budget} bytes. "
+        f"Dropped: {dropped_bytes} bytes.\n"
+        "!! Those dropped bytes are NOT being loaded: the end of the router is "
+        "invisible to me.\n"
+        "!! Fix it by moving detail into notes and keeping only one-line pointers "
+        "in the router.\n"
+        f"{_BUDGET_BANNER}"
+    )
 
 
 @dataclass(frozen=True)
@@ -804,8 +903,30 @@ class NoteSummary:
     path: str
     size_bytes: int
     #: True when the router body never mentions this note.  Reported, never
-    #: hidden: an orphaned note is memory Claire will not read.
+    #: hidden: the router is what Claire loads on every turn, so a note it does
+    #: not name is reached only by search.
     unreferenced: bool = False
+
+
+def _frontmatter_display(value: object) -> str:
+    """Render a stored frontmatter value the way the page shows it."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_frontmatter_display(item) for item in value)
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _wiki_link_targets(body: str) -> tuple[str, ...]:
+    """The distinct ``[[target]]`` names a body refers to, in first-seen order."""
+    seen: dict[str, None] = {}
+    for match in re.finditer(r"\[\[([^\[\]|]+)(?:\|[^\[\]]*)?\]\]", body or ""):
+        target = match.group(1).strip()
+        if target:
+            seen.setdefault(target, None)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -821,11 +942,12 @@ class NoteHit:
 
 @dataclass(frozen=True)
 class MemoryNotesStatus:
-    """The markdown half of memory: the vault, its router and its notes.
+    """The memory listing: the always-loaded router and the stored notes.
 
-    A missing notes directory is a *named* problem with a fix, not an empty
-    list: "there are no notes" and "the vault has no ``notes/`` directory yet"
-    are different states and the page must not conflate them.
+    Whichever backend answers, a notes location that is absent or unreadable is
+    a *named* problem with a fix, not an empty list: "there are no notes" and
+    "the notes could not be read" are different states and the page must not
+    conflate them.
     """
 
     vault_dir: str = ""
@@ -1349,6 +1471,17 @@ class PanelState:
     def router_status(self) -> RouterStatus:
         raise PanelStateError("router_status")
 
+    def router_text(self) -> str:
+        """The router's own text (frontmatter included), for the editor card.
+
+        The default reads the file the status names, which is what a
+        file-backed state means by "router". A state whose memory lives
+        elsewhere overrides this rather than pretending to have a file.
+        """
+        return Path(self.router_status().path).read_text(
+            encoding="utf-8", errors="replace"
+        )
+
     def calendar_today(self) -> CalendarStatus:
         raise PanelStateError("calendar_today")
 
@@ -1729,6 +1862,9 @@ class RealPanelState(PanelState):
         return None
 
     def router_status(self) -> RouterStatus:
+        if self._postgres_memory():
+            return self._router_status_postgres()
+
         from claire.memory import notes as notes_module
         from claire.memory import router as router_module
 
@@ -1968,6 +2104,280 @@ class RealPanelState(PanelState):
             return Path(self._router_path).expanduser().parent
         return notes_module.resolve_vault_dir()
 
+    # -- Postgres-backed memory (the Markdown vault is retired) ------------- #
+    #
+    # These readers and writers build the *same* dataclasses the vault path
+    # builds, so every renderer, budget check and invariant in the page is
+    # unchanged — only the source of truth differs. The vault's own code stays
+    # reachable behind CLAIRE_MEMORY_BACKEND=vault so a rollback is a flag flip.
+
+    def _postgres_memory(self) -> bool:
+        """Whether long-term memory is served by Postgres rather than the vault."""
+        try:
+            from claire.system_prompt import _memory_backend
+
+            return _memory_backend() == "postgres"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _pg():
+        from claire.memory import pg as pg_module
+
+        return pg_module
+
+    def _router_status_postgres(self) -> RouterStatus:
+        """The router row, reported with the same byte/budget framing as a file."""
+        reference = "postgres:memory_documents/router"
+        pg_module = self._pg()
+        try:
+            document = pg_module.get_router()
+        except Exception as exc:
+            return RouterStatus(
+                path=reference,
+                error=f"{type(exc).__name__}: {exc}",
+                fix="Start the memory database (see deploy/pgvector/README.md).",
+            )
+        if document is None:
+            return RouterStatus(
+                path=reference,
+                error="no router document is stored, so Claire has no always-loaded memory",
+                fix=(
+                    "Re-run `python -m claire.memory.migrate_md_to_pg`, or create "
+                    "it from the editor on this page."
+                ),
+            )
+
+        from claire.memory.pg_router import PostgresMemoryRouter
+
+        try:
+            # The same router object the prompt renders, so the byte figures and
+            # the truncation decision cannot drift from what Claire loads.
+            router = PostgresMemoryRouter()
+        except Exception as exc:
+            return RouterStatus(
+                path=reference,
+                error=f"{type(exc).__name__}: {exc}",
+                fix="Start the memory database (see deploy/pgvector/README.md).",
+            )
+        warning = ""
+        if router.over_budget:
+            warning = _store_budget_warning(
+                size_bytes=int(router.size_bytes),
+                budget=int(router.budget_bytes),
+                dropped_bytes=int(router.dropped_bytes),
+            )
+        return RouterStatus(
+            path=reference,
+            exists=True,
+            size_bytes=int(router.size_bytes),
+            budget_bytes=int(router.budget_bytes),
+            over_budget=bool(router.over_budget),
+            dropped_bytes=int(router.dropped_bytes),
+            warning=warning,
+        )
+
+    def router_text(self) -> str:
+        """The router's text: from the store in Postgres mode, else the file."""
+        if not self._postgres_memory():
+            return super().router_text()
+
+        document = self._pg().get_router()
+        if document is None:
+            raise FileNotFoundError("no router document is stored in Postgres")
+        # frontmatter_raw is kept verbatim precisely so this reconstruction shows
+        # the same text the FileVault-backed panel showed.
+        return f"{document.frontmatter_raw}{document.body}"
+
+    def _memory_notes_postgres(self) -> MemoryNotesStatus:
+        pg_module = self._pg()
+        where = "postgres (memory_documents)"
+        try:
+            documents = pg_module.list_documents()
+        except Exception as exc:  # a dead database is a named state, not a 500
+            return MemoryNotesStatus(
+                vault_dir=where,
+                notes_dir=where,
+                router_path="postgres:memory_documents/router",
+                error=f"{type(exc).__name__}: {exc}",
+                fix=(
+                    "Start the memory database (see deploy/pgvector/README.md), "
+                    "then check the panel's own database section."
+                ),
+            )
+
+        router = next((d for d in documents if d.doc_kind == "router"), None)
+        note_docs = sorted(
+            (d for d in documents if d.doc_kind == "note"), key=lambda d: d.name.lower()
+        )
+        router_body = (router.body if router is not None else "").lower()
+
+        summaries = tuple(
+            NoteSummary(
+                name=doc.name,
+                title=doc.title or doc.name,
+                path=doc.source_path,
+                size_bytes=doc.body_bytes,
+                # Same rule as the vault: a note the router never names is memory
+                # Claire will not read. Reported, never hidden.
+                unreferenced=doc.name.lower() not in router_body,
+            )
+            for doc in note_docs
+        )
+        problems = ()
+        if router is None:
+            problems = (
+                "No router document is stored, so Claire has no always-loaded "
+                "memory. Re-run the importer or create it from the editor.",
+            )
+        return MemoryNotesStatus(
+            vault_dir=where,
+            notes_dir=f"{where} — notes",
+            router_path="postgres:memory_documents/router",
+            obsidian_marked=False,
+            notes=summaries,
+            total_bytes=sum(item.size_bytes for item in summaries),
+            unreferenced=tuple(item.name for item in summaries if item.unreferenced),
+            problems=problems,
+        )
+
+    def _memory_note_postgres(self, name: str) -> MemoryNoteView:
+        pg_module = self._pg()
+        wanted = str(name or "")
+        try:
+            doc = pg_module.get_document(wanted)
+        except Exception as exc:
+            return MemoryNoteView(
+                name=wanted,
+                error=f"{type(exc).__name__}: {exc}",
+                fix="Start the memory database (see deploy/pgvector/README.md).",
+            )
+        if doc is None:
+            return MemoryNoteView(
+                name=wanted,
+                error=f"no memory named {wanted!r} is stored",
+                fix=(
+                    "Pick a note from the list, or create it from the 'New note' "
+                    "form on this page."
+                ),
+            )
+
+        frontmatter = tuple(
+            (str(key), _frontmatter_display(value))
+            for key, value in (doc.frontmatter or {}).items()
+        )
+        try:
+            known = {d.name for d in pg_module.list_documents() if d.doc_kind == "note"}
+        except Exception:
+            known = set()
+        links = tuple(
+            (target, target in known)
+            for target in _wiki_link_targets(doc.body)
+        )
+        return MemoryNoteView(
+            name=doc.name,
+            title=doc.title or doc.name,
+            path=f"postgres:memory_documents/{doc.name}",
+            text=doc.body,
+            frontmatter=frontmatter,
+            links=links,
+        )
+
+    def _memory_search_postgres(self, query: str) -> MemorySearchStatus:
+        pg_module = self._pg()
+        try:
+            rows = pg_module.search(query, 8)
+        except Exception as exc:
+            return MemorySearchStatus(
+                query=str(query or ""),
+                note_error=f"{type(exc).__name__}: {exc}",
+                note_fix="Start the memory database (see deploy/pgvector/README.md).",
+            )
+        hits = []
+        for row in rows:
+            content = str(row.get("content") or "")
+            first = next((ln for ln in content.splitlines() if ln.strip()), "")
+            hits.append(
+                NoteHit(
+                    name=str(row.get("name") or ""),
+                    title=str(row.get("heading") or row.get("name") or ""),
+                    line_no=0,
+                    line=first,
+                    score=float(row.get("score") or 0.0),
+                )
+            )
+        note = ""
+        if not hits:
+            note = "No stored memory matched that query."
+        return MemorySearchStatus(
+            query=str(query or ""), note_hits=tuple(hits), note=note
+        )
+
+    def _save_note_postgres(
+        self, name: str, body: str, *, title: str = "", create: bool = True
+    ) -> NoteSummary:
+        from claire.memory import migrate_md_to_pg as importer
+        from claire.memory import notes as notes_module
+
+        pg_module = self._pg()
+        clean = notes_module.normalize_note_name(name)
+        existing = pg_module.get_document(clean)
+        if create and existing is not None:
+            raise ValueError(
+                f"a memory named {clean!r} already exists"
+            )
+        if not create and existing is None:
+            raise ValueError(
+                f"no memory named {clean!r} is stored, so there is nothing to edit"
+            )
+
+        frontmatter = dict(existing.frontmatter) if existing else {}
+        if title:
+            frontmatter["title"] = title
+        source_path = existing.source_path if existing else f"notes/{clean}.md"
+        doc_kind = existing.doc_kind if existing else "note"
+
+        pg_module.upsert_document(
+            source_path=source_path,
+            doc_kind=doc_kind,
+            name=clean,
+            title=title or str(frontmatter.get("title") or clean),
+            body=body,
+            frontmatter=frontmatter,
+            frontmatter_raw=existing.frontmatter_raw if existing else "",
+            always_loaded=(doc_kind == "router"),
+            budget_bytes=existing.budget_bytes if existing else None,
+            chunks=importer.chunk_body(body),
+        )
+        stored = pg_module.get_document(clean)
+        if stored is None:  # pragma: no cover - a write that vanished
+            raise ValueError(f"the write to {clean!r} did not persist")
+        return NoteSummary(
+            name=stored.name,
+            title=stored.title or stored.name,
+            path=stored.source_path,
+            size_bytes=stored.body_bytes,
+        )
+
+    def _delete_note_postgres(self, name: str) -> NoteSummary:
+        pg_module = self._pg()
+        doc = pg_module.get_document(str(name or ""))
+        if doc is None:
+            raise ValueError(f"no memory named {name!r} is stored")
+        if doc.doc_kind == "router":
+            raise ValueError(
+                "the router is Claire's always-loaded memory and cannot be deleted; "
+                "edit it instead"
+            )
+        summary = NoteSummary(
+            name=doc.name,
+            title=doc.title or doc.name,
+            path=doc.source_path,
+            size_bytes=doc.body_bytes,
+        )
+        pg_module.delete_document(doc.source_path)
+        return summary
+
     def memory_notes(self) -> MemoryNotesStatus:
         """List the router and every note, and name what is wrong with the vault.
 
@@ -1975,6 +2385,9 @@ class RealPanelState(PanelState):
         :func:`claire.memory.notes.unreferenced_notes` — the same readers Claire
         uses — so the page cannot show a different vault from the one she reads.
         """
+        if self._postgres_memory():
+            return self._memory_notes_postgres()
+
         from claire.memory import notes as notes_module
         from claire.memory import obsidian as obsidian_module
 
@@ -2062,6 +2475,9 @@ class RealPanelState(PanelState):
 
     def memory_note(self, name: str) -> MemoryNoteView:
         """Open one note by name, with its frontmatter and resolvable links."""
+        if self._postgres_memory():
+            return self._memory_note_postgres(name)
+
         from claire.memory import notes as notes_module
         from claire.memory import obsidian as obsidian_module
 
@@ -2116,14 +2532,20 @@ class RealPanelState(PanelState):
         second keyword algorithm here, and no embeddings or LLM are loaded to
         answer a page request.
         """
-        from claire.memory import notes as notes_module
-
         text = str(query or "").strip()
         if not text:
             raise PanelBadRequest(
                 "the memory search carried no query.",
                 fix="Type a word into the search box and submit it.",
             )
+        if self._postgres_memory():
+            # Semantic and keyword retrieval behind one call, fused with RRF by
+            # claire.memory.pg.search; it degrades to keyword-only if the
+            # embedding backend is down rather than failing the page.
+            return self._memory_search_postgres(text)
+
+        from claire.memory import notes as notes_module
+
         if len(text) > 200:
             raise PanelBadRequest(
                 f"the search query is {len(text)} characters; the box forwards at "
@@ -2219,6 +2641,9 @@ class RealPanelState(PanelState):
         parser reads back.  The file is re-read after the write so the page shows
         the stored document rather than the submitted one.
         """
+        if self._postgres_memory():
+            return self._save_note_postgres(name, body, title=title, create=create)
+
         from claire.memory import notes as notes_module
         from claire.memory import obsidian as obsidian_module
 
@@ -2247,6 +2672,9 @@ class RealPanelState(PanelState):
 
     def delete_note(self, name: str) -> NoteSummary:
         """Delete one note through :mod:`claire.memory.notes`."""
+        if self._postgres_memory():
+            return self._delete_note_postgres(name)
+
         from claire.memory import notes as notes_module
 
         info = notes_module.delete_note(name, vault_dir=self.vault_path())
@@ -2431,20 +2859,20 @@ _CSS = """
 /* ---- tokens ------------------------------------------------------------ */
 :root {
   color-scheme: dark light;
-  --bg: #101317;
-  --bg-soft: #161a20;
-  --card: #1a1e25;
-  --card-2: #1f242c;
-  --ink: #e8ebef;
-  --ink-soft: #a7b0bb;
-  --ink-faint: #828b97;
-  --line: #2a3039;
-  --line-soft: #232931;
-  --accent: #6ea8fe;
-  --accent-ink: #0b1220;
-  --ok: #56d68a;
-  --warn: #f0b429;
-  --bad: #ff7b72;
+  --bg: #131417;
+  --bg-soft: #1b1d21;
+  --card: #1b1d21;
+  --card-2: #24262b;
+  --ink: #e8eaed;
+  --ink-soft: #a8adb5;
+  --ink-faint: #878d96;
+  --line: #31343a;
+  --line-soft: #26282d;
+  --accent: #e562a4;
+  --accent-ink: #150a12;
+  --ok: #4cc38a;
+  --warn: #d9a441;
+  --bad: #ef6a6a;
   --radius: 12px;
   --radius-sm: 8px;
   --shadow: 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px -18px rgba(0, 0, 0, .8);
@@ -2454,21 +2882,21 @@ _CSS = """
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f6f7f9;
-    --bg-soft: #eef0f4;
+    --bg: #f4f5f7;
+    --bg-soft: #eaebee;
     --card: #ffffff;
-    --card-2: #f4f6f9;
-    --ink: #171b21;
-    --ink-soft: #4d5763;
-    --ink-faint: #6b7480;
-    --line: #d9dee6;
-    --line-soft: #e6eaf0;
-    --accent: #1d5fd0;
+    --card-2: #f7f8fa;
+    --ink: #16181c;
+    --ink-soft: #4a4f57;
+    --ink-faint: #6b7078;
+    --line: #d5d8dd;
+    --line-soft: #e4e6ea;
+    --accent: #b93e83;
     --accent-ink: #ffffff;
-    --ok: #16794a;
+    --ok: #1f7a4d;
     --warn: #8a5b00;
     --bad: #b4231a;
-    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 10px 24px -20px rgba(16, 24, 40, .45);
+    --shadow: 0 1px 2px rgba(20, 22, 26, .06), 0 10px 24px -20px rgba(20, 22, 26, .45);
   }
 }
 
@@ -2586,9 +3014,13 @@ form.chat .row { display: flex; align-items: center; justify-content: space-betw
              text-transform: uppercase; color: var(--ink-faint); }
 .turn .at { font-size: .72rem; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
 .turn p { margin: 0; white-space: pre-wrap; }
-.turn.you { border-left: 3px solid var(--accent); align-self: flex-end;
-            background: color-mix(in srgb, var(--accent) 8%, var(--card-2)); }
-.turn.claire { border-left: 3px solid var(--ok); }
+/* Who is speaking: Claire carries the pink accent, the owner is neutral grey.
+   The Android app colours the same conversation the same way (``colors.xml``:
+   ``claire`` is the accent, ``you`` the neutral grey). Green stays reserved for
+   success in this palette, so it never marks who is speaking. */
+.turn.you { border-left: 3px solid var(--line); align-self: flex-end; }
+.turn.claire { border-left: 3px solid var(--accent);
+               background: color-mix(in srgb, var(--accent) 8%, var(--card-2)); }
 .turn.note { border-left: 3px solid var(--warn); background: transparent; }
 .turn.note p { color: var(--warn); }
 .diary { list-style: none; margin: .8rem 0 0; padding: .7rem 0 0;
@@ -2638,6 +3070,58 @@ footer { max-width: 1180px; margin: 1.25rem auto 0; padding-top: .8rem;
 @media (prefers-reduced-motion: no-preference) {
   a, button { transition: filter .12s ease, background-color .12s ease; }
 }
+
+/* ---- face --------------------------------------------------------------- */
+/* Claire's face: a status mirror of $XDG_RUNTIME_DIR/claire/claire_state, with
+   the temp-dir path consulted only when that file does not exist
+   (docs/PANEL_FACE.md).
+   Structure takes the panel greys; the accent appears only while listening,
+   where it reads as "I am hearing you".  The five states differ in *shape* and
+   *rhythm* (closed vs open eyes, pupil size, mouth, animation speed), never in
+   colour alone, and every motion rule lives inside the no-preference media
+   query so prefers-reduced-motion leaves a still but equally distinct face. */
+.face-body { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; }
+.face-stage { flex: 0 0 auto; line-height: 0; }
+.face-stage svg { display: block; }
+.face-word { margin: 0; font-size: 1.05rem; }
+.face-hint { margin: .15rem 0 0; font-size: .82rem; color: var(--ink-faint); }
+.face-halo { stroke: var(--accent); visibility: hidden; opacity: .55; }
+.face-head-circle { fill: var(--card-2); stroke: var(--line); }
+.face-pupil { fill: var(--ink); }
+.face-eye-line, .face-mouth-smile, .face-mouth-flat { stroke: var(--ink-soft); }
+.face-mouth-flat-fill, .face-mouth-talk { fill: var(--ink-soft); }
+/* geometry transforms must scale about the element, not the canvas origin */
+.face-pupil, .face-head, .face-mouth-talk { transform-box: fill-box; transform-origin: center; }
+/* every part starts hidden; each state reveals its own set */
+.face-eyes-open, .face-eyes-closed,
+.face-mouth-smile, .face-mouth-flat, .face-mouth-talk { visibility: hidden; }
+.face-stage[data-state="asleep"] .face-head { opacity: .55; }
+.face-stage[data-state="asleep"] .face-eyes-closed,
+.face-stage[data-state="asleep"] .face-mouth-flat { visibility: visible; }
+.face-stage[data-state="idle"] .face-eyes-open,
+.face-stage[data-state="idle"] .face-mouth-smile { visibility: visible; }
+.face-stage[data-state="listening"] .face-halo,
+.face-stage[data-state="listening"] .face-eyes-open,
+.face-stage[data-state="listening"] .face-mouth-smile { visibility: visible; }
+.face-stage[data-state="listening"] .face-pupil { transform: scale(1.35); }
+.face-stage[data-state="thinking"] .face-eyes-open,
+.face-stage[data-state="thinking"] .face-mouth-flat { visibility: visible; }
+.face-stage[data-state="thinking"] .face-pupil { transform: scale(.62) translateY(-1.2px); }
+.face-stage[data-state="speaking"] .face-eyes-open,
+.face-stage[data-state="speaking"] .face-mouth-talk { visibility: visible; }
+@media (prefers-reduced-motion: no-preference) {
+  .face-stage[data-state="idle"] .face-head { animation: face-breathe 4.5s ease-in-out infinite alternate; }
+  .face-stage[data-state="listening"] .face-head { animation: face-lean 4.5s ease-in-out infinite alternate; }
+  .face-stage[data-state="listening"] .face-halo { animation: face-hear 1.6s ease-in-out infinite alternate; }
+  .face-stage[data-state="thinking"] .face-eyes-open { animation: face-scan 2.8s ease-in-out infinite alternate; }
+  .face-stage[data-state="speaking"] .face-head { animation: face-breathe 2.8s ease-in-out infinite alternate; }
+  .face-stage[data-state="speaking"] .face-mouth-talk { animation: face-talk .55s ease-in-out infinite alternate; }
+}
+@keyframes face-breathe { from { transform: scale(1); } to { transform: scale(1.025); } }
+@keyframes face-lean { from { transform: scale(1.02); } to { transform: scale(1.045); } }
+@keyframes face-hear { from { opacity: .3; } to { opacity: .85; } }
+@keyframes face-scan { from { transform: translateX(-2px); } to { transform: translateX(2px); } }
+@keyframes face-talk { from { transform: scaleY(.3); } to { transform: scaleY(1); } }
 """
 
 
@@ -2856,8 +3340,14 @@ def _keys_section(state: PanelState) -> str:
 
 
 def _router_section(state: PanelState) -> str:
+    """The always-loaded router card: its source, its budget, and its framing."""
+
+    in_store = False
+
     def build() -> str:
+        nonlocal in_store
         status = state.router_status()
+        in_store = status.path.startswith("postgres")
         if status.error:
             return _problem(status.error, status.fix)
         fraction = max(0.0, min(status.fraction, 1.0))
@@ -2874,30 +3364,49 @@ def _router_section(state: PanelState) -> str:
         ]
         if status.created_from_template:
             parts.append(
-                '<p class="warn">This file did not exist; Claire created it from '
+                '<p class="warn">This memory did not exist; Claire created it from '
                 "its built-in template and reported that it did.</p>"
             )
         if status.over_budget:
             warning = status.warning or (
-                "!! WARNING: YOUR ALWAYS-LOADED MEMORY (CLAIRE.md) IS OVER BUDGET "
-                "AND WAS TRUNCATED\n"
-                f"!! Real size: {status.size_bytes} bytes. Budget: "
-                f"{status.budget_bytes} bytes. Dropped: {status.dropped_bytes} bytes.\n"
-                "!! Those dropped bytes are NOT being loaded: the end of the file "
-                "is invisible to me.\n"
-                "!! Fix it by moving detail into notes/ and keeping only one-line "
-                "pointers here."
+                _store_budget_warning(
+                    size_bytes=status.size_bytes,
+                    budget=status.budget_bytes,
+                    dropped_bytes=status.dropped_bytes,
+                )
+                if in_store
+                else (
+                    "!! WARNING: YOUR ALWAYS-LOADED MEMORY (CLAIRE.md) IS OVER "
+                    "BUDGET AND WAS TRUNCATED\n"
+                    f"!! Real size: {status.size_bytes} bytes. Budget: "
+                    f"{status.budget_bytes} bytes. Dropped: {status.dropped_bytes} "
+                    "bytes.\n"
+                    "!! Those dropped bytes are NOT being loaded: the end of the "
+                    "file is invisible to me.\n"
+                    "!! Fix it by moving detail into notes/ and keeping only "
+                    "one-line pointers here."
+                )
             )
             parts.append(f'<pre class="mono">{_esc(warning)}</pre>')
-            parts.append(
-                '<div class="fix"><strong>Fix:</strong> move detail into '
-                "<span class=\"mono\">notes/</span> and keep one-line pointers in "
-                "CLAIRE.md; the warning above is exactly what Claire prepends to "
-                "your system prompt.</div>"
-            )
+            if in_store:
+                parts.append(
+                    '<div class="fix"><strong>Fix:</strong> move detail into '
+                    "notes and keep one-line pointers in the router; the warning "
+                    "above is exactly what Claire prepends to your system "
+                    "prompt.</div>"
+                )
+            else:
+                parts.append(
+                    '<div class="fix"><strong>Fix:</strong> move detail into '
+                    "<span class=\"mono\">notes/</span> and keep one-line pointers in "
+                    "CLAIRE.md; the warning above is exactly what Claire prepends "
+                    "to your system prompt.</div>"
+                )
         return "\n".join(parts)
 
-    return _section("Memory router (CLAIRE.md)", _guard("memory router", build))
+    inner = _guard("memory router", build)
+    title = "Memory router" if in_store else "Memory router (CLAIRE.md)"
+    return _section(title, inner)
 
 
 def _calendar_section(state: PanelState) -> str:
@@ -3111,8 +3620,28 @@ def _note_link(name: str) -> str:
     return f"{ROUTE_MEMORY}?note={quote(str(name), safe='')}"
 
 
+def _memory_locations(info: MemoryNotesStatus) -> str:
+    """Where the memory lives, labelled for the backend that answered.
+
+    A store has no vault directory and no notes directory to name, so it shows
+    the store and the router row instead of paths that do not exist.
+    """
+    if str(info.vault_dir).startswith("postgres"):
+        return (
+            '<p class="mono">'
+            f"store: {_esc(info.vault_dir)}<br>"
+            f"router: {_esc(info.router_path)}</p>"
+        )
+    return (
+        '<p class="mono">'
+        f"vault: {_esc(info.vault_dir)}<br>"
+        f"notes: {_esc(info.notes_dir)}<br>"
+        f"router: {_esc(info.router_path)}</p>"
+    )
+
+
 def _memory_section(state: PanelState) -> str:
-    """The index-page card: how much memory is in the vault, and how to browse it."""
+    """The index-page card: how much memory there is, and how to browse it."""
 
     def build() -> str:
         status = state.memory_notes()
@@ -3127,25 +3656,31 @@ def _memory_section(state: PanelState) -> str:
                     f'<a href="{ROUTE_MEMORY}">read, search and write memory</a>.</p>',
                 ]
             )
+        in_store = str(status.vault_dir).startswith("postgres")
         count = len(status.notes)
         parts = [
-            '<p class="hint">The markdown half of memory: the always-loaded '
-            "router plus one file per note. It lives outside the repository.</p>",
-            '<p class="mono">'
-            f"vault: {_esc(status.vault_dir)}<br>"
-            f"notes: {_esc(status.notes_dir)}<br>"
-            f"router: {_esc(status.router_path)}</p>",
+            (
+                '<p class="hint">Memory lives in a PostgreSQL store with pgvector '
+                "embeddings: the always-loaded router holds one-line pointers and "
+                "is re-read on every request; each note holds the detail and is "
+                "found by search rather than loaded every turn.</p>"
+                if in_store
+                else '<p class="hint">Memory is a markdown vault: the '
+                "always-loaded router holds one-line pointers; each note holds "
+                "the detail. It lives outside the repository.</p>"
+            ),
+            _memory_locations(status),
         ]
         if status.note:
             parts.append(f'<p class="warn">{_esc(status.note)}</p>')
         if status.notes:
             rows = []
             for summary in status.notes[:8]:
-                flag = (
-                    '<span class="warn"> not in CLAIRE.md</span>'
-                    if summary.unreferenced
-                    else ""
-                )
+                if summary.unreferenced:
+                    where = "the router" if in_store else "CLAIRE.md"
+                    flag = f'<span class="warn"> not in {where}</span>'
+                else:
+                    flag = ""
                 rows.append(
                     "<tr>"
                     f'<td><a href="{_esc(_note_link(summary.name))}">'
@@ -3167,14 +3702,25 @@ def _memory_section(state: PanelState) -> str:
                 "the detail belongs in notes.</p>"
             )
         mark = (
-            '<span class="ok">marked as an Obsidian vault</span>'
-            if status.obsidian_marked
-            else '<span class="muted">not yet opened by Obsidian</span>'
+            ""
+            if in_store
+            else (
+                '<span class="ok">marked as an Obsidian vault</span>'
+                if status.obsidian_marked
+                else '<span class="muted">not yet opened by Obsidian</span>'
+            )
+        )
+        trail = (
+            f'<a href="{ROUTE_MEMORY}">open the memories browser</a></p>'
+            if in_store
+            else (
+                f"{mark} &middot; "
+                f'<a href="{ROUTE_MEMORY}">open the memories browser</a></p>'
+            )
         )
         parts.append(
             f'<p class="hint">{count} note(s), {status.total_bytes} bytes of detail '
-            f"&middot; {mark} &middot; "
-            f'<a href="{ROUTE_MEMORY}">open the memories browser</a></p>'
+            f"&middot; {trail}"
         )
         return "\n".join(parts)
 
@@ -3182,19 +3728,25 @@ def _memory_section(state: PanelState) -> str:
 
 
 def _memory_notes_table(status: MemoryNotesStatus, selected: str = "") -> str:
-    """The vault listing: every note, with size, title and orphan marker."""
+    """The memory listing: every note, with size, title and router marker."""
     if status.error:
         return _problem(status.error, status.fix)
     if not status.notes:
+        # The router's name is backend-specific: the store has no CLAIRE.md
+        # file, so the page must not point at one.
+        store = str(status.vault_dir).startswith("postgres")
         return (
-            '<p class="empty">No notes yet. CLAIRE.md holds the pointers; write '
+            '<p class="empty">No notes yet. The router holds the pointers; write '
             "the first note with the form below.</p>"
+            if store
+            else '<p class="empty">No notes yet. CLAIRE.md holds the pointers; '
+            "write the first note with the form below.</p>"
         )
     rows = []
     for summary in status.notes:
         marker = (
-            '<span class="warn" title="CLAIRE.md never mentions this note">'
-            " orphan</span>"
+            '<span class="warn" title="The router never mentions this note">'
+            " unreferenced</span>"
             if summary.unreferenced
             else ""
         )
@@ -3216,7 +3768,7 @@ def _memory_notes_table(status: MemoryNotesStatus, selected: str = "") -> str:
     return table
 
 
-def _memory_note_html(view: MemoryNoteView) -> str:
+def _memory_note_html(view: MemoryNoteView, *, in_store: bool = False) -> str:
     """One open note: frontmatter, links, body, and any format problems."""
     if view.error:
         return _problem(view.error, view.fix)
@@ -3232,6 +3784,11 @@ def _memory_note_html(view: MemoryNoteView) -> str:
         parts.append(
             "<table><thead><tr><th>Frontmatter</th><th>Value</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
+        )
+    elif in_store:
+        parts.append(
+            '<p class="muted">No frontmatter. Add a title in the editor below so '
+            "the note carries one.</p>"
         )
     else:
         parts.append(
@@ -3264,8 +3821,19 @@ def _memory_note_html(view: MemoryNoteView) -> str:
     return "\n".join(parts)
 
 
-def _memory_editor_html(view: MemoryNoteView) -> str:
+def _memory_editor_html(view: MemoryNoteView, *, in_store: bool = False) -> str:
     """The edit form for one note, posting to the same writer Claire uses."""
+    body_label = (
+        "Body (markdown; [[another note's name]] links to it)"
+        if in_store
+        else "Body (markdown; [[wiki links]] work as they do in Obsidian)"
+    )
+    reference = view.name if in_store else f"{view.name}.md"
+    delete_hint = (
+        "the row is removed from the store"
+        if in_store
+        else "the file is removed from the vault"
+    )
     return (
         f'<form class="memory" method="post" action="{ROUTE_MEMORY_SAVE}">\n'
         '<input type="hidden" name="mode" value="edit">\n'
@@ -3273,29 +3841,38 @@ def _memory_editor_html(view: MemoryNoteView) -> str:
         '<label class="field" for="edit-title">Title</label>\n'
         f'<input id="edit-title" name="title" maxlength="200" value="'
         f'{_esc(view.title)}">\n'
-        '<label class="field" for="edit-body">Body (markdown; [[wiki links]] '
-        "work as they do in Obsidian)</label>\n"
+        f'<label class="field" for="edit-body">{body_label}</label>\n'
         f'<textarea id="edit-body" name="body" rows="12" '
         f'maxlength="{MEMORY_WRITE_MAX_CHARS}">{_esc(view.text)}</textarea>\n'
         '<div class="row"><button type="submit">Save note</button>\n'
-        f'<span class="mono">{_esc(view.name)}.md</span></div>\n'
+        f'<span class="mono">{_esc(reference)}</span></div>\n'
         "</form>\n"
         f'<form class="memory danger" method="post" action="{ROUTE_MEMORY_DELETE}">\n'
         f'<input type="hidden" name="name" value="{_esc(view.name)}">\n'
         '<div class="row"><button type="submit">Delete this note</button>\n'
-        "<span class=\"hint\">There is no undo and no trash: the file is removed "
-        "from the vault.</span></div>\n"
+        '<span class="hint">There is no undo and no trash: '
+        f"{delete_hint}.</span></div>\n"
         "</form>"
     )
 
 
-def _memory_new_note_html() -> str:
-    """The create form: a name (the filename, hence the link target) and a body."""
+def _memory_new_note_html(*, in_store: bool = False) -> str:
+    """The create form: a name (the link target) and a body."""
+    name_label = (
+        "Note name ([[this name]] is how other notes link to it)"
+        if in_store
+        else "Note name (the filename; [[this name]] is how it is linked)"
+    )
+    saved_hint = (
+        "Saved in the memory store with its title and frontmatter."
+        if in_store
+        else "Saved as markdown with title/created/updated frontmatter, at mode "
+        "0600, outside the repository."
+    )
     return (
         f'<form class="memory" method="post" action="{ROUTE_MEMORY_SAVE}">\n'
         '<input type="hidden" name="mode" value="create">\n'
-        '<label class="field" for="new-name">Note name (the filename; '
-        "[[this name]] is how it is linked)</label>\n"
+        f'<label class="field" for="new-name">{name_label}</label>\n'
         '<input id="new-name" name="name" maxlength="120" '
         'placeholder="dentist" required>\n'
         '<label class="field" for="new-title">Title (optional; defaults to the '
@@ -3306,8 +3883,7 @@ def _memory_new_note_html() -> str:
         f'maxlength="{MEMORY_WRITE_MAX_CHARS}" '
         'placeholder="Dr. Ruiz, Wednesday 16:00, Calle Mayor 4."></textarea>\n'
         '<div class="row"><button type="submit">Create note</button>\n'
-        '<span class="hint">Saved as markdown with title/created/updated '
-        "frontmatter, at mode 0600, outside the repository.</span></div>\n"
+        f'<span class="hint">{saved_hint}</span></div>\n'
         "</form>"
     )
 
@@ -3377,35 +3953,51 @@ def render_memory(
     One page, server-rendered and read-only except for the note forms.  Search
     and the open note live in the query string (``?q=``, ``?note=``) so every
     view is a link the owner can bookmark, and no path from a request is ever
-    used to open a file: a note is addressed by *name*, through
-    :mod:`claire.memory.notes`, which refuses anything that is not one filename
-    inside the notes directory.
+    used to open a file: a note is addressed by *name*, through the configured
+    store, which refuses anything that is not one stored note name.
     """
     cards: list[str] = [
         _masthead(bind_host, bind_port),
         "<main>",
     ]
 
+    in_store = False
+
     def vault_card() -> str:
+        nonlocal in_store
         info = state.memory_notes()
+        # The page describes whichever store is actually in use: telling the
+        # owner to edit CLAIRE.md when memory lives in the store would send them
+        # looking for a file that is not there.
+        in_store = str(info.vault_dir).startswith("postgres")
         parts = [
-            '<p class="hint">Memory is a markdown vault: <span class="mono">'
-            "CLAIRE.md</span> is the always-loaded router and holds one-line "
-            "pointers; each note under <span class=\"mono\">notes/</span> holds "
-            "the detail. Point Obsidian (or any markdown tool) at the vault "
-            "directory to read the same files.</p>",
-            '<p class="mono">'
-            f"vault: {_esc(info.vault_dir)}<br>"
-            f"notes: {_esc(info.notes_dir)}<br>"
-            f"router: {_esc(info.router_path)}</p>",
-            '<p class="hint">'
-            + (
-                '<span class="ok">Obsidian has opened this folder as a vault</span>'
-                if info.obsidian_marked
-                else '<span class="muted">No .obsidian/ folder yet; opening this '
-                "folder in Obsidian creates one.</span>"
-            )
-            + "</p>",
+            (
+                '<p class="hint">Memory lives in a PostgreSQL store with pgvector '
+                'embeddings: the <span class="mono">router</span> is Claire\'s '
+                "always-loaded memory, re-read on every request, and holds "
+                "one-line pointers; each note holds the detail and is found by "
+                "search rather than loaded every turn.</p>"
+                if in_store
+                else '<p class="hint">Memory is a markdown vault: <span class="mono">'
+                "CLAIRE.md</span> is the always-loaded router and holds one-line "
+                "pointers; each note under <span class=\"mono\">notes/</span> holds "
+                "the detail. Point Obsidian (or any markdown tool) at the vault "
+                "directory to read the same files.</p>"
+            ),
+            _memory_locations(info),
+            (
+                ""
+                if in_store
+                else '<p class="hint">'
+                + (
+                    '<span class="ok">Obsidian has opened this folder as a vault'
+                    "</span>"
+                    if info.obsidian_marked
+                    else '<span class="muted">No .obsidian/ folder yet; opening '
+                    "this folder in Obsidian creates one.</span>"
+                )
+                + "</p>"
+            ),
             '<form class="memory search" method="get" action="'
             + ROUTE_MEMORY
             + '">\n'
@@ -3420,16 +4012,21 @@ def render_memory(
                 else ""
             )
             + "</div>\n</form>",
-            "<h3>Router (CLAIRE.md)</h3>",
+            "<h3>Router</h3>" if in_store else "<h3>Router (CLAIRE.md)</h3>",
             _guard("memory router text", lambda: _router_body_html(state)),
             "<h3>Notes</h3>",
             _memory_notes_table(info, selected=note),
         ]
         if changed:
-            parts.insert(0, '<p class="ok">The vault was written.</p>')
-        return "\n".join(parts)
+            parts.insert(
+                0,
+                '<p class="ok">The memory was written.</p>'
+                if in_store
+                else '<p class="ok">The vault was written.</p>',
+            )
+        return "\n".join(part for part in parts if part)
 
-    cards.append(_section("Memory vault", _guard("memory vault", vault_card), wide=True))
+    cards.append(_section("Memory", _guard("memory", vault_card), wide=True))
 
     if query:
         cards.append(
@@ -3446,7 +4043,7 @@ def render_memory(
         cards.append(
             _section(
                 f"Note: {view.name or note}",
-                _guard("note", lambda: _memory_note_html(view)),
+                _guard("note", lambda: _memory_note_html(view, in_store=in_store)),
                 anchor="note",
                 badge="note",
                 wide=True,
@@ -3455,14 +4052,22 @@ def render_memory(
         cards.append(
             _section(
                 "Edit this note",
-                _guard("note editor", lambda: _memory_editor_html(view)),
+                _guard(
+                    "note editor",
+                    lambda: _memory_editor_html(view, in_store=in_store),
+                ),
                 anchor="edit",
                 wide=True,
             )
         )
 
     cards.append(
-        _section("New note", _memory_new_note_html(), anchor="new-note", wide=True)
+        _section(
+            "New note",
+            _memory_new_note_html(in_store=in_store),
+            anchor="new-note",
+            wide=True,
+        )
     )
     cards.append(
         _section(
@@ -3508,12 +4113,12 @@ def _memory_note_view(state: PanelState, name: str) -> MemoryNoteView:
 
 
 def _router_body_html(state: PanelState) -> str:
-    """The router's text, read straight from the file, plus its pointers."""
+    """The router's text — from the store or the file — plus its pointers."""
     status = state.router_status()
     if status.error:
         return _problem(status.error, status.fix)
     try:
-        text = Path(status.path).read_text(encoding="utf-8", errors="replace")
+        text = state.router_text()
     except OSError as exc:
         return _problem(
             f"{type(exc).__name__}: {exc}",
@@ -3555,6 +4160,118 @@ def _memory_diary_text(state: PanelState) -> str:
     )
 
 
+#: The poller, inline and vanilla on purpose: no framework, no build step, and
+#: small enough to read whole.  It re-reads :data:`ROUTE_FACE_STATE` at
+#: :data:`FACE_POLL_MILLISECONDS`, skips the fetch while the tab is hidden, and
+#: fails silent: a refused or malformed reply leaves the last face on show.
+#: With JavaScript disabled the script never runs and the server-rendered face
+#: simply stays as it was.  ``__ROUTE__``/``__INTERVAL__`` are substituted at
+#: render time; the braces are left alone because they are JavaScript, not
+#: format fields.
+_FACE_POLL_JS = """
+(function () {
+  "use strict";
+  var stage = document.getElementById("face-stage");
+  if (!stage) { return; }
+  var pill = document.getElementById("face-pill");
+  var word = document.getElementById("face-word");
+  var known = ["asleep", "idle", "listening", "thinking", "speaking"];
+  function apply(state) {
+    if (known.indexOf(state) < 0 || state === stage.getAttribute("data-state")) { return; }
+    stage.setAttribute("data-state", state);
+    stage.setAttribute("aria-label", "Claire is " + state);
+    if (pill) { pill.textContent = state; }
+    if (word) { word.textContent = "Claire is " + state + "."; }
+  }
+  function poll() {
+    if (document.hidden) { return; }
+    fetch("__ROUTE__", { headers: { "Accept": "application/json" } })
+      .then(function (reply) { return reply.ok ? reply.json() : null; })
+      .then(function (data) { if (data && typeof data.state === "string") { apply(data.state); } })
+      .catch(function () { /* the panel is gone or the reply malformed: keep the last face */ });
+  }
+  setInterval(poll, __INTERVAL__);
+  poll();
+})();
+"""
+
+
+def _read_face_state() -> tuple[str, bool]:
+    """Read the daemon's state file.  Never raises, never guesses a busier state.
+
+    Returns ``(state, ok)`` where ``ok`` is true only when a state file was
+    found and held one of the five known names.  The first candidate that
+    **exists** decides (:func:`_face_state_paths`); anything else — empty,
+    unreadable, unrecognised, or torn mid-write — reports
+    :data:`FACE_STATE_DEFAULT`, because a status indicator must not invent
+    activity it cannot prove.  If no candidate exists, the answer is still
+    ``asleep``, never an error.
+    """
+    for path in _face_state_paths():
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                value = fh.read().strip().lower()
+        except OSError:
+            continue  # not there / not readable: try the next candidate
+        if value in FACE_STATES:
+            return value, True
+        return FACE_STATE_DEFAULT, False  # exists but unusable: authoritative
+    return FACE_STATE_DEFAULT, False
+
+
+def read_face_state() -> str:
+    """The current face state as one of the five :data:`FACE_STATES` names."""
+    return _read_face_state()[0]
+
+
+def _face_section() -> str:
+    """The face card: the SVG, its words, and the poller that keeps it current.
+
+    The state is read **now**, server-side, so the page shows a correct static
+    face even with JavaScript disabled; the poller only takes over after that.
+    """
+    state = read_face_state()
+    stage = (
+        f'<div class="face-stage" id="face-stage" role="img" '
+        f'aria-label="Claire is {state}" data-state="{state}">\n'
+        '<svg viewBox="0 0 96 96" width="84" height="84" aria-hidden="true" focusable="false">\n'
+        '<circle class="face-halo" cx="48" cy="48" r="44" fill="none" stroke-width="2.5"/>\n'
+        '<g class="face-head">\n'
+        '<circle class="face-head-circle" cx="48" cy="48" r="33" stroke-width="1.5"/>\n'
+        '<g class="face-eyes-open">\n'
+        '<circle class="face-pupil" cx="36" cy="43" r="4.5"/>\n'
+        '<circle class="face-pupil" cx="60" cy="43" r="4.5"/>\n'
+        "</g>\n"
+        '<g class="face-eyes-closed" fill="none" stroke-width="3" stroke-linecap="round">\n'
+        '<path class="face-eye-line" d="M30 43 H42"/>\n'
+        '<path class="face-eye-line" d="M54 43 H66"/>\n'
+        "</g>\n"
+        '<path class="face-mouth-smile" d="M39 59 Q48 66 57 59" fill="none" '
+        'stroke-width="3" stroke-linecap="round"/>\n'
+        '<rect class="face-mouth-flat" x="40" y="58.5" width="16" height="3" rx="1.5" '
+        'stroke-width="0"/>\n'
+        '<ellipse class="face-mouth-talk" cx="48" cy="61" rx="6.5" ry="4.5"/>\n'
+        "</g>\n</svg>\n</div>"
+    )
+    script = (
+        _FACE_POLL_JS.replace("__ROUTE__", ROUTE_FACE_STATE)
+        .replace("__INTERVAL__", str(FACE_POLL_MILLISECONDS))
+        .strip()
+    )
+    inner = (
+        '<div class="face-body">\n'
+        f"{stage}\n"
+        '<div class="face-copy">\n'
+        f'<p class="face-word" id="face-word">Claire is {state}.</p>\n'
+        f'<p class="face-hint">Mirrors the daemon\'s state file; the desktop app '
+        f"shows the same face.</p>\n"
+        "</div>\n</div>"
+    )
+    return _section("Face", inner, anchor="face", badge=state).replace(
+        '<span class="pill">', '<span class="pill" id="face-pill">', 1
+    ) + f"\n<script>\n{script}\n</script>"
+
+
 def render_index(
     state: PanelState,
     *,
@@ -3567,6 +4284,7 @@ def render_index(
         [
             _masthead(bind_host, bind_port),
             "<main>",
+            _face_section(),
             _conversation_section(state),
             _chat_section(state),
             _provider_section(state, changed=changed),
@@ -3580,7 +4298,8 @@ def render_index(
             f'<footer>Refresh for current state. Text report: '
             f'<a href="{ROUTE_SELF_CHECK}">{ROUTE_SELF_CHECK}</a> '
             f'&middot; memories: <a href="{ROUTE_MEMORY}">{ROUTE_MEMORY}</a> '
-            f'&middot; machine-readable: <a href="{ROUTE_HEALTH}">{ROUTE_HEALTH}</a>.</footer>',
+            f'&middot; machine-readable: <a href="{ROUTE_HEALTH}">{ROUTE_HEALTH}</a> '
+            f'and <a href="{ROUTE_FACE_STATE}">{ROUTE_FACE_STATE}</a>.</footer>',
         ]
     )
     return PanelResponse(status=200, body=_page("Claire panel", body).encode("utf-8"))
@@ -3636,6 +4355,34 @@ def render_health(state: PanelState) -> PanelResponse:
     )
 
 
+def render_face_state(state: PanelState) -> PanelResponse:
+    """One tiny JSON document: which of the five face states Claire is in now.
+
+    The state file is read on **every** request — the point of the route is that
+    it is never stale — and a missing, empty, unreadable or unrecognised file
+    answers ``asleep`` with ``ok: false`` rather than an error, so the poller
+    never has to distinguish "asleep" from "could not tell".  ``no-store`` keeps
+    the browser's cache out of the way of a twice-a-second poll.
+    """
+    value, ok = _read_face_state()
+    payload: dict[str, Any] = {"state": value, "ok": ok}
+    if not ok:
+        payload["detail"] = (
+            f"no usable state file at {', '.join(_face_state_paths())}; "
+            f"reporting {FACE_STATE_DEFAULT}"
+        )
+    body = json.dumps(payload, indent=2, sort_keys=True).replace("<", "\\u003c") + "\n"
+    return PanelResponse(
+        status=200,
+        body=body.encode("utf-8"),
+        content_type=JSON_CONTENT_TYPE,
+        headers=(
+            ("X-Content-Type-Options", "nosniff"),
+            ("Cache-Control", "no-store"),
+        ),
+    )
+
+
 def render_error_page(exc: PanelError) -> PanelResponse:
     """A standalone refusal page.
 
@@ -3673,6 +4420,7 @@ GET_VIEWS: dict[str, Callable[[PanelState], PanelResponse]] = {
     ROUTE_INDEX: render_index,
     ROUTE_SELF_CHECK: render_self_check_text,
     ROUTE_HEALTH: render_health,
+    ROUTE_FACE_STATE: render_face_state,
 }
 
 
@@ -3864,7 +4612,7 @@ def handle_memory_save(state: PanelState, request: PanelRequest) -> PanelRespons
             fix=(
                 f"Shorten the body to {MEMORY_WRITE_MAX_CHARS} characters or "
                 "fewer. A note is meant to be small; put detail in its own note "
-                "and keep a pointer in CLAIRE.md."
+                "and keep a pointer in the router."
             ),
         )
     title = str(form.get("title", "") or "").strip()[:200]

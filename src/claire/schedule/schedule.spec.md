@@ -47,6 +47,15 @@ conflicts and propose alternatives — all locally, with no timezone library and
 8. **Recurrence** is supported (`daily`/`weekly` with a mandatory `until` date, since an
    unbounded rule would expand forever) plus **per-date cancellations** of a recurring
    event via `cancelled_dates`.
+9. **A `reminder_minutes: 0` reminder fires during the event's start minute.** The generic
+   due window `remind <= now < start` is empty for a zero offset, so "remind me AT 6" could
+   never fire at all; zero now uses `start <= now < start + 1`, and every non-zero offset
+   keeps the original window unchanged.
+10. **Something must actually speak the reminders.** `describe_reminder` was dead code until
+    `src/claire/schedule/announcer.py` became its caller: the daemon polls every
+    `REMINDER_POLL_INTERVAL_SEC`, skips the whole poll while speech is in progress, speaks
+    each due sentence, and marks it fired only after speech reported success — said once,
+    never lost, survived across restarts because the mark is persisted.
 
 ## Defaults
 

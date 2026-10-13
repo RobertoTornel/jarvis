@@ -87,7 +87,7 @@ class ChatTitleBar(QWidget):
 
 
 class ClaireOrb(QWidget):
-    """Resolution-independent amber core, with no external image assets."""
+    """Resolution-independent accent core, with no external image assets."""
 
     def __init__(self, size: int, parent=None):
         super().__init__(parent)
@@ -207,7 +207,7 @@ _INPUT_STYLE = f"""
 _SEND_BTN_STYLE = f"""
     QPushButton {{
         background-color: {COLORS['accent_primary']};
-        color: {COLORS['bg_primary']};
+        color: {COLORS['on_accent']};
         border: none;
         border-radius: 18px;
         padding: 0;
@@ -215,11 +215,11 @@ _SEND_BTN_STYLE = f"""
         font-size: 14px;
     }}
     QPushButton:hover {{
-        background-color: {COLORS['accent_secondary']};
+        background-color: {COLORS['accent_muted']};
     }}
     QPushButton:disabled {{
         background-color: {COLORS['accent_muted']};
-        color: {COLORS['text_muted']};
+        color: {COLORS['on_accent']};
     }}
 """
 
@@ -273,14 +273,15 @@ _HEADER_STATUS_STYLE = f"""
     }}
 """
 
-# SMS-style bubbles: the user's messages sit on the right in the accent
-# colour, Claire's replies on the left in a dark bubble. The corner nearest
-# the sender is squared off, like a speech bubble.
+# SMS-style bubbles: Claire speaks in the accent, on the left, and the owner
+# in a neutral grey on the right. Success green is never a speaker colour. The
+# corner nearest the sender is squared off, like a speech bubble.
 _BUBBLE_STYLES = {
     "user": f"""
         QLabel {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS['accent_secondary']}, stop:1 {COLORS['accent_primary']});
-            color: {COLORS['bg_primary']};
+            background-color: {COLORS['bg_tertiary']};
+            color: {COLORS['text_primary']};
+            border: 1px solid {COLORS['border']};
             border-radius: 18px;
             border-bottom-right-radius: 5px;
             padding: 12px 16px;
@@ -289,9 +290,8 @@ _BUBBLE_STYLES = {
     """,
     "assistant": f"""
         QLabel {{
-            background-color: {COLORS['bg_secondary']};
-            color: {COLORS['text_primary']};
-            border: 1px solid {COLORS['border']};
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS['accent_secondary']}, stop:1 {COLORS['accent_primary']});
+            color: {COLORS['on_accent']};
             border-radius: 18px;
             border-bottom-left-radius: 5px;
             padding: 12px 16px;
@@ -316,6 +316,7 @@ _DAEMON_STATUS_MESSAGES = {
     "stopping": "Stopping Claire...",
     "stopped": "Start Listening from the tray to use chat.",
     "crashed": "Claire stopped unexpectedly. Start Listening to reconnect.",
+    "unreachable": "Chat is off: this window cannot reach Claire's control socket.",
 }
 
 _DAEMON_STATUS_PLACEHOLDERS = {
@@ -323,8 +324,21 @@ _DAEMON_STATUS_PLACEHOLDERS = {
     "stopping": "Claire is stopping",
     "stopped": "Start Listening from the tray to use chat",
     "crashed": "Start Listening from the tray to reconnect chat",
+    "unreachable": "Chat needs Claire's control socket",
     "running": "Message Claire…",
 }
+
+# Shown when a message cannot be delivered because there is no channel at all.
+# This is the honest replacement for the bug it was written for: with systemd
+# running the daemon, the app owns neither its stdin nor its stdout, so a typed
+# message used to be submitted in the app's own process, where no daemon was
+# booted. That produced no reply and no error - the "thinking" indicator simply
+# vanished. Silence was the defect, so say what is wrong and what to check.
+_NO_CHANNEL_MESSAGE = (
+    "This window cannot reach Claire: she is not running in this process and "
+    "her control socket is not answering. Check that claire.service is running "
+    "(systemctl --user status claire), then reopen this window."
+)
 
 _HEADER_STATUS_TEXTS = {
     "running": "Online",
@@ -356,6 +370,7 @@ class ChatWindow(QMainWindow):
         daemon_available: bool = True,
         cancel_fn=None,
         control_fn: Optional[Callable[[str, Optional[dict]], None]] = None,
+        in_process_daemon: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("Claire Chat")
@@ -376,6 +391,11 @@ class ChatWindow(QMainWindow):
         # Subprocess mode routes rewind to the daemon's stdin. Bundled mode
         # calls the daemon module directly and leaves this None.
         self._control_fn = control_fn
+        # Whether a daemon runs *in this process* (bundled mode). With systemd
+        # running the daemon, neither this process nor its stdin is the daemon,
+        # and falling back to ``daemon.submit_text_query`` there is exactly the
+        # silent no-op this flag exists to prevent.
+        self._in_process_daemon = in_process_daemon
         # Set by Stop, cleared by the next send. The engine keeps running
         # after a cancel and its reply still arrives, so the window has to
         # decline the answer to an exchange the user walked away from.
@@ -578,11 +598,17 @@ class ChatWindow(QMainWindow):
         self._set_thinking(True)
 
         if self._submit_fn is not None:
-            # Subprocess mode: the desktop app routes the query to the daemon's
-            # stdin and feeds __CHAT__: events back via the signals.
-            self._submit_fn(text)
-        else:
-            # Bundled mode: call the daemon directly with our signal emitters.
+            # The transport owns the wire: the desktop app routes a query to the
+            # daemon's stdin, or a supervised daemon's control socket, and feeds
+            # __CHAT__: events back via the signals. ``False`` means the
+            # transport knows it did not deliver the message, so say so rather
+            # than leave the thinking indicator to vanish unanswered.
+            if self._submit_fn(text) is False:
+                self._set_thinking(False)
+                self.set_daemon_status("unreachable")
+                self._append_system(_NO_CHANNEL_MESSAGE)
+        elif self._in_process_daemon:
+            # Bundled mode: the daemon really does run in this process.
             from claire import daemon
 
             daemon.submit_text_query(
@@ -591,6 +617,11 @@ class ChatWindow(QMainWindow):
                 on_complete=self.signals.completed.emit,
                 on_busy=self.signals.busy.emit,
             )
+        else:
+            # No channel and no daemon here. This used to be a silent no-op.
+            self._set_thinking(False)
+            self.set_daemon_status("unreachable")
+            self._append_system(_NO_CHANNEL_MESSAGE)
 
     def _stop(self) -> None:
         """Abandon the in-flight query. Never request_stop, which would
