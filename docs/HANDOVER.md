@@ -1,5 +1,9 @@
 # Claire: handover
 
+> **Looking for the short version?** `docs/HANDOVER_GENERAL.md` is the general description —
+> what the system is, how to operate it and what is open — written later and kept current.
+> This page remains the detailed record of the hardening programme.
+
 Read this before you change anything. It states what the system is, how to run it, where the
 current test gate stands and where it lies to you, what the recent hardening programme actually
 fixed, what it measured, where the documentation lives, and what is still open. Where the code
