@@ -22,6 +22,11 @@ from rapidfuzz import fuzz
 from contextlib import contextmanager
 
 from .echo_detection import EchoDetector
+from .ack_continuations import (
+    DEFAULT_CONTINUATION_MARKS_SEC,
+    ContinuationSchedule,
+    pick_least_recently_used,
+)
 from .model_download import ModelDownloadError
 from .state_manager import StateManager, ListeningState
 from ..utils.audio_lock import portaudio_lock
@@ -699,17 +704,61 @@ class VoiceListener(threading.Thread):
         # do not all open with the same words (see _speak_acknowledgement).
         self._ack_index = 0
 
+        # Pre-recorded acknowledgement clips. The library resolves clips from
+        # memory and disk only; the player is separate from TTS because a clip
+        # already on disk needs no synthesis and no network round trip. Both
+        # are built here (cheap: no key is read and nothing is rendered) and
+        # filled by prewarm_ack_clips() during startup, off the hot path.
+        self._clip_library: Optional[Any] = None
+        self._clip_player: Optional[Any] = None
+        if (getattr(self.cfg, "ack_enabled", True)
+                and getattr(self.cfg, "ack_clips_enabled", True)):
+            try:
+                from ..output.clip_cache import ClipLibrary
+                from ..output.clip_player import ClipPlayer
+                self._clip_library = ClipLibrary(self.cfg)
+                self._clip_player = ClipPlayer(enabled=True)
+            except Exception as exc:
+                debug_log(f"ack clips unavailable, synthesising instead: {exc!r}", "voice")
+
+        # The 8/18/30 s continuation schedule for this turn. The LRU order
+        # persists across turns so two long waits do not hear the same phrases
+        # in the same order; the spoken set is per turn.
+        self._continuation_schedule: Optional[ContinuationSchedule] = None
+        self._continuation_lock = threading.Lock()
+        self._continuation_lru: list[str] = []
+        self._continuation_spoken: set[str] = set()
+        self._continuation_marks = DEFAULT_CONTINUATION_MARKS_SEC
+
     def stop(self) -> None:
         """Stop the voice listener."""
         self._should_stop = True
         self.state_manager.stop()
         self._stop_thinking_tune()
+        self._cancel_ack_audio()
+
+    def prewarm_ack_clips(self) -> None:
+        """Render the acknowledgement and continuation clips in the background.
+
+        Called once during startup so the first real turn finds its clips
+        already on disk rather than waiting on a synthesis that is competing
+        with the first model call.
+        """
+        library = getattr(self, "_clip_library", None)
+        if library is None:
+            return
+        phrases = list(self._ack_phrase_list()) + list(self._continuation_phrase_list())
+        thread = library.prewarm(phrases)
+        if thread is not None:
+            debug_log(f"ack clips: rendering {len(phrases)} phrases in the background", "voice")
 
     def _start_thinking_tune(self) -> None:
         """Start the thinking tune when processing a query."""
+        clip_player = getattr(self, "_clip_player", None)
         if (self.cfg.tune_enabled and
             self._tune_player is None and
-            (self.tts is None or not self.tts.is_speaking())):
+            (self.tts is None or not self.tts.is_speaking()) and
+            (clip_player is None or not clip_player.is_speaking())):
             from ..output.tune_player import TunePlayer
             self._tune_player = TunePlayer(enabled=True)
             self._tune_player.start_tune()
@@ -744,6 +793,13 @@ class VoiceListener(threading.Thread):
         the person talked over a reply, and an acknowledgement arriving after
         the thing it acknowledges is worse than silence. The thinking tune is
         stopped rather than mixed under the voice.
+
+        The phrase is played from the pre-recorded clip cache when a clip for
+        it exists, which removes synthesis and the first network round trip
+        from the moment the person stops speaking. Every other path,
+        including a missing clip or a device that will not open, synthesises
+        the phrase exactly as before, so she never answers a request with
+        silence. A long wait is then covered by the continuation schedule.
         """
         if not getattr(self.cfg, "ack_enabled", True):
             return
@@ -753,11 +809,7 @@ class VoiceListener(threading.Thread):
         if tts is None or not tts.enabled or tts.is_speaking():
             return
 
-        phrases = getattr(self.cfg, "ack_phrases", None)
-        if not phrases:
-            # Old config objects (and tests) may predate the option.
-            from ..config import DEFAULT_ACK_PHRASES
-            phrases = list(DEFAULT_ACK_PHRASES)
+        phrases = self._ack_phrase_list()
         index = getattr(self, "_ack_index", 0)
         phrase = phrases[index % len(phrases)]
 
@@ -769,9 +821,162 @@ class VoiceListener(threading.Thread):
             return
 
         self._ack_index = index + 1
+        # The phrase belongs to this turn: no continuation may repeat it.
+        self._mark_phrase_spoken(phrase)
         self.track_tts_start(phrase)
         debug_log(f"speaking acknowledgement: {phrase!r}", "voice")
-        tts.speak(phrase)
+        if not self._play_ack_clip(phrase):
+            tts.speak(phrase)
+        self._start_continuations(generation)
+
+    def _ack_phrase_list(self) -> list[str]:
+        """The configured acknowledgement phrases, defaulted for older configs."""
+        phrases = getattr(self.cfg, "ack_phrases", None)
+        if not phrases:
+            # Old config objects (and tests) may predate the option.
+            from ..config import DEFAULT_ACK_PHRASES
+            phrases = list(DEFAULT_ACK_PHRASES)
+        return [phrase for phrase in phrases if phrase]
+
+    def _continuation_phrase_list(self) -> list[str]:
+        """The configured continuation phrases, defaulted for older configs."""
+        phrases = getattr(self.cfg, "ack_continuation_phrases", None)
+        if not phrases:
+            from ..config import DEFAULT_ACK_CONTINUATION_PHRASES
+            phrases = list(DEFAULT_ACK_CONTINUATION_PHRASES)
+        return [phrase for phrase in phrases if phrase]
+
+    def _mark_phrase_spoken(self, phrase: str) -> None:
+        spoken = getattr(self, "_continuation_spoken", None)
+        if spoken is None:
+            spoken = self._continuation_spoken = set()
+        spoken.add(phrase)
+
+    def _play_ack_clip(self, phrase: str) -> bool:
+        """Play the cached clip for ``phrase``; False means "synthesise it".
+
+        A clip that is missing is queued for background rendering so the next
+        turn has it, but this turn never waits for that: it synthesises.
+        """
+        if not getattr(self.cfg, "ack_clips_enabled", True):
+            return False
+        player = getattr(self, "_clip_player", None)
+        library = getattr(self, "_clip_library", None)
+        if player is None or library is None:
+            return False
+        clip = library.get(phrase)
+        if clip is None:
+            library.prewarm([phrase])
+            debug_log(f"ack clips: no clip for {phrase!r} yet, synthesising", "voice")
+            return False
+        return bool(player.play(clip))
+
+    def _start_continuations(self, generation: int) -> None:
+        """Cover a long wait with a further short phrase at each mark.
+
+        Continuations are clips only, so they need the clip layer. The
+        schedule stops itself when the turn ends; cancelling it is immediate.
+        """
+        if not getattr(self.cfg, "ack_clips_enabled", True):
+            return
+        if getattr(self, "_clip_player", None) is None or getattr(self, "_clip_library", None) is None:
+            return
+        self._cancel_continuations()
+        schedule = ContinuationSchedule(
+            getattr(self, "_continuation_marks", DEFAULT_CONTINUATION_MARKS_SEC),
+            lambda: self._play_continuation_clip(generation),
+            is_active=lambda: self._continuation_is_active(generation),
+        )
+        self._continuation_schedule = schedule
+        schedule.start()
+
+    def _continuation_is_active(self, generation: int) -> bool:
+        """Whether this turn is still waiting for an answer."""
+        if self._should_stop or not self._transcription_is_current(generation):
+            return False
+        if self.tts is not None and self.tts.is_speaking():
+            return False
+        player = getattr(self, "_clip_player", None)
+        return player is None or not player.is_speaking()
+
+    def _play_continuation_clip(self, generation: int) -> bool:
+        """Play one further short phrase for a turn that is still running.
+
+        Held under the cancellation lock so a phrase cannot start in the same
+        instant the answer arrives: whoever holds the lock first wins, and the
+        cancelling side stops any clip that did start.
+        """
+        with self._ack_audio_lock():
+            if not self._continuation_is_active(generation):
+                return False
+            phrase = self._pick_continuation_phrase()
+            if not phrase:
+                return False
+            player = getattr(self, "_clip_player", None)
+            library = getattr(self, "_clip_library", None)
+            if player is None or library is None:
+                return False
+            clip = library.get(phrase)
+            if clip is None:
+                library.prewarm([phrase])
+                debug_log(f"ack clips: no continuation clip for {phrase!r} yet", "voice")
+                return False
+            self.track_tts_start(phrase)
+            debug_log(f"speaking continuation: {phrase!r}", "voice")
+            return bool(player.play(clip))
+
+    def _pick_continuation_phrase(self) -> Optional[str]:
+        """The next continuation phrase, least recently used."""
+        phrases = self._continuation_phrase_list()
+        order = list(getattr(self, "_continuation_lru", None) or [])
+        order = [phrase for phrase in order if phrase in phrases]
+        order.extend(phrase for phrase in phrases if phrase not in order)
+        spoken = getattr(self, "_continuation_spoken", None)
+        if spoken is None:
+            spoken = self._continuation_spoken = set()
+        phrase = pick_least_recently_used(order, spoken)
+        if phrase is None:
+            return None
+        order.remove(phrase)
+        order.append(phrase)
+        self._continuation_lru = order
+        spoken.add(phrase)
+        return phrase
+
+    def _ack_audio_lock(self) -> threading.Lock:
+        """The lock that serialises a continuation against its cancellation.
+
+        Created on demand so listener objects built without ``__init__`` (old
+        tests, restored state) still work.
+        """
+        lock = getattr(self, "_continuation_lock", None)
+        if lock is None:
+            lock = self._continuation_lock = threading.Lock()
+        return lock
+
+    def _cancel_continuations(self) -> None:
+        """Stop the continuation schedule; no further phrase will play."""
+        with self._ack_audio_lock():
+            schedule = getattr(self, "_continuation_schedule", None)
+            self._continuation_schedule = None
+        if schedule is not None:
+            schedule.cancel()
+
+    def _cancel_ack_audio(self) -> None:
+        """Stop the continuations and any playing clip, and release the device.
+
+        Called at every turn boundary and before the reply is spoken, so a
+        continuation never plays over the answer and the output device is free
+        when live synthesis starts.
+        """
+        self._continuation_spoken = set()
+        self._cancel_continuations()
+        player = getattr(self, "_clip_player", None)
+        if player is not None:
+            try:
+                player.stop()
+            except Exception as exc:
+                debug_log(f"ack clips: stopping playback failed: {exc!r}", "voice")
 
     def _set_face_state_listening(self) -> None:
         """Set the desktop face widget to LISTENING state."""
@@ -1844,6 +2049,12 @@ class VoiceListener(threading.Thread):
                 pass
 
             debug_log("audio buffers cleared", "voice")
+
+        # Outside the audio-state lock on purpose: this joins the continuation
+        # thread and stops the clip player, and neither may be done while the
+        # lock that guards capture is held. Clearing audio is the turn
+        # boundary, so an abandoned turn's continuations stop here.
+        self._cancel_ack_audio()
 
     def _is_speech_frame(self, frame) -> bool:
         """Determine if audio frame contains speech."""

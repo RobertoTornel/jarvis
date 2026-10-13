@@ -169,7 +169,11 @@ def _run_smoke_startup(monkeypatch, tts_factory=None, engine_name="piper", cfg=N
     def _voice_listener(db, cfg, tts, memory, **kwargs):
         recorded["listener_tts"] = tts
         recorded["polled_engine"] = daemon.get_tts_engine()
-        return MagicMock(spec=threading.Thread)
+        listener = MagicMock(spec=threading.Thread)
+        # The daemon asks the listener to render its acknowledgement clips in
+        # the background; the real listener has this method.
+        listener.prewarm_ack_clips = MagicMock()
+        return listener
 
     monkeypatch.setattr(daemon, "VoiceListener", _voice_listener)
     monkeypatch.setattr(

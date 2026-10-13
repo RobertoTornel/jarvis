@@ -1865,6 +1865,11 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
     )
     voice_thread.start()
 
+    # Render any missing acknowledgement clips in the background, so the first
+    # spoken turn finds them on disk instead of synthesising them on its hot
+    # path. Failure here is harmless: the listener falls back to synthesis.
+    voice_thread.prewarm_ack_clips()
+
     # The phone's intake. Wired AFTER the listener so the sink reaches a live
     # loop; it is a background thread, so a bridge that cannot bind (or a
     # recogniser that cannot load) never delays or breaks voice.

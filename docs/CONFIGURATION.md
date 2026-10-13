@@ -405,6 +405,36 @@ Voice cloning with Chatterbox - add a 3-10 second .wav sample:
 }
 ```
 
+**Spoken acknowledgement** - when someone speaks to Claire, the reply engine
+takes seconds. Instead of waiting in silence she says one short phrase straight
+away, then follows it with the answer.
+
+```json
+{
+  "ack_enabled": true,
+  "ack_phrases": ["On it.", "Okay.", "Right away.", "Let me look."],
+  "ack_clips_enabled": true,
+  "ack_continuation_phrases": ["Still on it.", "Nearly there.", "Just a moment more."]
+}
+```
+
+- `ack_enabled`: master switch. `false` restores the silent behaviour exactly.
+- `ack_phrases`: cycled in order, so consecutive requests do not all open with
+  the same words.
+- `ack_clips_enabled` (default `true`): play the acknowledgement, and the
+  follow-ups for a long wait, from clips kept on disk instead of synthesising
+  them each time. A clip already rendered is heard almost immediately, with no
+  synthesis and no first network round trip. The clips are rendered once in the
+  configured voice and cached under `~/.cache/claire/clips`; setting
+  `CLAIRE_CLIP_CACHE_DIR` moves that directory. Change the voice, the model or
+  a phrase and the affected clips are rendered again, so a stale clip is never
+  played in the wrong voice. Whenever a clip is missing or cannot be played,
+  Claire synthesises the phrase exactly as before: this setting never makes her
+  answer with silence. Turning the clips off also removes the follow-ups.
+- `ack_continuation_phrases`: spoken as clips at 8, 18 and 30 seconds into a
+  turn that has not answered, least-recently-used and never repeating one
+  already spoken in the same turn. Nothing is said after 30 seconds.
+
 </details>
 
 <details>

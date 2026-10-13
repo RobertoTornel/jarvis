@@ -355,6 +355,13 @@ def _build_field_metadata() -> List[FieldMeta]:
       "of staying silent until the answer is ready. The phrases themselves "
       "(ack_phrases) are edited in config.json.",
       "features", "bool")
+    f("ack_clips_enabled", "Pre-recorded Acknowledgement Clips",
+      "Play the acknowledgement and the long-wait follow-ups from clips kept "
+      "on disk, which are heard almost immediately, instead of synthesising "
+      "each one. Falls back to synthesis whenever a clip cannot be played. "
+      "The follow-up phrases (ack_continuation_phrases) are edited in "
+      "config.json.",
+      "features", "bool")
     f("smalltalk_router_skip_enabled", "Skip the Tool Router for Small Talk",
       "Answer \"yeah\", \"okay\" and \"what's up\" without first spending a "
       "model call deciding which tools to use. Off means every turn consults "
