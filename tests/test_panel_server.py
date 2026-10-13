@@ -548,6 +548,55 @@ def test_router_over_budget_renders_the_loud_framing():
     assert 'class="bad"' in text
 
 
+#: The path the store backend reports for the router; ``_router_section`` reads
+#: the ``postgres`` prefix as "the router is a row, not a file".
+_STORE_ROUTER_PATH = "postgres:memory_documents/router"
+
+
+def test_store_router_over_budget_card_names_no_file_or_vault_notes():
+    """The store over-budget card must not send the owner into a ``notes/`` folder.
+
+    The router is a row in the store, so the ``CLAIRE.md`` filename and the
+    vault's ``notes/`` directory are both wrong there.  The warning text comes
+    from the store router; the shared "Fix" block below it must match.
+    """
+    text = get(
+        ROUTE_INDEX,
+        _router_state(
+            path=_STORE_ROUTER_PATH,
+            size_bytes=7000,
+            budget_bytes=6000,
+            over_budget=True,
+            dropped_bytes=1000,
+        ),
+    ).text
+    assert "7000 bytes of 6000 bytes" in text
+    assert "OVER BUDGET" in text
+    assert "CLAIRE.md" not in text
+    assert "notes/" not in text
+
+
+def test_vault_router_over_budget_card_still_names_the_vault_file():
+    """The vault branch keeps its own text: ``CLAIRE.md`` and ``notes/`` are real.
+
+    This is the counterweight to the store test above.  A fix that neutralised
+    both branches would pass the store assertion and quietly break the vault,
+    which is the backend ``CLAIRE_MEMORY_BACKEND=vault`` still selects.
+    """
+    text = get(
+        ROUTE_INDEX,
+        _router_state(
+            path="/vault/CLAIRE.md",
+            size_bytes=7000,
+            budget_bytes=6000,
+            over_budget=True,
+            dropped_bytes=1000,
+        ),
+    ).text
+    assert "CLAIRE.md" in text
+    assert "notes/" in text
+
+
 def test_real_router_warning_is_verbatim_the_prompt_framing(tmp_path):
     """The framing on the page is byte-for-byte the one the prompt prepends."""
     from claire.memory import router as router_module
@@ -1048,8 +1097,16 @@ def test_html_in_data_values_is_escaped_everywhere():
                 "image/x-icon",
             )
             continue
-        assert "<script>" not in response.text, f"unescaped script in {route}"
-        assert "</script>" not in response.text, f"unescaped closing script in {route}"
+        # The index carries exactly one script pair: the panel's own static face
+        # poller (docs/PANEL_FACE.md), which interpolates no data.  Every other
+        # page must carry none.  Counting, rather than banning the substring,
+        # keeps the original guarantee intact: injected data values can never
+        # open a script, because the count would move off its fixed number.
+        own_scripts = 1 if route == ROUTE_INDEX else 0
+        assert response.text.count("<script>") == own_scripts, f"unexpected script in {route}"
+        assert response.text.count("</script>") == own_scripts, (
+            f"unexpected closing script in {route}"
+        )
     index = get(ROUTE_INDEX, fake).text
     assert "&lt;script&gt;" in index
     assert "&#x27;" in index or "&#39;" in index
@@ -1080,14 +1137,20 @@ def test_error_pages_escape_the_message():
 def test_query_values_are_not_reflected(state):
     response = get(f"/?changed=1&x={XSS}", state)
     assert response.status == 200
-    assert "<script>" not in response.text
+    # The index carries exactly the panel's own static face poller
+    # (docs/PANEL_FACE.md); a reflected query value would open a second script.
+    assert response.text.count("<script>") == 1
+    assert XSS not in response.text
 
 
 def test_selector_does_not_reflect_a_bad_model_into_the_page():
     fake = FakeState(provider_model=ProviderModel(provider="ollama", model=XSS))
     text = get(ROUTE_INDEX, fake).text
-    assert "<script>" not in text
+    # Exactly the panel's own poll script, never a reflected one: the payload
+    # reaches the page only in its escaped form.
+    assert text.count("<script>") == 1
     assert "&lt;script&gt;" in text
+    assert "<script>alert" not in text
 
 
 # --------------------------------------------------------------------------- #

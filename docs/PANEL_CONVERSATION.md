@@ -1,24 +1,22 @@
 # The panel's conversation view, and where conversation data actually lives
 
-Written while adding a transcript and a chat box to the local web panel
-(`src/claire/panel/`, `R-WEB-1`). The interesting part of that job was not the HTML — it was
-finding out that **there is no retrievable verbatim transcript in this codebase**, and deciding
-what to do about it honestly. This note records what was read, what was found, and what the panel
-therefore shows.
+This note covers the local web panel's transcript and chat box
+(`src/claire/panel/`, `R-WEB-1`). The panel faces one fact: **there is no retrievable verbatim
+transcript in this codebase**, so the page shows what genuinely exists and labels it. This note
+records where conversation data lives and what the panel therefore shows.
 
-## What was searched, and what was in each place
+## What each place holds
 
 | Candidate | Verdict |
 | --- | --- |
 | `claire.memory.conversation.DialogueMemory` | **Holds the conversation, but only in the daemon process.** `_messages` is a plain `List[Tuple[float, str, str]]` in memory. `get_recent_messages()` / `all_messages()` are callable only from inside that process. |
 | A daemon endpoint to read it | **Does not exist.** `grep` for `HTTPServer`, `AF_UNIX`, `socket.socket` and friends outside `panel/` and `phone/` found nothing that serves dialogue. |
 | A verbatim transcript on disk | **Does not exist.** Nothing writes an utterance to a file. |
-| `conversation_summaries` (SQLite) | **Exists, and is the only persisted record** — per-day *summaries* with `date_utc`, `ts_utc`, `summary`, `topics`, `source_app`. Not turns. On this machine it held a single row. |
+| `conversation_summaries` (SQLite) | **Exists, and is the only persisted record** — per-day *summaries* with `date_utc`, `ts_utc`, `summary`, `topics`, `source_app`. Not turns. On this machine it holds a single row. |
 | The action journal (`CLAIRE_ACTION_LOG`, `~/.config/claire/actions.jsonl`) | **Not a conversation feed, and nothing writes it.** It is shaped `at/action/outcome/detail` — what the assistant *did*, not what was *said*. `grep` shows only the panel reading it; the default path is absent on this machine. |
 
-So the honest options were: (a) pretend a summary is a transcript, (b) invent a parallel store,
-(c) read the daemon's memory — impossible — or (d) show what genuinely exists, labelled with what
-it is. The panel does (d).
+So the panel shows what genuinely exists, labelled with what it is, rather than pretending a summary
+is a transcript, inventing a parallel store, or reading the daemon's memory, which is impossible.
 
 ## What the panel shows, and how it is labelled
 
@@ -46,10 +44,9 @@ claire.config.load_settings()
 ```
 
 There is **no second HTTP client** — no `requests`, no `urllib.request` in the panel module, and
-a test scans the source to keep it that way. This project has already been burned once by a
-duplicated stack: a phone endpoint was nearly built on a second transcription path while one
-authoritative recogniser existed. A panel that quietly called the endpoint itself would drift from
-the daemon in exactly the same way.
+a test scans the source to keep it that way. One authoritative path matters here: a panel that
+quietly called the endpoint itself would drift from the daemon, exactly as a second transcription
+path would drift from the one authoritative recogniser.
 
 `direct()` reports every failure identically — it returns `None` and never raises — so the panel
 genuinely cannot distinguish "endpoint down" from "model unloaded" from "credential refused".
@@ -57,24 +54,23 @@ Rather than guess, `PanelLLMError` (`502 llm-unavailable`) names the provider, t
 base URL, and says that the backend signals every failure the same way. An empty box is never
 rendered as an answer.
 
-## Three latent bugs found on the way
+## Three latent bugs, each pinned by a test
 
-Each was reproduced before it was fixed, and each has a test that fails without the fix.
+Each has a test that fails without its guard.
 
-1. **Every refusal named `/select`.** `check_write_origin()` hard-coded the route in its message,
-   so a refused `POST /chat` blamed a route the owner had not used. Fixed by passing the route in.
-2. **An unread request body stayed on a keep-alive connection.** The handler reads a body only
-   when `Content-Length` parses. A `Transfer-Encoding: chunked` request has no `Content-Length`,
-   so the panel answered `400` and then parsed the body bytes as the *next* request on the same
-   connection — request smuggling inside the loopback panel. Invisible to every test that opens a
-   fresh connection per request, which was all of them until the socket tests were extended.
-   Fixed by closing the connection when a body will not be read.
-3. **A relative `db_path` raised out of the diary read.** `Path.as_uri()` rejects relative paths,
-   and a config with `"db_path": "claire.db"` is legal — `claire.config` expands `~` and leaves
-   the rest alone. The section then blamed the owner's database for a panel bug. Fixed by building
-   the file URI directly.
+1. **A refusal names the route that was used.** `check_write_origin()` takes the route as an
+   argument, so a refused `POST /chat` cannot blame `/select`.
+2. **A body that will not be read does not stay on the connection.** The handler reads a body only
+   when `Content-Length` parses; a `Transfer-Encoding: chunked` request has none, so the handler
+   answers `400` and closes the connection rather than parsing the body bytes as the *next*
+   request on the same connection. A test that opens a fresh connection per request cannot see
+   this; the socket tests cover the keep-alive case.
+3. **A relative `db_path` does not raise out of the diary read.** `Path.as_uri()` rejects relative
+   paths, and a config with `"db_path": "claire.db"` is legal (`claire.config` expands `~` and
+   leaves the rest alone), so the section builds the file URI directly instead of blaming the
+   owner's database for a panel bug.
 
-## What is still not possible, and why
+## What is not possible, and why
 
 - **The daemon's live conversation cannot be shown.** It is in another process's memory, and no
   endpoint exposes it. Showing it would need a change in the daemon (out of the panel's scope).
@@ -84,17 +80,18 @@ Each was reproduced before it was fixed, and each has a test that fails without 
   warns in as many words ("Type no secrets here..."), and a test pins the limitation instead of
   leaving it to be discovered.
 - **`sk-proj-...` keys are not matched** by the scrubber's `\bsk-[A-Za-z0-9]{32,}\b`, because the
-  second dash breaks the pattern. Noted here rather than fixed: `src/claire/utils/redact.py` is
-  outside this change's scope.
+  second dash breaks the pattern. Noted here rather than fixed: `src/claire/utils/redact.py` sits
+  outside the panel's scope.
 
 ## The memories browser
 
-The panel's other page is `/memory`, linked from the index card and the footer. It shows the
-markdown memory vault read/write: the router (`CLAIRE.md`) and every note, notes the router never
-mentions, one query that searches both the notes and the same `conversation_summaries` table the
-diary above reads, and a form to create, edit and delete a note on the page. It is a browser,
-not a second store: it lists, reads, searches and writes through `claire.memory.notes` and
-`claire.memory.obsidian`, so the file written here is exactly the file Claire's own parser reads
-back. **Memory is searchable here but never leaves the machine**, and it lives outside the
-repository. The vault layout, the Obsidian conventions and where the folder lives are in
-[OBSIDIAN.md](OBSIDIAN.md).
+The panel's other page is `/memory`, linked from the index card and the footer. It edits the
+PostgreSQL memory store one row at a time: the always-loaded router and every stored memory,
+memories the router never names, one search (`?q=`) that fuses semantic pgvector retrieval with
+keyword retrieval, one memory opened by name (`?note=<name>`), and forms to create, edit and
+delete a memory on the page. The persisted daily summaries appear below as a read-only card:
+they are summaries, not turns, and the search does not cover them. The page is a browser, not a
+second store: it lists, reads, searches and writes through `claire.memory.pg`, so the row
+written here is exactly the row Claire's retrieval reads back. **Memory is searchable here but
+never leaves the machine**, and it lives in the local PostgreSQL store. The schema, the pgvector
+index and the operational runbook are in [PGVECTOR.md](PGVECTOR.md).
