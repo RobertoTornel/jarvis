@@ -1185,6 +1185,17 @@ class LogSignals(QObject):
     low_confidence = pyqtSignal()
 
 
+class ControlLinkSignals(QObject):
+    """Marshals the control link's connection state onto the Qt main thread.
+
+    The link supervises a socket on its own thread, so its state transitions
+    arrive off the GUI thread; this carries them to the slot that updates the
+    chat window's status.
+    """
+
+    state_changed = pyqtSignal(bool, str)
+
+
 class LogViewerWindow(QMainWindow):
     """Window for viewing Claire logs in real-time."""
 
@@ -1913,6 +1924,13 @@ class ClaireSystemTray:
         self._chat_ipc_signals = ChatIpcSignals()
         self._chat_ipc_signals.line_received.connect(self._on_chat_ipc_line)
 
+        # The channel to a daemon this app did not start (a systemd unit). It is
+        # created only when we attach to one; until then there is nothing to
+        # talk to and ``_chat_submit_fn`` stays None.
+        self._control_link = None
+        self._control_link_signals = ControlLinkSignals()
+        self._control_link_signals.state_changed.connect(self._on_control_link_state)
+
         # Same bridge for the runtime-status dialog: the snapshot is
         # gathered on a worker thread because it makes a blocking network
         # call, and only the rendering belongs on the GUI thread.
@@ -1986,6 +2004,8 @@ class ClaireSystemTray:
             self.memory_viewer.stop_server()
         # Stop following a supervised daemon's journal, if we were doing that
         self._stop_daemon_log_tail()
+        # And let go of the control socket to that daemon, if we held one.
+        self._stop_control_link()
         # Safety net: if daemon process exists but is_listening was False, still clean up
         # (This shouldn't happen in normal operation, but handles edge cases)
         if self.daemon_process:
@@ -2329,20 +2349,124 @@ class ClaireSystemTray:
             from desktop_app.chat_window import ChatWindow
             self.chat_window = ChatWindow(
                 submit_fn=self._chat_submit_fn,
-                daemon_available=self.is_listening,
+                daemon_available=self._chat_transport_status() == "running",
                 cancel_fn=getattr(self, "_chat_cancel_fn", None),
                 control_fn=getattr(self, "_chat_control_fn", None),
+                # Only a bundled daemon runs in this process; with a supervised
+                # one, chat must go through the control socket or say why not.
+                in_process_daemon=getattr(self, "is_bundled", False),
             )
         else:
             self.chat_window._submit_fn = self._chat_submit_fn
             self.chat_window._cancel_fn = getattr(self, "_chat_cancel_fn", None)
             self.chat_window._control_fn = getattr(self, "_chat_control_fn", None)
-            self.chat_window.set_daemon_status(
-                "running" if self.is_listening else "stopped"
-            )
+            self.chat_window.set_daemon_status(self._chat_transport_status())
         self.chat_window.show()
         self.chat_window.raise_()
         self.chat_window.activateWindow()
+
+    def _chat_transport_status(self) -> str:
+        """What the chat window's status should be, given who owns the daemon.
+
+        ``running`` is a promise that a typed message has somewhere to go, so it
+        is only returned when there is a working transport: the daemon in this
+        process (bundled), a stdin we own (subprocess, in which case
+        ``_chat_submit_fn`` is set), or an answering control socket.
+        """
+        if not self.is_listening:
+            return "stopped"
+        link = getattr(self, "_control_link", None)
+        if link is not None:
+            return "running" if link.available else "unreachable"
+        return "running"
+
+    def _mark_attached_daemon_listening(self) -> None:
+        """Show that she is listening, for a daemon systemd owns.
+
+        The attach branch used to return before ``is_listening`` was set, so the
+        tray read "Status: Stopped" and offered "▶️ Start Listening" while Claire
+        was running and answering: pressing it re-attached and changed nothing.
+        It also left the chat window disabled with "Start Listening from the tray
+        to use chat", an instruction that could not work. Attaching to a running
+        daemon *is* listening, so say so.
+
+        The tray pieces are looked up rather than assumed: a few tests drive this
+        path on a partially built tray object.
+        """
+        self.is_listening = True
+        toggle = getattr(self, "toggle_action", None)
+        if toggle is not None:
+            toggle.setText("⏸️ Stop Listening")
+        status = getattr(self, "status_action", None)
+        if status is not None:
+            status.setText("🟢 Status: Listening")
+        if getattr(self, "tray_icon", None) is not None:
+            self.update_icon()
+
+    def _start_control_link(self) -> None:
+        """Open the channel to a daemon this app did not start.
+
+        Chat was broken precisely here: the app attached to the systemd daemon,
+        owned neither its stdin nor its stdout, and still offered a chat box.
+        """
+        existing = getattr(self, "_control_link", None)
+        if existing is not None:
+            existing.close()
+
+        ipc_signals = getattr(self, "_chat_ipc_signals", None)
+        state_signals = getattr(self, "_control_link_signals", None)
+        if ipc_signals is None or state_signals is None:
+            # No signal bridge means nowhere for the reply events to land, so a
+            # link would be a channel that can send and never hear. Leave chat
+            # off instead of offering a box that cannot receive its answer.
+            debug_log("control link not started: no IPC signal bridge", "desktop")
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            return
+
+        from desktop_app.control_link import ControlLink
+
+        link = ControlLink(
+            on_line=ipc_signals.line_received.emit,
+            on_state_change=state_signals.state_changed.emit,
+            logger=lambda message: debug_log(message, "desktop"),
+        )
+        connected = link.start()
+        self._control_link = link
+        if connected:
+            self._chat_submit_fn = link.submit
+            self._chat_cancel_fn = link.cancel
+        else:
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            self.log_signals.new_log.emit(
+                "⚠️ Chat is unavailable: Claire's control socket is not "
+                f"answering ({link.reason}). Chat will reconnect on its own if "
+                "she comes back.\n"
+            )
+        debug_log(f"control link started (available={connected})", "desktop")
+
+    def _on_control_link_state(self, available: bool, reason: str) -> None:
+        """Slot for the link's transitions; runs on the Qt main thread."""
+        link = getattr(self, "_control_link", None)
+        if available:
+            self._chat_submit_fn = link.submit if link is not None else None
+            self._chat_cancel_fn = link.cancel if link is not None else None
+            self.log_signals.new_log.emit("🔌 Chat reconnected to Claire's control socket\n")
+        else:
+            self._chat_submit_fn = None
+            self._chat_cancel_fn = None
+            debug_log(f"control link unavailable: {reason}", "desktop")
+        if self.chat_window is not None:
+            self._set_chat_daemon_status(self._chat_transport_status())
+
+    def _stop_control_link(self) -> None:
+        """Drop the control socket, if we hold one."""
+        link, self._control_link = getattr(self, "_control_link", None), None
+        if link is not None:
+            link.close()
+        self._chat_submit_fn = None
+        self._chat_cancel_fn = None
 
     def _set_chat_daemon_available(self, available: bool) -> None:
         """Update an existing chat window when the daemon starts or stops."""
@@ -2502,7 +2626,15 @@ class ClaireSystemTray:
                 # writes to - otherwise the log window would show nothing but
                 # this app's own chatter while Claire is running.
                 self._start_daemon_log_tail()
-                self._set_chat_daemon_status("running")
+                # And we do not own its stdin either, so chat needs the control
+                # socket the daemon serves. Without this the chat box used to be
+                # enabled with no channel behind it: a typed message ran in this
+                # process, which has no daemon, and produced no reply and no
+                # error. Chat is announced as available only if that socket
+                # answers.
+                self._start_control_link()
+                self._mark_attached_daemon_listening()
+                self._set_chat_daemon_status(self._chat_transport_status())
                 return
             if self.is_bundled:
                 # When bundled, run daemon in a QThread since Qt components may be used

@@ -130,6 +130,21 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAIRE_CONFIG_PATH", str(sandbox / "config.json"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_control_socket_path(tmp_path_factory, monkeypatch):
+    """Keep test instances off the real daemon's control socket.
+
+    ``claire.daemon.main()`` serves a Unix socket for attached UIs, whose
+    default path is ``$XDG_RUNTIME_DIR/claire/control.sock`` — the same file the
+    Claire the owner is actually running uses.  A test that boots the daemon far
+    enough to reach that call must not create, replace or contend for it, so the
+    path is redirected to a per-session tempfile here.  Tests that exercise the
+    socket set their own path, which simply overrides this one.
+    """
+    sandbox = tmp_path_factory.mktemp("claire_control_socket_sandbox")
+    monkeypatch.setenv("CLAIRE_CONTROL_SOCKET", str(sandbox / "control.sock"))
+
+
 @pytest.fixture
 def mock_config():
     """Provide a mock configuration for unit tests."""

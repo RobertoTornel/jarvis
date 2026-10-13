@@ -47,6 +47,7 @@ from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
 from .schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
 from .schedule.timer_announcer import TIMER_POLL_INTERVAL_SEC, TimerAnnouncer
+from .control.server import ControlSocketServer
 from .schedule.timers import default_manager
 from .listening.listener import VoiceListener
 from .listening.wake_detection import is_wake_word_detected
@@ -407,6 +408,101 @@ def _stop_timer_announcer() -> None:
         debug_log("timer announcer stopped", "schedule")
 
 
+# ---------------------------------------------------------------------------
+# Control socket
+#
+# The channel a supervised Claire was missing.  The desktop app can talk to a
+# daemon it spawned itself over stdin and stdout.  When systemd runs the daemon
+# instead - which is how it runs on the owner's machine - our stdin is
+# /dev/null and our stdout belongs to the journal, so an attached UI had nowhere
+# to send a chat message, and the app said nothing about it: it enabled the chat
+# box, ran the query in its own process, and showed no reply and no error.
+#
+# The socket carries exactly the lines stdin carries, so the handlers below are
+# the stdin handlers, untouched.  Nothing new is accepted, which is the point:
+# there is no second protocol to keep in step with the first.
+# ---------------------------------------------------------------------------
+
+_control_socket_server: Optional[Any] = None
+
+
+def _handle_control_line(line: str) -> bool:
+    """Handle one control-socket line with the daemon's own stdin handlers.
+
+    Returns whether any handler recognised the line, so the server can log the
+    lines that are not part of the protocol instead of silently dropping them.
+    A handler that raises is reported and treated as recognised: the line was
+    ours, it just did not work, and trying the remaining handlers on it would
+    only produce a second, more confusing failure.
+    """
+    for handler in (
+        handle_chat_query_stdin_line,
+        handle_chat_cancel_stdin_line,
+        handle_chat_new_session_stdin_line,
+        handle_chat_rewind_stdin_line,
+        handle_chat_restore_stdin_line,
+    ):
+        try:
+            if handler(line):
+                return True
+        except Exception as exc:  # noqa: BLE001 - one bad line must not drop a client
+            debug_log(
+                f"control socket handler {handler.__name__} raised "
+                f"({type(exc).__name__}: {exc})",
+                "chat_ipc",
+            )
+            return True
+    return False
+
+
+def _build_control_socket_server(path: Optional[str] = None) -> ControlSocketServer:
+    """A not-yet-started control socket server, for a test to drive directly."""
+    return ControlSocketServer(
+        path,
+        handle_line=_handle_control_line,
+        logger=lambda message: debug_log(message, "chat_ipc"),
+    )
+
+
+def _start_control_socket_server(server: Optional[Any] = None) -> None:
+    """Serve the control socket, unless it is switched off.
+
+    Opt out with ``CLAIRE_CONTROL_CHANNEL=0``; relocate it (or keep an isolated
+    instance away from the real one) with ``CLAIRE_CONTROL_SOCKET``.
+    """
+    global _control_socket_server
+    if _control_socket_server is not None:
+        return
+    if os.environ.get("CLAIRE_CONTROL_CHANNEL", "1").strip().lower() in ("0", "false", "no"):
+        debug_log("control socket disabled by CLAIRE_CONTROL_CHANNEL", "chat_ipc")
+        print("🔌 Control socket disabled by CLAIRE_CONTROL_CHANNEL", flush=True)
+        return
+
+    candidate = server if server is not None else _build_control_socket_server()
+    try:
+        candidate.start()
+    except Exception as exc:  # noqa: BLE001 - a missing channel must not stop Claire
+        # Say it loudly rather than leave the UI guessing why chat does nothing.
+        print(f"⚠️  Control socket unavailable: {exc}", flush=True)
+        debug_log(f"control socket failed to start ({type(exc).__name__}: {exc})", "chat_ipc")
+        return
+    _control_socket_server = candidate
+    print(f"🔌 Control socket ready at {candidate.path}", flush=True)
+    debug_log("control socket started", "chat_ipc")
+
+
+def _stop_control_socket_server() -> None:
+    """Stop serving and remove our socket file."""
+    global _control_socket_server
+    server, _control_socket_server = _control_socket_server, None
+    if server is not None:
+        try:
+            server.stop()
+        except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+            debug_log(f"control socket stop failed ({type(exc).__name__}: {exc})", "chat_ipc")
+        debug_log("control socket stopped", "chat_ipc")
+
+
 def _start_voice_feedback_worker() -> None:
     """Keep rejection delivery independent of synchronous diary processing."""
     global _voice_feedback_thread, _voice_feedback_stop
@@ -598,6 +694,12 @@ def _emit_ipc_event(prefix: str, event_type: str, data, debug_tag: str) -> None:
         event = {"type": event_type, "data": data}
         line = f"{prefix}{json.dumps(event)}"
         print(line, flush=True)
+        # An attached UI cannot read that print: under systemd our stdout is the
+        # journal's socket, owned by someone else.  The same line goes to the
+        # control socket, so a chat window gets its token stream either way.
+        server = _control_socket_server
+        if server is not None:
+            server.broadcast(line)
         if event_type != "token":  # Don't spam for tokens
             debug_log(f"IPC event emitted: {event_type}", debug_tag)
     except Exception as e:
@@ -1817,6 +1919,10 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
     # timer due during a CI boot must not be spoken, and the loop is useless
     # without the owner listening.
     _start_timer_announcer(tts)
+    # Beside the announcers and behind the same smoke-test early return: a CI
+    # boot has no UI to serve, and a second server in the test box would only
+    # fight the developer's own socket for the path.
+    _start_control_socket_server()
 
     # Periodic diary update checking
     last_diary_check = time.time()
@@ -1912,6 +2018,7 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
         _stop_voice_feedback_worker()
         _stop_reminder_announcer()
         _stop_timer_announcer()
+        _stop_control_socket_server()
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "claire")
 
