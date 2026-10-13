@@ -2,6 +2,8 @@
   "db_path": "~/.local/share/claire/claire.db",
   "sqlite_vss_path": null,
   "vault_dir": "~/.local/share/claire/vault",
+  "memory_backend": "postgres",
+  "pg_dsn": "",
   "llm_provider": "openai_compatible",
   "llm_base_url": "",
   "llm_api_key": "",

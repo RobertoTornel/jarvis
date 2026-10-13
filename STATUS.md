@@ -307,21 +307,20 @@ Recorded so they are not silently re-litigated later.
 23. **The thinking-tune spinner's home is stderr, and that is now a rule.**
     See item 17; recorded separately because it is the general case. Any future
     decorative or progress output goes to stderr, so stdout stays parseable.
-24. **Memory is a live re-read of one router file, not a conversation log.**
-    `CLAIRE.md` in the vault is re-read from disk on *every* turn and rendered
-    into the system prompt. Consequences, verified end to end rather than
-    assumed: editing the file changes her behaviour with no restart, and memory
-    costs a constant number of tokens per turn instead of growing the history.
-    The alternative — appending the file as a chat message each turn — is what
-    makes context rot unbounded.
-25. **The router file is capped at 6000 bytes and warns loudly when exceeded.**
+24. **Memory is a live re-read of one router document, not a conversation log.**
+    The router is re-read on *every* turn and rendered into the system prompt.
+    Consequences, verified end to end rather than assumed: editing the router
+    changes her behaviour with no restart, and memory costs a constant number of
+    tokens per turn instead of growing the history. The alternative, appending
+    the router as a chat message each turn, is what makes context rot unbounded.
+25. **The router is capped at 6000 bytes and warns loudly when exceeded.**
     Measured against a 16 259-byte file: the render truncates at a line boundary
     and emits `Real size: 16210 bytes. Budget: 6000 bytes. Dropped: 10260
     bytes.`, and the system prompt adds a `[memory-over-budget]` marker telling
     her to move detail into notes. Silent truncation would be the failure mode;
     visible rot is self-correcting.
 26. **The router is a router, not a database.** A fact bigger than one line
-    belongs in a note file with only a pointer left in the main file, and
+    belongs in a note, with only a pointer left in the router, and
     `unreferenced_notes()` reports notes the router never mentions so the pointer
     set can be kept honest.
 27. **Frontmatter is parsed without adding PyYAML.** The needed subset is flat
