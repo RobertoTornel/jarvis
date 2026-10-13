@@ -52,7 +52,10 @@ __all__ = [
     "CONTROL_SOCKET_ENV_VAR",
     "STOP_TIMEOUT_SEC",
     "ControlSocketError",
+    "ControlSocketInUseError",
     "ControlSocketServer",
+    "control_socket_candidates",
+    "describe_socket_line",
     "resolve_control_socket_path",
 ]
 
@@ -82,27 +85,53 @@ class ControlSocketError(RuntimeError):
     """The socket could not be created, or is not ours to replace."""
 
 
-def resolve_control_socket_path() -> Path:
-    """Where the control socket lives.
+class ControlSocketInUseError(ControlSocketError):
+    """Another Claire is already serving this path.
 
-    ``$CLAIRE_CONTROL_SOCKET`` wins when set, which is what an isolated test
-    instance uses.  Otherwise ``$XDG_RUNTIME_DIR/claire/control.sock``, the
-    correct home for a socket: it is per-user, mode 0700 and cleared on logout,
-    so a stale file cannot outlive the session that made it.  Without a runtime
-    directory (a service started outside a login session) it falls back to the
-    data directory beside the database, which persists but is still per-user.
+    Distinct from the other failures because it must *not* send the server on to
+    its next candidate path: two daemons, one per path, is exactly the confusion
+    the control channel exists to remove.
+    """
+
+
+def resolve_control_socket_path() -> Path:
+    """Where the socket is *preferred*: the first of :func:`control_socket_candidates`."""
+    return control_socket_candidates()[0]
+
+
+def control_socket_candidates() -> List[Path]:
+    """The paths to try for the control socket, best first.
+
+    Both ends walk this list in the same order, which is what lets the daemon
+    land somewhere it is allowed to write without the client having to be told
+    where it went.
+
+    ``$CLAIRE_CONTROL_SOCKET`` is **exclusive** when set: an explicitly named
+    path never falls back to another, or a test instance — or a second Claire —
+    could end up talking to the wrong daemon.
+
+    Otherwise the runtime directory is preferred, because that is what it is for:
+    per-user, mode 0700, cleared on logout, so a stale file cannot outlive the
+    session. The data directory is the fallback, and on this machine it is the
+    one that works: ``claire.service`` sets ``ProtectSystem=strict`` with the
+    user's home directories as the only writable paths, and under that sandbox
+    binding a Unix socket under ``/run/user/<uid>`` fails with ``EROFS`` while the
+    data directory — which the unit grants — succeeds. Falling back is better
+    than requiring every deployment to get its unit file exactly right.
     """
     override = os.environ.get(CONTROL_SOCKET_ENV_VAR, "").strip()
     if override:
-        return Path(override).expanduser()
+        return [Path(override).expanduser()]
 
+    candidates: List[Path] = []
     runtime = os.environ.get("XDG_RUNTIME_DIR", "").strip()
     if runtime:
-        return Path(runtime) / _SOCKET_DIRNAME / _SOCKET_FILENAME
+        candidates.append(Path(runtime) / _SOCKET_DIRNAME / _SOCKET_FILENAME)
 
     data_home = os.environ.get("XDG_DATA_HOME", "").strip()
     base = Path(data_home).expanduser() if data_home else Path.home() / ".local" / "share"
-    return base / _SOCKET_DIRNAME / _SOCKET_FILENAME
+    candidates.append(base / _SOCKET_DIRNAME / _SOCKET_FILENAME)
+    return candidates
 
 
 class ControlSocketServer:
@@ -126,8 +155,18 @@ class ControlSocketServer:
         handle_line: Optional[Callable[[str], bool]] = None,
         logger: Optional[Callable[[str], None]] = None,
         backlog: int = 8,
+        candidates: Optional[Any] = None,
     ) -> None:
-        self._path = Path(path).expanduser() if path is not None else resolve_control_socket_path()
+        if candidates is not None:
+            self._candidates = [Path(candidate).expanduser() for candidate in candidates]
+        elif path is not None:
+            self._candidates = [Path(path).expanduser()]
+        else:
+            self._candidates = control_socket_candidates()
+        if not self._candidates:
+            raise ControlSocketError("no control socket path to try")
+        # The preferred path until start() finds which one it can actually use.
+        self._path = self._candidates[0]
         self._handle_line = handle_line
         self._logger = logger
         self._backlog = backlog
@@ -158,11 +197,44 @@ class ControlSocketServer:
 
     # -- lifecycle -----------------------------------------------------------
     def start(self) -> None:
-        """Bind, listen and begin accepting.  Raises if the socket cannot be ours."""
+        """Bind, listen and begin accepting.  Raises if the socket cannot be ours.
+
+        Walks :func:`control_socket_candidates` in order and keeps the first path
+        it can bind, so a deployment whose sandbox forbids the runtime directory
+        still gets a channel. A path that another Claire is serving is *not*
+        skipped: that is a configuration to fix, not a path to route around.
+        """
         if self.is_running:
             return
 
-        path = self._path
+        failures: List[str] = []
+        for candidate in self._candidates:
+            try:
+                listener = self._bind(candidate)
+            except ControlSocketInUseError:
+                raise
+            except (ControlSocketError, OSError) as exc:
+                failures.append(f"{candidate}: {exc}")
+                self._log(f"control socket path unusable, trying the next ({candidate}: {exc})")
+                continue
+
+            self._path = candidate
+            self._owns_file = True
+            self._stop.clear()
+            self._listener = listener
+            thread = threading.Thread(
+                target=self._accept_loop, name="claire-control-socket", daemon=True
+            )
+            self._accept_thread = thread
+            thread.start()
+            return
+
+        raise ControlSocketError(
+            "could not bind the control socket anywhere: " + "; ".join(failures)
+        )
+
+    def _bind(self, path: Path) -> socket.socket:
+        """Bind and listen on one path, or explain why it is not possible."""
         self._prepare_parent(path)
         self._clear_stale_socket(path)
 
@@ -179,15 +251,7 @@ class ControlSocketServer:
             raise ControlSocketError(
                 f"could not bind the control socket at {path}: {exc}"
             ) from exc
-
-        self._owns_file = True
-        self._stop.clear()
-        self._listener = listener
-        thread = threading.Thread(
-            target=self._accept_loop, name="claire-control-socket", daemon=True
-        )
-        self._accept_thread = thread
-        thread.start()
+        return listener
 
     def stop(self, timeout: float = STOP_TIMEOUT_SEC) -> None:
         """Stop accepting, drop every client and remove our socket file."""
@@ -329,7 +393,7 @@ class ControlSocketServer:
             )
 
         if self._answers(path):
-            raise ControlSocketError(
+            raise ControlSocketInUseError(
                 f"another Claire is already serving {path}; leaving it alone"
             )
 

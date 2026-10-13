@@ -27,7 +27,9 @@ from claire.control import (
     CONTROL_SOCKET_ENV_VAR,
     ControlClient,
     ControlSocketError,
+    ControlSocketInUseError,
     ControlSocketServer,
+    control_socket_candidates,
     resolve_control_socket_path,
 )
 
@@ -359,6 +361,92 @@ def test_a_regular_file_is_never_deleted_to_make_room(socket_path):
 
     assert "not a socket" in str(caught.value)
     assert socket_path.read_text() == "not a socket, and not ours to delete"
+
+
+# --- choosing a path --------------------------------------------------------
+
+def test_the_candidates_prefer_the_runtime_directory_then_the_data_directory(monkeypatch):
+    monkeypatch.delenv(CONTROL_SOCKET_ENV_VAR, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+    candidates = control_socket_candidates()
+
+    assert candidates[0] == Path("/run/user/4242/claire/control.sock")
+    assert len(candidates) == 2
+    assert candidates[1].name == "control.sock"
+    assert "run/user" not in str(candidates[1])
+
+
+def test_an_explicit_path_is_the_only_path(monkeypatch, tmp_path):
+    """An explicit path must not silently fall back to a different daemon."""
+    named = tmp_path / "named.sock"
+    monkeypatch.setenv(CONTROL_SOCKET_ENV_VAR, str(named))
+
+    assert control_socket_candidates() == [named]
+
+
+def test_a_server_moves_on_when_a_path_cannot_be_bound(tmp_path):
+    """The sandbox case that made this necessary: the runtime path is EROFS."""
+    blocked = tmp_path / "blocked.sock"
+    blocked.write_text("a regular file, so no socket can be bound here")
+    good = tmp_path / "data" / "control.sock"
+
+    handler = Recorder()
+    srv = ControlSocketServer(
+        handle_line=handler, logger=lambda _m: None, candidates=[blocked, good]
+    )
+    srv.start()
+    try:
+        assert srv.path == good
+        assert stat.S_ISSOCK(good.lstat().st_mode)
+
+        client = ControlClient(candidates=[blocked, good])
+        assert client.connect() is True
+        assert client.path == good, "the client must name the path that answered"
+    finally:
+        srv.stop()
+
+
+def test_default_candidates_agree_when_the_runtime_directory_is_unusable(monkeypatch, tmp_path):
+    """Both ends walk the same list, so neither has to be told where it landed."""
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x")
+    monkeypatch.delenv(CONTROL_SOCKET_ENV_VAR, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(blocker))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    srv = ControlSocketServer(handle_line=Recorder(), logger=lambda _m: None)
+    srv.start()
+    try:
+        assert srv.path == tmp_path / "data" / "claire" / "control.sock"
+
+        client = ControlClient()
+        assert client.connect() is True
+        assert client.path == srv.path
+    finally:
+        srv.stop()
+
+
+def test_a_path_another_claire_serves_is_not_routed_around(tmp_path):
+    """Two servers on two paths is the confusion the channel exists to remove."""
+    taken = tmp_path / "one" / "control.sock"
+    spare = tmp_path / "two" / "control.sock"
+    running = ControlSocketServer(taken, handle_line=Recorder(), logger=lambda _m: None)
+    running.start()
+    try:
+        intruder = ControlSocketServer(
+            handle_line=Recorder(), logger=lambda _m: None, candidates=[taken, spare]
+        )
+
+        with pytest.raises(ControlSocketInUseError) as caught:
+            intruder.start()
+
+        assert "already serving" in str(caught.value)
+        assert not spare.exists(), "it must not quietly start a second server elsewhere"
+        assert not intruder.is_running
+    finally:
+        running.stop()
 
 
 # --- the client ------------------------------------------------------------

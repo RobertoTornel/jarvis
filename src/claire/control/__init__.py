@@ -13,7 +13,9 @@ from .server import (
     CONTROL_SOCKET_ENV_VAR,
     STOP_TIMEOUT_SEC,
     ControlSocketError,
+    ControlSocketInUseError,
     ControlSocketServer,
+    control_socket_candidates,
     describe_socket_line,
     resolve_control_socket_path,
 )
@@ -23,7 +25,9 @@ __all__ = [
     "STOP_TIMEOUT_SEC",
     "ControlClient",
     "ControlSocketError",
+    "ControlSocketInUseError",
     "ControlSocketServer",
+    "control_socket_candidates",
     "describe_socket_line",
     "resolve_control_socket_path",
 ]

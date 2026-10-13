@@ -30,7 +30,7 @@ import socket
 from pathlib import Path
 from typing import Any, Optional
 
-from .server import resolve_control_socket_path
+from .server import control_socket_candidates, resolve_control_socket_path
 
 __all__ = ["ControlClient"]
 
@@ -50,8 +50,23 @@ class ControlClient:
     does and an isolated instance is reachable without extra wiring.
     """
 
-    def __init__(self, path: Optional[Any] = None, *, timeout: float = CONNECT_TIMEOUT_SEC) -> None:
-        self._path = Path(path).expanduser() if path is not None else resolve_control_socket_path()
+    def __init__(
+        self,
+        path: Optional[Any] = None,
+        *,
+        timeout: float = CONNECT_TIMEOUT_SEC,
+        candidates: Optional[Any] = None,
+    ) -> None:
+        if candidates is not None:
+            self._candidates = [Path(candidate).expanduser() for candidate in candidates]
+        elif path is not None:
+            # An explicit path is the only path: a caller that names one (a test
+            # instance, a second Claire) must not silently reach a different
+            # daemon through a fallback.
+            self._candidates = [Path(path).expanduser()]
+        else:
+            self._candidates = control_socket_candidates()
+        self._path = self._candidates[0]
         self._timeout = timeout
         self._socket: Optional[socket.socket] = None
         self._buffer = b""
@@ -64,6 +79,7 @@ class ControlClient:
 
     @property
     def path(self) -> Path:
+        """The path in use: the preferred one until a connection says otherwise."""
         return self._path
 
     @property
@@ -76,27 +92,32 @@ class ControlClient:
 
         Every failure mode is the same answer to the caller — there is no daemon
         to talk to — and a UI must be able to ask that question on a timer
-        without handling exceptions.
+        without handling exceptions. The candidate paths are tried in the same
+        order the server binds them, and ``path`` afterwards names the one that
+        answered.
         """
         if self._socket is not None:
             return True
-        if not self._path.exists():
-            return False
 
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self._timeout)
-        try:
-            connection.connect(str(self._path))
-        except OSError:
-            connection.close()
-            return False
+        for candidate in self._candidates:
+            if not candidate.exists():
+                continue
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.settimeout(self._timeout)
+            try:
+                connection.connect(str(candidate))
+            except OSError:
+                connection.close()
+                continue
 
-        # Reads block with their own timeout; the connect timeout still applies
-        # to the first write only, which is what send_line resets.
-        connection.settimeout(SEND_TIMEOUT_SEC)
-        self._socket = connection
-        self._buffer = b""
-        return True
+            # Reads block with their own timeout; the connect timeout still
+            # applies to the first write only, which send_line resets.
+            connection.settimeout(SEND_TIMEOUT_SEC)
+            self._socket = connection
+            self._path = candidate
+            self._buffer = b""
+            return True
+        return False
 
     def close(self) -> None:
         connection, self._socket = self._socket, None

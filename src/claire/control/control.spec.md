@@ -23,10 +23,21 @@ had no channel at all.
 
 ## Where the socket lives
 
-`$CLAIRE_CONTROL_SOCKET` when set (this is also what lets an isolated instance run beside
-the real one), else `$XDG_RUNTIME_DIR/claire/control.sock`, else
-`~/.local/share/claire/control.sock`. `CLAIRE_CONTROL_CHANNEL=0` switches it off, mirroring
-`CLAIRE_PHONE_BRIDGE=0`, and says so on stdout rather than going quiet.
+A list, walked in the same order by both ends: `$XDG_RUNTIME_DIR/claire/control.sock` first,
+then `~/.local/share/claire/control.sock`. The daemon keeps the first path it can bind; the
+client connects to the first one that answers, and its `path` afterwards names that one.
+`$CLAIRE_CONTROL_SOCKET` overrides the whole list *exclusively* — an explicitly named path
+never falls back, which is what lets an isolated instance run beside the real one and stops
+a second Claire from reaching a daemon that is not hers. `CLAIRE_CONTROL_CHANNEL=0` switches
+the channel off, mirroring `CLAIRE_PHONE_BRIDGE=0`, and says so on stdout rather than going
+quiet.
+
+The fallback is not decoration: on this machine `claire.service` sets
+`ProtectSystem=strict` with the user's home directories as the only writable paths, and
+under that sandbox binding a Unix socket under `/run/user/<uid>` fails with `EROFS` while
+the data directory succeeds. Verified directly under the same sandbox properties. The
+runtime directory is still preferred, because it is cleared on logout and a stale socket
+cannot outlive the session there.
 
 ## The failure it closes
 
@@ -60,30 +71,37 @@ Nothing new is accepted, which is the point: there is no second protocol to keep
    the filesystem's job. `chmod` runs between `bind` and `listen` on purpose — a file
    created under the process umask would otherwise be connectable by another local account
    for that instant.
-3. **A stale socket file is replaced; a live one is not stolen.** A crash leaves the file
+3. **A path that cannot be bound is skipped; a path another Claire serves is not.** The
+   sandbox case above is an environment fact, not a misconfiguration to fail on, so the
+   server moves to its next candidate and logs why it did. A path that *answers* is
+   different in kind: falling through there would leave two daemons serving two paths,
+   with each client reaching whichever one its own list prefers — the exact confusion this
+   channel removes. `ControlSocketInUseError` therefore stops the walk.
+
+4. **A stale socket file is replaced; a live one is not stolen.** A crash leaves the file
    behind, and `bind` refuses an existing path, so the next start must clear it. But a file
    that *answers* means another Claire is serving, and stealing it would leave two daemons
    fighting over one UI. The difference is decided by connecting, not by looking at the
    file's age.
-4. **Never delete what is not a socket.** If the path holds a regular file, refuse and say
+5. **Never delete what is not a socket.** If the path holds a regular file, refuse and say
    so. "Remove whatever is in the way" is how a typo in the path becomes data loss.
-5. **`broadcast` never raises, and drops only the client that failed.** It runs on the voice
+6. **`broadcast` never raises, and drops only the client that failed.** It runs on the voice
    thread and on chat worker threads: one UI window closing, or a socket failing mid-write,
    must cost that window and nothing else. The event is not retried — an event stream is a
    live view, and a client that was not listening seeds itself from the dialogue memory or
    the journal.
-6. **One bad line never drops a connection, and one bad handler never kills the daemon.**
+7. **One bad line never drops a connection, and one bad handler never kills the daemon.**
    Malformed JSON, a non-string `text`, or an unknown prefix is logged and ignored; a
    handler that raises is contained and the line is treated as recognised, because trying
    the remaining handlers on a line that was already ours produces a second, more confusing
    failure. A non-string `text` must never reach `submit_text_query`'s `str` API.
-7. **`ControlClient.connect()` answers `False` instead of raising.** A UI has to ask "is
+8. **`ControlClient.connect()` answers `False` instead of raising.** A UI has to ask "is
    there a daemon?" on a timer; every failure mode has the same answer and none of them
    deserve an exception in a paint loop.
-8. **`read_line` returning `None` is not proof of a closed channel.** Check `connected`:
+9. **`read_line` returning `None` is not proof of a closed channel.** Check `connected`:
    `None` means "nothing arrived in time" *or* "the other end closed", and a reconnect loop
    that cannot tell those apart either spins or gives up.
-9. **The channel announces itself at startup, and announces its own absence.** A silent
+10. **The channel announces itself at startup, and announces its own absence.** A silent
    control channel is exactly the bug being fixed: `🔌 Control socket ready at <path>` on
    success, `⚠️ Control socket unavailable: <reason>` on failure, and a named line when it
    is switched off.
@@ -99,4 +117,6 @@ Nothing new is accepted, which is the point: there is no second protocol to keep
 - The socket is not a general RPC surface: it accepts exactly the stdin vocabulary. Anything
   that needs a new command needs a stdin command first.
 - Nothing survives a restart. Stop removes the socket file; the daemon rebuilds it next
-  start, and a leftover file from a crash is replaced (rule 3).
+  start, and a leftover file from a crash is replaced (rule 4).
+- Two clients is the tested case, not a crowd: `broadcast` is a plain loop over a set, with
+  no per-client queue, so a UI that stops reading blocks on its own thread and nowhere else.
