@@ -46,6 +46,8 @@ from .output.tts import SUPPORTED_TTS_ENGINES, create_tts_engine
 from .tools.registry import initialize_mcp_tools
 from .debug import debug_log
 from .schedule.announcer import REMINDER_POLL_INTERVAL_SEC, ReminderAnnouncer
+from .schedule.timer_announcer import TIMER_POLL_INTERVAL_SEC, TimerAnnouncer
+from .schedule.timers import default_manager
 from .listening.listener import VoiceListener
 from .listening.wake_detection import is_wake_word_detected
 from .utils.location import get_location_context
@@ -278,11 +280,13 @@ def _dispatch_voice_feedback() -> None:
 _reminder_announcer: Optional[Any] = None
 
 
-def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
-    """A not-yet-started announcer whose speak/busy calls go through *engine*.
+def _engine_speech_adapter(engine: Any, label: str) -> tuple[Any, Any]:
+    """``(speak, busy)`` callables over a TTS *engine*, for either announcer.
 
-    Split out from :func:`_start_reminder_announcer` so a test can exercise the
-    engine adapter deterministically, without a background thread racing it.
+    Both loops need the same two answers from the engine, so the adapter is
+    written once: ``speak`` reports success honestly (the engine queues and
+    returns None, so "spoken" means "the engine was enabled and did not refuse")
+    and ``busy`` treats an engine that cannot answer as not speaking.
     """
     def speak(text: str) -> bool:
         """Report success honestly: the engine queues and returns None, so
@@ -292,7 +296,7 @@ def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
                 return False
             engine.speak(text)
         except Exception as exc:  # noqa: BLE001 - a raising engine is a failed speak
-            debug_log(f"reminder speech failed ({type(exc).__name__})", "schedule")
+            debug_log(f"{label} speech failed ({type(exc).__name__})", "schedule")
             return False
         return True
 
@@ -302,6 +306,16 @@ def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
         except Exception:  # noqa: BLE001 - a broken engine is not "speaking"
             return False
 
+    return speak, busy
+
+
+def _build_reminder_announcer(engine: Any) -> ReminderAnnouncer:
+    """A not-yet-started announcer whose speak/busy calls go through *engine*.
+
+    Split out from :func:`_start_reminder_announcer` so a test can exercise the
+    engine adapter deterministically, without a background thread racing it.
+    """
+    speak, busy = _engine_speech_adapter(engine, "reminder")
     return ReminderAnnouncer(speak, busy, poll_interval=REMINDER_POLL_INTERVAL_SEC)
 
 
@@ -335,6 +349,62 @@ def _stop_reminder_announcer() -> None:
     if announcer is not None:
         announcer.stop()
         debug_log("reminder announcer stopped", "schedule")
+
+
+_timer_announcer: Optional[Any] = None
+
+
+def _build_timer_announcer(engine: Any) -> TimerAnnouncer:
+    """A not-yet-started timer announcer whose speak/busy calls go through *engine*.
+
+    Split out from :func:`_start_timer_announcer` so a test can exercise the
+    engine adapter deterministically, without a background thread racing it.
+    The manager is the process-wide :func:`default_manager`, the same instance
+    the ``timer`` tool writes to, so a timer the owner sets is one this loop
+    actually fires.
+    """
+    speak, busy = _engine_speech_adapter(engine, "timer")
+    return TimerAnnouncer(
+        speak,
+        busy,
+        poll_interval=TIMER_POLL_INTERVAL_SEC,
+        manager=default_manager(),
+    )
+
+
+def _start_timer_announcer(engine: Optional[Any] = None) -> None:
+    """Start the countdown-timer announcer on the shared TTS engine.
+
+    Args:
+        engine: TTS engine to speak on.  Defaults to :func:`get_tts_engine`
+            (the engine ``main()`` installed); passing one explicitly is what
+            lets a test wire a fake engine without booting the daemon.
+    """
+    global _timer_announcer
+    if _timer_announcer is not None:
+        return
+    tts = engine if engine is not None else get_tts_engine()
+    if tts is None:
+        debug_log("timer announcer not started: no TTS engine", "schedule")
+        return
+    announcer = _build_timer_announcer(tts)
+    announcer.start()
+    _timer_announcer = announcer
+    # The whole bug hid in silence: name the precision out loud at startup.
+    print(
+        f"⏳ Timer announcer armed (fires within {TIMER_POLL_INTERVAL_SEC}s)",
+        flush=True,
+    )
+    debug_log("timer announcer started", "schedule")
+
+
+def _stop_timer_announcer() -> None:
+    """Stop the announcer, waking its loop instead of waiting an interval."""
+    global _timer_announcer
+    announcer, _timer_announcer = _timer_announcer, None
+    if announcer is not None:
+        announcer.stop()
+        debug_log("timer announcer stopped", "schedule")
 
 
 def _start_voice_feedback_worker() -> None:
@@ -1743,6 +1813,10 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
     # Behind the smoke-test early return on purpose: CI boots must not spawn
     # a reminder thread, real runs must (this feature was invisible once).
     _start_reminder_announcer(tts)
+    # Beside the reminder loop and behind the same smoke-test early return: a
+    # timer due during a CI boot must not be spoken, and the loop is useless
+    # without the owner listening.
+    _start_timer_announcer(tts)
 
     # Periodic diary update checking
     last_diary_check = time.time()
@@ -1837,6 +1911,7 @@ def main(smoke_test: bool = False, no_tune: bool = False) -> None:
     finally:
         _stop_voice_feedback_worker()
         _stop_reminder_announcer()
+        _stop_timer_announcer()
         print("🔄 Daemon shutting down - saving memory...", flush=True)
         debug_log("daemon finally block starting - performing cleanup", "claire")
 

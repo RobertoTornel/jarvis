@@ -611,6 +611,21 @@ def test_timer_format_spoken_uses_the_manager_clock_only_when_given(manager):
     assert timer.format_spoken(now=timer.deadline - 30) == "30 seconds left"
 
 
+def test_the_announcement_singularises_the_unit_before_the_noun(manager):
+    """A unit qualifying a noun drops its plural: "a 25 minute timer"."""
+    assert manager.start(seconds=1500).format_finished() == "Your 25 minute timer is up"
+    assert manager.start("roast", 5400).format_finished() == (
+        "roast — your 1 hour 30 minute timer is up"
+    )
+
+
+def test_the_announcement_keeps_a_singular_unit_singular(manager):
+    """The fix must not bend a span that was already right."""
+    assert manager.start(seconds=60).format_finished() == "Your 1 minute timer is up"
+    assert manager.start(seconds=1).format_finished() == "Your 1 second timer is up"
+    assert manager.start("tea", 60).format_finished() == "tea — your 1 minute timer is up"
+
+
 def test_timer_format_spoken_refuses_to_guess_a_clock(manager):
     # A Timer cannot know which clock measured its deadline; falling back on the
     # real monotonic clock would report nonsense for a timer started on an

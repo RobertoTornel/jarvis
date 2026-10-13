@@ -22,6 +22,7 @@ from .builtin.weather import WeatherTool
 from .builtin.stop import StopTool
 from .builtin.tool_search import ToolSearchTool
 from .builtin.schedule import ScheduleTool
+from .builtin.timer import TimerTool
 from .builtin.senses import BrowseWebTool, LookThroughCameraTool, ReadScreenTool
 from .types import ToolExecutionResult
 from ..config import Settings
@@ -44,6 +45,7 @@ BUILTIN_TOOLS = {
     "stop": StopTool(),
     "toolSearchTool": ToolSearchTool(),
     "schedule": ScheduleTool(),
+    "timer": TimerTool(),
     "readScreen": ReadScreenTool(),
     "lookThroughCamera": LookThroughCameraTool(),
     "browseWeb": BrowseWebTool(),
