@@ -6,58 +6,84 @@
 (diary generation and the deflection/topic sweeps),
 [`graph.spec.md`](../../src/claire/memory/graph.spec.md) (the knowledge graph),
 [`router.spec.md`](../../src/claire/memory/router.spec.md) (the always-loaded
-`CLAIRE.md`) and
+router contract) and
 [`recall_gate.spec.md`](../../src/claire/memory/recall_gate.spec.md)
-(the skip heuristic). Read this when you are changing what Claire remembers,
-where it is stored, what is recalled into a reply, or the markdown vault.
+(the skip heuristic). The operational runbook is
+[`docs/PGVECTOR.md`](../PGVECTOR.md) and the conceptual overview is
+[`docs/MEMORY.md`](../MEMORY.md). Read this when you are changing what Claire
+remembers, where it is stored, what is recalled into a reply, or the memory
+backend.
 
 ## Responsibility
 
-Long-term memory is four stores with four different lifetimes. None of them is a
-conversation log: the live conversation lives in `DialogueMemory` in the daemon
-process only, and long-term memory is what survives it.
+Long-term memory is four stores with four different lifetimes. The router and the
+notes live in PostgreSQL with pgvector; the diary and the knowledge graph live in
+SQLite. None of them is a conversation log: the live conversation lives in
+`DialogueMemory` in the daemon process only, and long-term memory is what
+survives it.
 
 | Store | Medium | Written by | Recalled into a reply |
 |---|---|---|---|
 | **Diary** — one row per `(date_utc, source_app)` | `conversation_summaries` in SQLite, with FTS5 and optional vector index | the background diary flush, after the short-term window closes | keyword/vector search for the current query |
 | **Knowledge graph** — self-organising node tree | `memory_nodes` in the same SQLite file | fact extraction after a successful diary write | the always-on *warm profile* plus query-driven node search |
-| **Router** — `<vault>/CLAIRE.md` | one markdown file outside the repository | a human, via the panel's memory editor | re-read from disk on **every** request, into the system prompt |
-| **Notes** — one markdown file per fact | `<vault>/notes/*.md` | a human, via the panel's memory editor | only when a pointer is followed by hand; never auto-loaded |
+| **Router** — one always-loaded document | the `memory_documents` row with `doc_kind = 'router'` in PostgreSQL + pgvector | a human, via the panel's Memory page, or the importer | re-read from Postgres into the system prompt on **every** request |
+| **Notes** — one document per fact | `memory_documents` rows with `doc_kind = 'note'`, embedded in `memory_chunks` | a human, via the panel's Memory page, or the importer | hybrid vector + full-text search; never auto-loaded |
 
-Three properties follow from that split. The diary and the graph are the only
-stores the model writes indirectly (through summarisation and extraction, never
-through a tool call). The vault is never written by the model at all. And the
-router plus the graph's warm profile are re-assembled into the prompt on every
-turn, so correcting a file corrects behaviour without a restart
-(`router.py:278`, `system_prompt.py:233`, `engine.py:1583`).
+The diary and the graph remain the only stores the model writes indirectly
+(through summarisation and extraction, never through a tool call). The Postgres
+store is never written by the model at all. The router plus the graph's warm
+profile are re-assembled into the prompt on every turn, so correcting the router
+corrects behaviour without a restart
+(`system_prompt.py:391`, `engine.py:1735`). Which store the router and notes are
+read from is decided by `_memory_backend()` (`system_prompt.py:176`):
+`CLAIRE_MEMORY_BACKEND` in the environment wins, then `memory_backend` in
+`config.json`, and an unrecognised value fails safe to `postgres`.
+
+Nothing in a normal install reads the Markdown vault. The vault path is selected
+only by setting the backend explicitly to `vault`; the vault format is what the
+one-way export produces, and a normal install keeps no `CLAIRE.md` file on disk.
 
 ## Key modules
 
 | Module | Owns | Anchors |
 |---|---|---|
+| `src/claire/memory/pg.py` | the Postgres store: schema, a lazy `ConnectionPool`, DSN resolution, document upsert, router and document reads, counts, and hybrid search fusing vector and full-text results | `EMBEDDING_DIM` `:32`, `SCHEMA_VERSION` `:33`, `resolve_dsn` `:155`, `get_pool` `:240`, `health` `:298`, `bootstrap_schema` `:316`, `Chunk` `:367`, `Document` `:387`, `upsert_document` `:433`, `get_document` `:587`, `get_router` `:600`, `list_documents` `:612`, `delete_document` `:624`, `count_documents` `:637`, `count_chunks` `:644`, `semantic_search` `:664`, `keyword_search` `:701`, `search` `:727` |
+| `src/claire/memory/embedder.py` | the single embedding entry point for memory: `nomic-embed-text` at 768 dimensions, with a clamped per-turn timeout because a cold embedding backend is far slower than a warm one | `DEFAULT_TIMEOUT_SEC` `:27`, `EMBEDDING_DIM` `:30`, `model_name` `:65`, `provider_name` `:71`, `embed_text` `:84`, `embed_document` `:137`, `embed_query` `:148` |
+| `src/claire/memory/pg_router.py` | the Postgres-backed router: a `MemoryRouter` subclass that overrides only `reload()`, so budget, line-boundary truncation and the over-budget warning stay identical to the file router | `ROUTER_SENTINEL_PATH` `:28`, `PostgresMemoryRouter` `:31`, `reload` `:55`, `save` `:69`, `router_exists` `:85`, `load_router_from_postgres` `:93` |
+| `src/claire/memory/migrate_md_to_pg.py` | the one-shot idempotent importer and the one-way Markdown exporter; CLI `python -m claire.memory.migrate_md_to_pg` with `--dry-run`, `--vault`, `--dsn`, `--export`, `--no-bootstrap` and `--json`, reporting `created`/`updated`/`unchanged`/`skipped` | `MAX_SECTION_CHARS` `:33`, `ROUTER_FILENAME` `:37`, `ImportedDoc` `:41`, `ImportReport` `:56`, `import_vault` `:214`, `export_vault` `:324`, `main` `:352` |
 | `src/claire/memory/db.py` | SQLite schema, FTS5 triggers, optional sqlite-vss/FAISS/Python vector index, weighted reciprocal rank fusion | `_SCHEMA_SQL` `:10`, `conversation_summaries` `:37`, `summaries_fts` `:47`, FTS triggers `:56`, `_VSS_SCHEMA_SQL` `:68`, `_reciprocal_rank_fusion` `:95`, `Database.__init__` `:110`, `has_vector_store` `:152`, `_init_schema` `:156`, FTS rebuild marker `:167`, `search_hybrid` `:177`, `upsert_conversation_summary` `:317`, `upsert_summary_embedding` `:409`, `close` `:456` |
 | `src/claire/memory/conversation.py` | short-term `DialogueMemory`, the diary summariser, history budgeting, tool carryover, keyword/vector search, the deflection and topic sweeps | `_DIARY_SUMMARY_CHUNK_LIMIT` `:22`, `_embed_text` `:74`, `_rewrite_diary_summary` `:149`, `rewrite_all_diary_summaries` `:226`, `optimise_diary_topics` `:462`, `is_tool_message` `:676`, `bound_conversation_history` `:857`, `DialogueMemory` `:963`, `RECENT_WINDOW_SEC` `:1045`, `add_message` `:1074`, `record_tool_turn` `:1187`, `HOT_CACHE_MAX_ENTRIES` `:1262`, `hot_cache_put` `:1281`, `clear_hot_cache` `:1294`, `hot_cache_epoch` `:1306`, `get_recent_turns_with_tools` `:1339`, `get_pending_chunks_with_snapshot` `:1439`, `should_update_diary` `:1473`, `mark_saved_up_to` `:1506`, `generate_conversation_summary` `:1546`, `update_daily_conversation_summary` `:1711`, `search_conversation_memory_by_keywords` `:1854`, `search_conversation_memory` `:1963`, `update_diary_from_dialogue_memory` `:2128` |
 | `src/claire/reply/memory_prefetch.py` | `MemoryExtractorPrefetch` — the speculative memory-extractor call the reply engine starts before the chat turn, and the epoch guard that stops an abandoned call repopulating a later conversation's hot cache | `MemoryExtractorPrefetch` `:44`, `start` `:85`, `_publish` `:107`, `result` `:129`, `_read_epoch` `:161`, `start_memory_extractor_prefetch` `:179` |
 | `src/claire/memory/graph.py` | node schema, fixed branches, traversal, decay, mutation listeners | `register_graph_mutation_listener` `:38`, `SPLIT_THRESHOLD` `:89`, `FIXED_BRANCHES` `:124`, `FIXED_BRANCH_IDS` `:148`, `_GRAPH_SCHEMA_SQL` `:216`, `GraphMemoryStore` `:241`, `_ensure_root` `:268`, `migrate_legacy_shape` `:308`, `append_to_node` `:552`, `touch_node` `:568`, `get_recent_nodes` `:582`, `get_top_nodes` `:594`, `get_ancestors` `:642`, `search_nodes` `:684`, `get_graph_data` `:754` |
 | `src/claire/memory/graph_ops.py` | extraction, semantic review, placement, merge, split, warm profile | `_review_graph_facts` `:83`, `extract_graph_memories` `:120`, unknown-branch fallback `:313`, `merge_node_data` `:617`, `auto_split_node` `:767`, `update_graph_from_dialogue` `:897`, automatic merge `:1028`, `consolidate_all_populated_nodes` `:1105`, `build_warm_profile` `:1207`, `format_warm_profile_block` `:1235` |
-| `src/claire/memory/notes.py` | vault path resolution, note frontmatter, note read/write/search, dangling-pointer report — no PyYAML | `VAULT_ENV_VAR` `:81`, `ROUTER_FILENAME` `:90`, `ROUTER_BUDGET_BYTES` `:93`, `resolve_vault_dir` `:132`, config-key step `:150`, `resolve_notes_dir` `:216`, `resolve_router_path` `:229`, `parse_frontmatter` `:248`, `normalize_note_name` `:328`, `list_notes` `:501`, `read_note` `:515`, `search_notes` `:585`, `unreferenced_notes` `:688`, `create_note` `:761`, `ensure_notes_dir` `:838`, `update_note` `:880`, `delete_note` `:938` |
-| `src/claire/memory/router.py` | reading, byte-accounting, truncating and rendering `CLAIRE.md`; template creation | `MEMORY_HEADER` `router.py:82`, `router_template` `:115`, `_truncate_body` `:195`, `MemoryRouter` `:221`, `budget_bytes` `:238`, `reload` `:262`, `render_for_prompt` `:278`, `ensure_router` `:303`, `load_router` `:344` |
+| `src/claire/memory/notes.py` | the **legacy vault path only**: vault path resolution, note frontmatter, note read/write/search, dangling-pointer report — no PyYAML | `VAULT_ENV_VAR` `:81`, `ROUTER_FILENAME` `:90`, `ROUTER_BUDGET_BYTES` `:93`, `resolve_vault_dir` `:132`, config-key step `:150`, `resolve_notes_dir` `:216`, `resolve_router_path` `:229`, `parse_frontmatter` `:248`, `normalize_note_name` `:328`, `list_notes` `:501`, `read_note` `:515`, `search_notes` `:585`, `unreferenced_notes` `:688`, `create_note` `:761`, `ensure_notes_dir` `:838`, `update_note` `:880`, `delete_note` `:938` |
+| `src/claire/memory/router.py` | the file-backed router — legacy path: reading, byte-accounting, truncating and rendering `CLAIRE.md`; template creation. `PostgresMemoryRouter` inherits its render path | `MEMORY_HEADER` `:82`, `router_template` `:115`, `_truncate_body` `:195`, `MemoryRouter` `:221`, `budget_bytes` `:242`, `reload` `:266`, `render_for_prompt` `:282`, `ensure_router` `:307`, `load_router` `:348` |
 | `src/claire/memory/recall_gate.py` | deterministic pre-flight check that can skip enrichment | `should_recall` `:50`, `min_coverage` `:54`, coverage computation `:83` |
-| `src/claire/memory/obsidian.py` | Obsidian-compatible vault *shape* — `.obsidian/`, wiki links, document validation, conventions — not a store. Library-only from the reply path's point of view; wired into the panel's vault browser | `VaultLayout` `:99`, `OBSIDIAN_DIRNAME` `:82`, `describe_vault` `:132`, `is_obsidian_vault` `:151`, `ensure_vault` `:157`, `wiki_link` `:189`, `extract_wiki_links` `:209`, `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`, `validate_note_document` `:260`, `vault_conventions` `:331` |
+| `src/claire/memory/obsidian.py` | Obsidian-compatible **vault shape and export format** — `.obsidian/`, wiki links, document validation, conventions — not a store. Library-only from the reply path's point of view; wired into the panel's vault browser | `VaultLayout` `:99`, `OBSIDIAN_DIRNAME` `:82`, `describe_vault` `:132`, `is_obsidian_vault` `:151`, `ensure_vault` `:157`, `wiki_link` `:189`, `extract_wiki_links` `:209`, `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`, `validate_note_document` `:260`, `vault_conventions` `:331` |
 
 `src/claire/memory/__init__.py` is empty: the package deliberately re-exports
 nothing, so every caller imports the submodule it needs (for example
 `from claire.memory import notes as notes_module`). There is no aggregate
 `memory` API to extend.
 
-Two modules outside `memory/` finish the picture: `src/claire/system_prompt.py`
-renders the vault into the prompt (`MEMORY_SECTION_HEADING` `:130`,
-`resolve_default_router_path` `:165`, `load_router_from_vault` `:172`,
-`build_memory_section` `:233`, `build_system_prompt` `:330`), and
-`src/claire/reply/engine.py` decides what is recalled
-(`:1158`–`:1179` gating, `:1202` warm profile, `:1250` enrichment source,
-`:1308` extractor, `:1337` diary, `:1369` graph, `:1437` digest,
-`:1577`–`:1583` router, `:1600`–`:1655` prompt injection).
+The vault modules still ship and still work when the backend is explicitly set to
+`vault`, so a rollback is a flag flip. `notes.py`, `obsidian.py` and the
+file-backed path through `router.py` are reached only in that mode; nothing on
+the default Postgres reply path reads a vault file.
+
+Two modules outside `memory/` finish the picture. `src/claire/system_prompt.py`
+renders the router into the prompt (`MEMORY_UNAVAILABLE_MARKER` `:132`,
+`MEMORY_EMPTY_MARKER` `:133`, `MEMORY_OVER_BUDGET_MARKER` `:134`,
+`_memory_backend` `:176`, `resolve_default_router_path` `:166`,
+`load_router_from_vault` `:204`, `_memory_budget_bytes` `:227`,
+`_render_router` `:238`, `build_memory_section` `:273`,
+`_resolve_memory_section` `:301`, `build_system_prompt` `:391`); in `postgres`
+mode `load_router_from_vault` delegates to
+`pg_router.load_router_from_postgres`, and `_resolve_memory_section` treats the
+router row as "provisioned". `src/claire/reply/engine.py` decides what is
+recalled (`:1310`–`:1329` recall decision and gate, `:1354` warm profile,
+`:1402` enrichment source, `:1423` extractor, `:1488` diary, `:1549` graph,
+`:1598` digest, `:1735` prompt assembly, `:1735`–`:1838` prompt injection).
 
 ## Data and control flow
 
@@ -77,9 +103,9 @@ is stored. Tool messages from the current conversation are re-recorded by
 when there are unsaved messages and either the user has been inactive for the
 window or the oldest unsaved message has reached `MAX_UNSAVED_AGE_SEC`. The
 daemon polls this every 60 s while it can take the chat-query lock
-(`daemon.py:1739`–`:1745`, `:1749`–`:1755`) and forces a final flush at shutdown
-(`daemon.py:1796`). `_check_and_update_diary` (`daemon.py:821`) resolves
-`source_app` to `"stdin"` or `"voice"` (`:885`).
+(`daemon.py:1998`–`:2004`, and again on the voice thread at `:2009`–`:2015`) and
+forces a final flush at shutdown (`daemon.py:2057`). `_check_and_update_diary`
+(`daemon.py:1068`) resolves `source_app` to `"stdin"` or `"voice"` (`:1132`).
 
 **3. Pending work is snapshotted.** `update_diary_from_dialogue_memory`
 (`conversation.py:2128`) takes `_diary_flush_lock` non-blocking, so flushes on
@@ -123,10 +149,16 @@ plainly appended via `append_to_node` (`graph.py:552`). A node past
 extraction is wrapped so a failure cannot lose the diary write
 (`conversation.py:2209`).
 
-**8. The vault is written only by a human path.** Nothing in the flush or the
-reply engine calls `create_note` / `update_note`. The panel's memory editor is
-the writer (`panel/server.py:2207` `save_note`, `:2248` `delete_note`), and
-`router.ensure_router` (`router.py:303`) creates `CLAIRE.md` from
+**8. The Postgres store is written only by a human path or the importer.**
+Nothing in the flush or the reply engine calls `upsert_document`. The panel's
+Memory page is the writer: `save_note` and `delete_note` in
+`src/claire/panel/server.py` route to `_save_note_postgres` and
+`_delete_note_postgres` when the backend is Postgres, so what the browser writes
+is what the router row and the chunk table hold. The one-shot importer
+(`migrate_md_to_pg.py:214`) is the other writer, used to bring an existing vault
+across. In `vault` mode the same panel calls fall through to
+`notes.create_note` / `notes.update_note` (`notes.py:761`, `:880`), and
+`router.ensure_router` (`router.py:307`) creates `CLAIRE.md` from
 `router_template` (`router.py:115`) when it is absent. There is no note-writing
 tool in the tool registry under `src/claire/tools/`.
 
@@ -135,29 +167,29 @@ tool in the tool registry under `src/claire/tools/`.
 Order inside one `run_reply_engine` turn:
 
 1. **Recall decision.** The planner decides `plan_demands_memory`; an empty
-   plan fails open to `needs_memory = True` (`engine.py:1159`).
+   plan fails open to `needs_memory = True` (`engine.py:1310`–`:1311`).
 2. **Recall gate.** When the plan did not explicitly ask for memory and a hot
    window exists, `should_recall` (`recall_gate.py:50`) is consulted
-   (`engine.py:1169`–`:1177`). It returns skip only if the window already holds
+   (`engine.py:1321`–`:1329`). It returns skip only if the window already holds
    a tool message (`is_tool_message`, `conversation.py:676`) *and* at least
    `min_coverage` = 0.5 of the query's content words appear in the window text
    (`recall_gate.py:54`, `:83`). It never raises outward: any error is logged
-   and recall continues.
+   and recall continues (`engine.py:1329`).
 3. **Warm profile.** `build_warm_profile` (`graph_ops.py:1207`) walks the User
    and Directives subtrees and returns a `{"user", "directives"}` dict; the
    rendered block is cached on the `DialogueMemory` hot cache for the
    conversation and invalidated by a graph mutation listener registered in the
-   daemon (`engine.py:1202`–`:1246`, `_invalidate_wp_on_graph_mutation` in
-   `daemon.main`).
+   daemon (`engine.py:1354`–`:1397`, `_invalidate_wp_on_graph_mutation` at
+   `daemon.py:1775`, registered at `:1803`).
 4. **Extractor.** When memory is needed, an LLM pass turns the query into
    `keywords` and implicit `questions`, and it gets its own short ceiling,
-   `llm_extractor_timeout_sec` (`engine.py:962`–`:965`, default `8.0`), rather
+   `llm_extractor_timeout_sec` (`engine.py:1094`, default `8.0`), rather
    than inheriting the tool-execution one. The call is not retried after a
    timeout. Because the extractor is on the pre-chat critical path, the engine
    starts it **speculatively** alongside the tool router
-   (`engine.py:984`, `memory_prefetch.py:179`) and reuses the result only when
+   (`engine.py:1116`, `memory_prefetch.py:179`) and reuses the result only when
    the turn reaches memory recall with no planner topic hint
-   (`engine.py:1301`); otherwise the serial call at `engine.py:1308` runs. A
+   (`engine.py:1452`–`:1456`); otherwise the serial call runs. A
    prefetch whose conversation was cleared cannot repopulate the cache: it
    publishes only when its captured `hot_cache_epoch` still matches
    (`memory_prefetch.py:161`, `conversation.py:1306`).
@@ -170,24 +202,26 @@ Order inside one `run_reply_engine` turn:
    a rank (`db.py:95`). With no query vector the FTS order is kept; with no
    usable keyword query the newest summaries are returned (`db.py:225`–`:246`).
    The engine caps results at `cfg.memory_enrichment_max_results`
-   (`engine.py:1345`).
+   (`engine.py:1497`).
 6. **Graph recall.** With the source in `("all", "graph")` and at least two
    content words in the implicit questions, `search_nodes` (`graph.py:684`) is
-   queried with `limit=5`; each hit is prefixed with its branch/ancestor path
-   (`engine.py:1396`–`:1421`).
+   queried with `limit=5` (`engine.py:1549`); each hit is prefixed with its
+   branch/ancestor path.
 7. **Digest.** For small models (auto, or forced by `memory_digest_enabled`),
    the raw diary and graph text is replaced by one relevance-filtered note from
-   `digest_memory_for_query` (`engine.py:1437`–`:1470`;
+   `digest_memory_for_query` (`engine.py:1598`;
    `src/claire/reply/enrichment.py:346`).
 8. **Prompt assembly.** `build_system_prompt(name, load_default_router=True)`
-   (`engine.py:1583`) re-reads `<vault>/CLAIRE.md` and wraps it under
-   `## Memory (always loaded)` (`system_prompt.py:233`). The warm profile is
+   (`engine.py:1735`) loads the router and wraps it under
+   `## Memory (always loaded)` (`system_prompt.py:273`). In `postgres` mode the
+   read is `PostgresMemoryRouter.reload()`, which reads the `memory_documents`
+   router row; the budget and line-boundary truncation are the inherited file
+   router's (`router.py:195`, `:242`). The warm profile is
    appended next, unconditionally and outside the planner gate
-   (`engine.py:1608`), then the diary block (`:1610`–`:1629`), the graph block
-   (`:1631`) and the digest (`:1634`). Each block carries framing text: diary
+   (`engine.py:1760`), then the diary block (`:1771`), the graph block
+   (`:1784`) and the digest (`:1794`). Each block carries framing text: diary
    entries are reference-only with newest-wins, and anything the digest
-   attributes to the assistant must be re-verified with a tool before restating
-   (`:1610`–`:1655`).
+   attributes to the assistant must be re-verified with a tool before restating.
 
 ### Retrieval outside the reply path
 
@@ -198,6 +232,13 @@ without the engine's planner gating. The maintenance sweeps are user-triggered
 from the memory viewer, not the daemon:
 `rewrite_all_diary_summaries` (`:226`) and `optimise_diary_topics` (`:462`).
 
+Notes are **not** injected into the reply prompt. The Postgres store exposes
+`search()` (`pg.py:727`) — the hybrid vector + full-text call — over
+`semantic_search` and `keyword_search` (`:664`, `:701`); the panel's Memory page
+is its caller, so a note is found by meaning rather than by a human following a
+pointer. The router remains the only part of this store that enters a prompt
+automatically.
+
 ## Configuration
 
 Defaults are read from `src/claire/config.py`; the keys below are the ones that
@@ -205,28 +246,32 @@ change memory behaviour. Every value is overridable per key in the config file.
 
 | Key | Default | Effect |
 |---|---|---|
-| `db_path` | `~/.local/share/claire/claire.db` (`config.py:83`, `:566`) | the single SQLite file holding the diary *and* the graph |
-| `sqlite_vss_path` | `None` (`:562`) | optional sqlite-vss extension; when absent a FAISS or Python store is used (`db.py:119`–`:135`) |
-| `vault_dir` | `~/.local/share/claire/vault` (`config.py:89`, `:570`) | the markdown vault; the router and `notes/` live here |
-| `dialogue_memory_timeout` | `300.0` (`config.py:749`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
-| `dialogue_memory_max_tokens` | `8000` (`:745`) | ceiling on history sent to the model; `0` disables the dimension |
-| `dialogue_memory_max_messages` | `40` (`:746`) | second ceiling on that history |
-| `memory_enrichment_max_results` | `3` (`:747`) | diary hits passed to the prompt |
-| `memory_enrichment_source` | `"all"` (`:748`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1105`–`:1107`) |
-| `tool_carryover_max_turns` | `2` (`:750`) | prior tool turns re-injected into the hot window |
-| `tool_carryover_per_entry_chars` | `1200` (`:751`) | per-entry cap on that carryover |
-| `memory_digest_enabled` | `None` (`:753`) | `None` = auto (on for small models), `true`/`false` force it |
-| `tool_result_digest_enabled` | `None` (`:759`) | same tri-state for distilling raw tool results |
-| `llm_extractor_timeout_sec` | `8.0` (`:613`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:962`–`:965`) |
-| `embedding_provider` | `""` (`config.py:590`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
-| `embedding_model` | provider-aware (`:948`–`:970`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
-| `embedding_base_url` | `""` (`:586`) | per-provider override; the Gemini default is `https://generativelanguage.googleapis.com/v1beta` |
-| `embedding_api_key` | `""` (`:587`) | empty on the Gemini path reads `GEMINI_API_KEY`, then `GOOGLE_API_KEY`; the chat key is never reused |
+| `db_path` | `~/.local/share/claire/claire.db` (`config.py:83`, `:643`) | the single SQLite file holding the diary *and* the graph |
+| `sqlite_vss_path` | `None` (`:644`) | optional sqlite-vss extension; when absent a FAISS or Python store is used (`db.py:119`–`:135`) |
+| `vault_dir` | `~/.local/share/claire/vault` (`config.py:89`, `:647`) | the **legacy** markdown vault, used only when the backend is `vault`; the retired router and `notes/` live here |
+| `memory_backend` | `"postgres"` (`:650`) | `postgres` (the default) or `vault`; the environment variable `CLAIRE_MEMORY_BACKEND` outranks it, and an unrecognised value fails safe to `postgres` (`system_prompt.py:176`) |
+| `pg_dsn` | `""` (`:651`) | optional DSN override; empty means read `CLAIRE_PG_DSN` from the environment or `pg.env` (`pg.py:155`) |
+| `dialogue_memory_timeout` | `300.0` (`config.py:840`) | the short-term window *and* the forced-diary interval; feeds `RECENT_WINDOW_SEC` / `MAX_UNSAVED_AGE_SEC` |
+| `dialogue_memory_max_tokens` | `8000` (`:843`) | ceiling on history sent to the model; `0` disables the dimension |
+| `dialogue_memory_max_messages` | `40` (`:844`) | second ceiling on that history |
+| `memory_enrichment_max_results` | `3` (`:845`) | diary hits passed to the prompt |
+| `memory_enrichment_source` | `"all"` (`:846`) | `"all"`, `"diary"` or `"graph"`; an unknown value falls back to `"all"` (`:1283`–`:1284`) |
+| `tool_carryover_max_turns` | `2` (`:848`) | prior tool turns re-injected into the hot window |
+| `tool_carryover_per_entry_chars` | `1200` (`:849`) | per-entry cap on that carryover |
+| `memory_digest_enabled` | `None` (`:851`) | `None` = auto (on for small models), `true`/`false` force it |
+| `tool_result_digest_enabled` | `None` (`:857`) | same tri-state for distilling raw tool results |
+| `llm_extractor_timeout_sec` | `8.0` (`:699`) | the memory keyword extractor's own ceiling, so a hung extractor cannot hold the pre-chat phase open for the tool-execution timeout (`engine.py:1094`) |
+| `embedding_provider` | `""` (`config.py:671`) | `""` = follow `llm_provider`; or `"ollama"`, `"openai_compatible"`, `"gemini"` (`"google"` accepted as an alias) |
+| `embedding_model` | provider-aware (`:1064`–`:1075`) | `ollama_embed_model` on the Ollama/OpenAI-compatible paths, `gemini-embedding-2` on the Gemini path; set it to `gemini-embedding-001` for the text-only model |
+| `embedding_base_url` | `""` (`:672`) | per-provider override; the Gemini default is `https://generativelanguage.googleapis.com/v1beta` |
+| `embedding_api_key` | `""` (`:673`) | empty on the Gemini path reads `GEMINI_API_KEY`, then `GOOGLE_API_KEY`; the chat key is never reused |
 
 **The vector index is 768 floats wide, and embedding backends are pinned to
-it.** The sqlite-vss table is declared `vss0(vec(768))` (`db.py:69`) and the
+it.** The sqlite-vss table is declared `vss0(vec(768))` (`db.py:69`), the
 fallback store is constructed with `dimension=EMBEDDING_DIMENSION` (`db.py:135`,
-the constant lives in `utils/embedding_vector.py`). Neither can be migrated in
+the constant lives in `utils/embedding_vector.py`), and the Postgres store
+declares `embedding vector(768)` with `EMBEDDING_DIM = 768`
+(`pg.py:32`). Neither can be migrated in
 place, so the dimension is a storage contract rather than a config key: the
 Gemini client sends `outputDimensionality: 768` and discards any vector that
 comes back a different length (`llm/gemini.py`). The pure-Python fallback store
@@ -242,7 +287,18 @@ when a summary is indexed (`conversation.py:356`, `:616`, `:1838`) and
 usage is measurably worse for retrieval. A failed embed is logged and falls back
 to keyword search; it never writes a vector of the wrong shape.
 
-**The vault path has an environment override:** `CLAIRE_VAULT_DIR`
+**The Postgres DSN lives outside the repository.** The two DSNs are
+`~/.config/claire/pg.env` (mode 0600, containing a password): `CLAIRE_PG_DSN`
+for the production database and `CLAIRE_PG_TEST_DSN` for the test database.
+Never print, log or quote a DSN. The systemd user units pick the file up through
+a drop-in `~/.config/systemd/user/<unit>.service.d/pg-env.conf` whose
+contents are `EnvironmentFile=-%h/.config/claire/pg.env`. Resolution order in
+`resolve_dsn()` (`pg.py:155`) is explicit argument, then `CLAIRE_PG_DSN` in the
+environment, then `config.json`'s `pg_dsn`, then the file, then assembled
+`CLAIRE_PG_*` parts. The runbook in [`docs/PGVECTOR.md`](../PGVECTOR.md) has the
+installation and migration commands.
+
+**The legacy vault path has an environment override:** `CLAIRE_VAULT_DIR`
 (`notes.py:81`). Resolution order is explicit argument, then the environment
 variable, then the `vault_dir` config key, then the built-in default
 (`notes.py:145`–`:153`). The environment variable outranks the config file on
@@ -250,10 +306,15 @@ purpose, as the per-run override a test or a one-off command can rely on
 (`notes.py:141`–`:143`). The router's byte
 cap is not a config key: it is `ROUTER_BUDGET_BYTES` = 6000 (`notes.py:93`),
 overridable per file by the router's own `budget_bytes` frontmatter
-(`router.py:238`).
+(`router.py:242`). The Postgres router row carries the same `budget_bytes`
+field, and the byte cap applies identically.
 
 ## Extension points
 
+- **A new memory backend.** `_memory_backend()` (`system_prompt.py:176`) is the
+  single selector, and `load_router_from_vault` (`:204`) is the single seam the
+  prompt path goes through. A new store must return an object exposing
+  `render_for_prompt() -> str`; anything else in the prompt path is shared.
 - **A new memory store or a fifth branch.** `FIXED_BRANCHES`
   (`graph.py:124`) is the one place the taxonomy is declared; `FIXED_BRANCH_IDS`
   (`:148`) and `_ensure_root` (`:268`) seed it idempotently. Adding a branch is
@@ -261,28 +322,34 @@ overridable per file by the router's own `budget_bytes` frontmatter
 - **Reacting to graph writes.** `register_graph_mutation_listener`
   (`graph.py:38`) is the observer seam; callbacks get `action`, `node_id` and
   `branch`, and listener exceptions are swallowed. The only production listener
-  is the warm-profile cache invalidation in `_invalidate_wp_on_graph_mutation`,
-  wired in `daemon.main`.
+  is the warm-profile cache invalidation in `_invalidate_wp_on_graph_mutation`
+  (`daemon.py:1775`), wired in `daemon.main`.
 - **Serving a router into a prompt.** Anything exposing
   `render_for_prompt() -> str` can be passed to `build_system_prompt`
-  (`system_prompt.py:330`); `load_default_router=True` forces the vault read,
+  (`system_prompt.py:391`); `load_default_router=True` forces the read,
   `None` reads it only when it already exists, and `False` leaves the legacy
-  prompt (`:261`–`:327`).
+  prompt (`_resolve_memory_section`, `:301`–`:389`). This is exactly the
+  contract `PostgresMemoryRouter` satisfies by subclassing the file router.
+- **A new document kind.** `upsert_document` (`pg.py:433`) and the
+  `memory_documents.doc_kind` column are the extension point; the unique partial
+  index keeps at most one `'router'` row.
 - **Vault tooling.** `obsidian.py` owns vault shape, not storage:
   `describe_vault` (`:132`), `is_obsidian_vault` (`:151`), `ensure_vault`
   (`:157`), wiki-link helpers (`wiki_link` `:189`, `extract_wiki_links` `:209`,
   `link_targets_in_text` `:219`, `resolve_wiki_link` `:239`) and
-  `validate_note_document` (`:260`). It is wired into the panel, which calls
-  `describe_vault` for the vault tab (`panel/server.py:1982`), the wiki-link
-  helpers and validator when reading a note (`:2083`–`:2088`), `ensure_vault`
-  before a write (`:2227`) and `link_targets_in_text` for backlinks (`:3524`).
+  `validate_note_document` (`:260`). It is wired into the panel
+  (`src/claire/panel/server.py`), which calls `describe_vault` for the vault
+  tab, the wiki-link helpers and validator when reading a note, `ensure_vault`
+  before a write and `link_targets_in_text` for backlinks.
   Nothing on the reply path imports it. `unreferenced_notes`
   (`notes.py:688`) counts `[[name]]`, `notes/name.md` and `name.md` pointers
   (`notes.py:674`, `:699`), which is what keeps the Obsidian-shaped vault and the
-  router-honesty report agreeing.
-- **Panel surfaces.** `PanelState.router_status` (`panel/server.py:1731`),
-  `.diary` (`:1892`), `.memory_notes` (`:1971`) and `.memory_search` (`:2110`)
-  expose the vault and diary read-only to the browser; the graph explorer and
+  router-honesty report agreeing. All of this describes the legacy path and the
+  export format, not the live store.
+- **Panel surfaces.** In `src/claire/panel/server.py`, `PanelState.router_status`
+  (with its Postgres branch, `_router_status_postgres`), `.diary`,
+  `.memory_notes` and `.memory_search`
+  expose the store and diary read-only to the browser; the graph explorer and
   the maintenance sweeps live in `src/desktop_app/memory_viewer.py`
   (`get_graph_store`, and `diary_scrub_deflections` / `diary_optimise_topics`
   for the rewrite and topic sweeps).
@@ -296,7 +363,7 @@ Only behaviours the code actually implements are listed.
 
 - **SQLite is busy or locked.** The writer lock is an in-process `RLock`
   (`db.py:115`); cross-process contention is left to SQLite. The daemon only
-  starts a diary flush when it holds the chat-query lock (`daemon.py:1740`), so
+  starts a diary flush when it holds the chat-query lock (`daemon.py:1998`), so
   a user reply is never serialised behind a multi-minute summarisation; a
   skipped tick is retried on the next 60 s cycle. A failed write rolls back
   (`db.py:353`).
@@ -304,36 +371,51 @@ Only behaviours the code actually implements are listed.
   connection and re-raises if `_init_schema` fails (`db.py:145`–`:149`), so the
   daemon fails at start-up rather than running with a half-built store. The
   graph store is opened separately and any boot failure there is logged as
-  non-fatal (`daemon.py:1567`–`:1575`).
+  non-fatal (`daemon.py:1815`–`:1820`).
 - **sqlite-vss is missing or fails to load.** The flag simply stays false and a
   FAISS or Python store at 768 dimensions is used instead (`db.py:119`–`:135`,
-  `:152`); `has_vector_store` reports which. If no store exists at all, the
-  code takes the FTS-only or newest-rows paths (`db.py:225`–`:246`).
-- **Embedding backend fails or times out.** `_embed_text`
-  (`conversation.py:74`) returns `None` on any failure; the diary write still
+  `:152`); `has_vector_store` then decides whether an embedding is attempted at
+  all. The diary still reads correctly: search takes the FTS-only or newest-rows
+  code paths (`db.py:225`–`:246`).
+- **Embedding backend fails or times out.** `embedder.embed_text`
+  (`embedder.py:84`) returns `None` on any failure and the diary fallback
+  `_embed_text` (`conversation.py:74`) does the same; a diary write still
   succeeds and retrieval falls back to keywords. An embedding refresh is
-  best-effort in the sweeps too.
-- **The graph tables are absent.** They are not assumed: `GraphMemoryStore`
-  creates `memory_nodes` on first open (`graph.py:216`, `:262`), then
-  `_ensure_root` seeds root and the three branches (`:268`). Absence is a
-  first-run, not an error.
-- **A legacy graph shape.** `migrate_legacy_shape` (`graph.py:308`) wipes and
-  re-seeds the whole `memory_nodes` table when root has a non-fixed child or
-  root's own `data` is non-empty. It runs only from daemon start-up
-  (`daemon.py:1570`); the viewer and reply engine open the same store without
-  triggering it. The diary is untouched, so the graph is rebuilt by
-  "Import from Diary" in the memory viewer.
-- **The vault is missing.** The reply engine passes
-  `load_default_router=True`, and `load_router` defaults to `create=True`, so
-  the missing file is created from the template (`router.py:115`, `:344`);
-  creation is reported, never silent. A vault directory is returned even when
-  it does not exist yet (`notes.py:153`); `create_note` creates it on demand.
-- **The vault is unreadable or not decodable.** A real read failure raises a
-  named error (`RouterReadError` / `RouterDecodeError`, `router.py:67`–`:71`)
+  best-effort in the sweeps too. The per-turn budget is clamped because a cold
+  backend was measured in seconds while a warm one is milliseconds.
+- **The memory database is unavailable or not migrated.** In `postgres` mode a
+  missing or unreachable database surfaces as a visible
+  `[memory-unavailable]` section rather than silent amnesia:
+  `_resolve_memory_section` turns the raise from `load_router_from_postgres`
+  into that marker (`system_prompt.py:301`, `:273`, `:132`). An empty router
+  render becomes `[memory-empty]`, and an over-budget one is prefixed with
+  `[memory-over-budget]` (`system_prompt.py:133`, `:134`).
+  `pg.health` (`pg.py:298`) is the reachability probe the self-check uses.
+- **The router row is absent.** `router_exists` (`pg_router.py:85`) reports it.
+  An automatic (`load_default_router=None`) read returns nothing rather than
+  fabricating a document, so a machine with no router row keeps a prompt without
+  the memory section; a forced read raises `RouterNotFoundError` from `reload`
+  (`pg_router.py:55`), which becomes `[memory-unavailable]`. The router is
+  created by the importer or from the panel, never silently.
+- **The router is over budget.** The body is truncated at a line boundary and a
+  loud warning naming the real size, budget and dropped bytes is prepended
+  (`router.py:195`, `:99`–`:107`). `size_bytes`/`over_budget`/`dropped_bytes`
+  describe the document, not the last render (`:242`–`:262`). The Postgres
+  router inherits this path unchanged.
+- **The vault is missing (legacy path only).** When the backend is `vault`, the
+  reply engine passes `load_default_router=True`, and `load_router` defaults to
+  `create=True`, so the missing file is created from the template
+  (`router.py:115`, `:348`); creation is reported, never silent. A vault
+  directory is returned even when it does not exist yet (`notes.py:153`);
+  `create_note` creates it on demand.
+- **The vault is unreadable or not decodable (legacy path only).** A real read
+  failure raises a named error (`RouterReadError` / `RouterDecodeError`,
+  `router.py:67`, `:71`)
   and `build_memory_section` turns it into a visible
   `[memory-unavailable]` section instead of an empty prompt
-  (`system_prompt.py:223`–`:247`). An empty render becomes `[memory-empty]`.
-- **The note index is missing.** `_require_notes_dir` (`notes.py:397`–`:408`)
+  (`system_prompt.py:273`). An empty render becomes `[memory-empty]`.
+- **The note index is missing (legacy path only).** `_require_notes_dir`
+  (`notes.py:397`–`:408`)
   raises a `NotesDirectoryError` naming the directory rather than returning an
   empty list; it is reached from `list_notes` (`:501`), `search_notes`
   (`:585`), `unreferenced_notes` (`:688`), `update_note` (`:880`) and
@@ -342,22 +424,19 @@ Only behaviours the code actually implements are listed.
   (`:529`, `:535`). A note name that would
   escape the vault is refused twice: at normalisation (`:328`) and again at
   path resolution (`:378`–`:394`).
-- **The router is over budget.** The body is truncated at a line boundary and a
-  loud warning naming the real size, budget and dropped bytes is prepended
-  (`router.py:195`, `:99`–`:107`). `size_bytes`/`over_budget`/`dropped_bytes`
-  describe the file, not the last render (`:238`–`:258`).
 - **Graph extraction fails.** It is wrapped so the diary write still counts as
   success (`conversation.py:2209`). The semantic fact review fails closed for
   the graph cycle: an unavailable or malformed review returns no facts rather
   than unreviewed ones (`graph_ops.py:88`, `:112`).
 - **The recall gate fails.** Any exception is caught and treated as "recall"
-  (`engine.py:1178`–`:1179`), and a stopword-only or empty query cannot justify a skip
+  (`engine.py:1329`), and a stopword-only or empty query cannot justify a skip
   (`recall_gate.py:71`–`:74`).
 
 ## Where the tests live
 
 | Area | Test files |
 |---|---|
+| Postgres store, importer and Postgres router | `tests/test_memory_pg.py`, `tests/test_memory_pg_router.py` |
 | Diary store, hybrid retrieval, embeddings | `tests/test_hybrid_memory_search.py`, `test_diary_embedding_failure.py`, `test_diary_embedding_freshness.py`, `test_diary_fallback_index.py`, `test_embedding_timeout_wiring.py`, `test_diary_summary_identity.py` |
 | Summariser, flush and hygiene | `test_diary_enrichment_flow.py`, `test_diary_generation_budget.py`, `test_diary_pending_batches.py`, `test_diary_poisoning_defence.py`, `test_diary_summary_identity.py`, `test_diary_graph_logging.py`, `test_diary_import.py` |
 | Maintenance sweeps | `test_diary_rewrite_sweep.py`, `test_diary_topic_optimise.py`, `test_memory_viewer_diary_scrub_api.py`, `test_memory_viewer_diary_optimise_api.py` |
@@ -369,7 +448,10 @@ Only behaviours the code actually implements are listed.
 
 `test_memory_notes.py` monkeypatches `CLAIRE_VAULT_DIR` away from the real data
 directory, and `test_memory_router.py` works entirely in `tmp_path`, so neither
-reads the owner's vault.
+reads the owner's vault. The pre-existing suite pins `vault` explicitly in
+`tests/conftest.py`; tests that exercise Postgres opt in with
+`monkeypatch.setenv("CLAIRE_MEMORY_BACKEND", "postgres")` and skip themselves
+when the test database is unreachable.
 
 ## Documentation drift
 
@@ -391,14 +473,15 @@ it stands. Both sides are given.
    diary system remains the primary memory system for now; the graph is a v2
    system being built in parallel". The same file records the default flipping
    to include graph recall (`graph.spec.md:190`), and the shipped default is
-   `"memory_enrichment_source": "all"` (`src/claire/config.py:755`), with the
-   warm profile injected on every turn (`src/claire/reply/engine.py:1608`).
+   `"memory_enrichment_source": "all"` (`src/claire/config.py:846`), with the
+   warm profile injected on every turn (`src/claire/reply/engine.py:1760`).
 
-3. **The vault-shape comments point at `docs/OBSIDIAN.md`.** `src/claire/config.py:110`,
+3. **The vault-shape comments point at `docs/OBSIDIAN.md`.** `src/claire/config.py:122`,
    `src/claire/memory/notes.py:30` and `src/claire/memory/obsidian.py:46` all
-   cite that page, which is the reader-facing companion to `obsidian.py`; it is
-   present in `docs/` in this working tree. If it is ever moved, those three
-   comments move with it.
+   cite that page as the reader-facing companion to `obsidian.py`. That page is
+   now scoped to the retired vault and the one-way export, so the comments
+   describe the legacy path only; the live store is documented in
+   [`docs/PGVECTOR.md`](../PGVECTOR.md) and [`docs/MEMORY.md`](../MEMORY.md).
 
 ## Not covered here
 

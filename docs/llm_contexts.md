@@ -2,7 +2,7 @@
 
 Every distinct LLM call in Claire, what feeds it, what consumes it, and how it is gated. This is the reference for optimising the app's main bottleneck (LLM latency). Keep it in sync with the code — see the note at the bottom.
 
-> **Backend abstraction.** Every context below routes through `claire.llm` ([spec](../src/claire/llm/llm.spec.md)) via `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. Picking `llm_provider: openai_compatible` swaps the wire shape end-to-end without touching call sites. The default route is OmniRouter (`llm_base_url: http://127.0.0.1:20129/v1`, key from `OMNIROUTE_API_KEY`); `llm_provider: ollama` is the offline fallback. The active chat model is read directly from `cfg.llm_chat_model` (the `Settings` field that always carries the resolved value, populated by config-load from `ollama_chat_model` when the provider-aware key is left empty).
+> **Backend abstraction.** Every context below routes through `claire.llm` ([spec](../src/claire/llm/llm.spec.md)) via `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. Picking `llm_provider: openai_compatible` swaps the wire shape end-to-end without touching call sites. The default route is OmniRouter (`llm_base_url: http://127.0.0.1:20129/v1`, key from `OMNIROUTE_API_KEY`); `llm_provider: ollama` is the offline fallback. The active chat model is read directly from `cfg.llm_chat_model` (the `Settings` field that always carries the resolved value, populated by config-load from `ollama_chat_model` when the provider-aware key is left empty). Embedding contexts resolve `cfg.embedding_model` and `cfg.embedding_provider` in the same shape (see #16, #17 and #18); an `embedding_provider` of `""` inherits `llm_provider`.
 
 **Ollama reasoning controls (Ollama backend only).** Across direct, streaming and agentic chat contexts, canonical GPT-OSS models receive `think: "low"` for a false thinking flag and `think: "high"` for a true flag. Explicit named `think` overrides are preserved. GPT-OSS reasoning cannot be switched off. Other models retain their boolean controls; context prompts, tiers, deadlines and token caps are unchanged by this translation. These controls do not apply to the OmniRouter/OpenAI-compatible route.
 
@@ -16,7 +16,7 @@ Every distinct LLM call in Claire, what feeds it, what consumes it, and how it i
 - **Inputs**:
   - Redacted user query
   - Recent dialogue (last 5 minutes), including in-loop tool-call + tool-role messages from prior replies within the active conversation (tool carryover, `DialogueMemory.record_tool_turn` / `get_recent_turns_with_tools` in [src/claire/memory/conversation.py](../src/claire/memory/conversation.py); per-prompt cap via `cfg.tool_carryover_max_turns` / `tool_carryover_per_entry_chars`; storage cap `_tool_turns_max_storage = 16`; cleared on `stop` signal AND on new-conversation entry; UNTRUSTED WEB EXTRACT fence markers preserved on truncation; both `content` and `tool_calls[*].function.arguments` scrubbed on write)
-  - Unified system prompt from [src/claire/system_prompt.py](../src/claire/system_prompt.py) + ASR note + tool-protocol guidance
+  - Unified system prompt from [src/claire/system_prompt.py](../src/claire/system_prompt.py) + ASR note + tool-protocol guidance. It carries the **always-loaded memory block** (`## Memory (always loaded)`, `build_memory_section()`), rendered every turn by `MemoryRouter.render_for_prompt()` ([src/claire/memory/router.py](../src/claire/memory/router.py)) from the router document, which `PostgresMemoryRouter` serves through `pg.get_router()` ([src/claire/memory/pg_router.py](../src/claire/memory/pg_router.py)) when the memory backend is `postgres`; re-rendering each turn keeps it out of the history, so it costs zero history tokens. Past the router's byte budget the block is truncated at a line boundary and prefixed with a loud notice naming the real size, the budget and the dropped bytes. The notice describes the router itself rather than any file or directory, so the same notice holds whichever backend serves the document.
   - **Warm profile block** (query-agnostic User + Directives excerpt from the knowledge graph, composed by `build_warm_profile()` / `format_warm_profile_block()` in [src/claire/memory/graph_ops.py](../src/claire/memory/graph_ops.py) at Step 3.5 of `reply()`; no LLM call, pure SQLite read; injected unconditionally so personalisation is the default; result cached in `DialogueMemory._hot_cache` under `DialogueMemory.WARM_PROFILE_CACHE_KEY` for the lifetime of the active conversation. Invalidated on `stop`, on new-conversation entry, AND on User/Directives graph mutations via the listener registered in [src/claire/daemon.py](../src/claire/daemon.py) against `register_graph_mutation_listener` in [src/claire/memory/graph.py](../src/claire/memory/graph.py); World-branch writes are ignored)
   - Digested memory enrichment (optional, see #4)
   - Time + location context (computed once per reply, placed at the END of the system message's dynamic region — never the head — so every in-loop call sends a byte-identical system message and the server's KV/prefix cache can reuse the whole prompt head; in text-tools mode it sits just before the tool-call syntax guidance so the instruction block stays final)
@@ -203,6 +203,38 @@ Every distinct LLM call in Claire, what feeds it, what consumes it, and how it i
 - **Output**: `ServerCapabilities{reachable, chat, tools, embeddings, models}`. Consumed only by the wizard to render an honest capability summary and offer the Ollama-embeddings fallback. Never persisted.
 - **Limits**: `timeout_sec` default 8s per sub-request. Issues up to two `/chat/completions` calls (plain + tool), one `/embeddings`, one `/models`. Fail-soft: every error collapses to a `False` flag; a `ConnectionError` short-circuits to `reachable=False`.
 
+## 16. Memory Embeddings (Postgres and pgvector store)
+
+- **File**: [src/claire/memory/embedder.py](../src/claire/memory/embedder.py): `embed_text()` (`:84`) is the one call path, `embed_document()` (`:137`) embeds text destined for storage, `embed_query()` (`:148`) embeds a search query, and `model_name()` (`:65`) / `provider_name()` (`:71`) resolve the route. Call sites are in [src/claire/memory/pg.py](../src/claire/memory/pg.py): `_replace_chunks()` (`:528`) on write, `search()` (`:743`) and `semantic_search()` (`:675`) on read.
+- **Trigger**: every write that produces a new or changed chunk, and every query that needs a vector. Writes arrive from the Markdown importer ([src/claire/memory/migrate_md_to_pg.py](../src/claire/memory/migrate_md_to_pg.py), `:260`), `PostgresMemoryRouter.save()` ([src/claire/memory/pg_router.py](../src/claire/memory/pg_router.py), `:71`) and the panel memory editor ([src/claire/panel/server.py](../src/claire/panel/server.py), `:2293`). The read path is the panel memory search, which calls `pg.search()` ([src/claire/panel/server.py](../src/claire/panel/server.py), `:2242`); `semantic_search()` is the vector-only sibling. This context is off the reply loop: at reply time the store supplies the always-loaded router document through `pg.get_router()`, which embeds nothing.
+- **Model / gating**: the embedding route, not a chat tier. `embedder.model_name()` takes the resolved `cfg.embedding_model` and `embedder.provider_name()` takes `cfg.embedding_provider`, inheriting `cfg.llm_provider` when that is empty, and both are handed to `get_embedding_backend(cfg)`. No flag gates the call, and blank text short-circuits to `None`.
+- **Inputs**: `chunk.content` on write and the query string on read. No dialogue, no system prompt, no tool schemas.
+- **Output**: a `pgvector.Vector` of `EMBEDDING_DIM = 768` ([src/claire/memory/embedder.py](../src/claire/memory/embedder.py), `:30`), matching `EMBEDDING_DIM` in [src/claire/memory/pg.py](../src/claire/memory/pg.py) (`:32`) and the `vector(768)` column. Each row records `embed_model`, `embed_provider` and `embedded_at` beside the vector.
+- **Limits**: `DEFAULT_TIMEOUT_SEC = 1.0` ([src/claire/memory/embedder.py](../src/claire/memory/embedder.py), `:27`), clamped so a cold model cannot stall a turn. Cold start is 2.18s against 6-15 ms warm. `task_type` is `RETRIEVAL_DOCUMENT` on write and `RETRIEVAL_QUERY` on read.
+- **Dimension guard**: a vector whose length is not `EMBEDDING_DIM` is refused rather than stored, so a changed model cannot silently mix incomparable spaces.
+- **Degradation**: `embed_text()` returns `None` and logs instead of raising. `search()` then falls back to `keyword_search()`, and `semantic_search()` returns `[]`.
+- **Re-embedding**: `_replace_chunks()` re-embeds a chunk only when its `content_sha256` changed or it has no vector, so an unchanged import costs no call. Rows still awaiting a vector are indexed by the partial index `memory_chunks_pending_embedding_idx` on `(document_id, chunk_index) WHERE embedding IS NULL` ([src/claire/memory/pg.py](../src/claire/memory/pg.py), `:110`), which is what makes a backfill cheap. Cosine search rides the HNSW index `memory_chunks_embedding_hnsw_idx` (`:106`).
+
+## 17. Diary Embeddings (SQLite conversation store)
+
+- **File**: [src/claire/memory/conversation.py](../src/claire/memory/conversation.py), `_embed_text()` (`:74`), which calls `get_embedding_backend(cfg).embed(text, cfg.embedding_model, ...)` (`:95`). This is a separate store from #16: SQLite, with `conversation_summaries` and its `summaries_fts` FTS5 mirror ([src/claire/memory/db.py](../src/claire/memory/db.py), `:37`, `:47`).
+- **Trigger**: diary writes and rewrites, and both diary retrieval paths. Write: `generate_conversation_summary()` (`:1836`). Maintenance rewrites: `rewrite_all_diary_summaries()` (`:354`) and `optimise_diary_topics()` (`:614`). Reads: `search_conversation_memory_by_keywords()` (`:1906`), whose query is the cleaned keywords joined with spaces (`:1899`), and `search_conversation_memory()` (`:1997`), which embeds the natural-language query. The keyword read runs inside memory enrichment (#3) and the write runs in the background summariser (#9).
+- **Model / gating**: `cfg.embedding_model` through `get_embedding_backend(cfg)`. `_embed_text()` reads `cfg.embedding_model` directly rather than through `embedder.model_name()`, and it does not apply the 768-dimension guard that #16 applies; the diary store's own layer rejects a wrong width. A write additionally requires `db.has_vector_store` ([src/claire/memory/db.py](../src/claire/memory/db.py), `:152`), which is true when sqlite-vss is loaded or a local fallback index exists; a read requires only a non-empty `cfg.embedding_model`.
+- **Inputs**: the current summary and topics from `db.get_summary_embedding_text()` (`:1835`) on write, and the search query on read.
+- **Output**: a plain `list[float]`, JSON-encoded for `db.search_hybrid()` on read and for `db.upsert_summary_embedding()` on write. The write vector's publication rules live in #9 (`Embedding publication`), and the index boundaries live in #3.
+- **Limits**: `timeout_sec` defaults to 15s in `_embed_text()`; the reply path passes `cfg.llm_embedding_timeout_sec` (default 5s) from `run_reply_engine` ([src/claire/reply/engine.py](../src/claire/reply/engine.py), `:1495`). `task_type` is `RETRIEVAL_DOCUMENT` on write and `RETRIEVAL_QUERY` on both reads.
+- **Degradation**: any failure returns `None` and is logged, and the caller falls back to FTS-only through `db.search_hybrid(query, None, ...)`.
+
+## 18. Tool-selection Embeddings (optional strategy)
+
+- **File**: [src/claire/tools/selection.py](../src/claire/tools/selection.py), `_select_embedding()` (`:192`), dispatched by `select_tools()` (`:431`) only when `tool_selection_strategy == "embedding"`.
+- **Trigger**: in the tool-router slot (#7), before the planner. `run_reply_engine` calls `select_tools()` at [src/claire/reply/engine.py](../src/claire/reply/engine.py) `:1164`, and the mid-loop tool searcher reuses the same dispatcher at [src/claire/tools/builtin/tool_search.py](../src/claire/tools/builtin/tool_search.py) `:72`. Off by default: `tool_selection_strategy` defaults to `"llm"`.
+- **Model / gating**: `cfg.embedding_model` through the embedding backend wired at [src/claire/reply/engine.py](../src/claire/reply/engine.py) `:1172`. The query is embedded as `RETRIEVAL_QUERY` (`:208`) and each tool's name-plus-description summary as `RETRIEVAL_DOCUMENT` (`:233`).
+- **Inputs**: the user query once, then one embedding request per candidate tool. The catalogue is embedded on every call, not cached.
+- **Output**: a ranked tool-name list, cut at similarity `>= top_sim * _RELATIVE_THRESHOLD` with a `_MIN_SELECTED` floor, then the always-included tools unioned back in (`:257` to `:265`).
+- **Limits**: `embed_timeout_sec` from `cfg.llm_embedding_timeout_sec` ([src/claire/reply/engine.py](../src/claire/reply/engine.py), `:1174`). The cost is one embedding request per candidate tool on every invocation.
+- **Degradation**: a failed query embedding returns every tool name; failed tool embeddings are skipped, and an empty similarity list also returns every tool name.
+
 ---
 
 ## Frequency / Size Summary
@@ -225,6 +257,9 @@ Every distinct LLM call in Claire, what feeds it, what consumes it, and how it i
 | 12 | Planner (plan_query) | 1 | yes (planner_enabled) | LARGE/SMALL (tracks chat model) |
 | 13 | Plan step resolver | 0-N (SMALL only) | auto by size + plan | tracks chat model (CHAT tier; runs only when that model is SMALL) |
 | 14 | Tool-specific | per-tool | n/a | LARGE |
+| 16 | pgvector memory embeddings | 0 (panel search and document writes only) | No | EMBEDDING |
+| 17 | Diary embeddings | 0-2 (background write, enrichment query) | gated by `embedding_model` and the vector store | EMBEDDING |
+| 18 | Tool-selection embeddings | 0-1 when enabled | `tool_selection_strategy: embedding` | EMBEDDING |
 
 ## Size-aware auto switches
 
@@ -240,8 +275,9 @@ Driven by `detect_model_size(model_name) → SMALL (≤7.5B) | LARGE (>7.5B)` �
 ## Config keys
 
 - Models: `llm_chat_model` (CHAT tier), `fast_model` (FAST tier). Every context resolves via `resolve_model(cfg, tier)`. Legacy on-disk keys (`ollama_chat_model` as a v1 → v2 alias; `intent_judge_model` / `tool_router_model` / `evaluator_model` / `planner_model` folded into `fast_model` by the v2 → v3 migration) are readable but no longer part of `Settings`.
+- Embedding route: `embedding_model`, `embedding_provider`, `embedding_base_url`. The config-file default for `embedding_model` is `""`, meaning resolve from the provider, and config-load always stores a concrete value on `Settings`: the Gemini default embedding model on the `gemini` route, otherwise `ollama_embed_model` (`"nomic-embed-text"` by default). The v2 migration copies `ollama_embed_model` into `embedding_model` when the latter is unset. `embedding_provider` of `""` inherits `llm_provider`. Used by #16, #17 and #18.
 - Flags: `memory_digest_enabled`, `tool_result_digest_enabled`, `llm_thinking_enabled`, `intent_judge_thinking_enabled`, `intent_judge_skip_on_wake_word`, `tool_selection_strategy`, `low_power_mode`
-- Timeouts: `llm_chat_timeout_sec` (45s), `llm_tools_timeout_sec` (15s), `llm_extractor_timeout_sec` (8s, the memory extractor only), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_embedding_timeout_sec` (5s), `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s)
+- Timeouts: `llm_chat_timeout_sec` (45s), `llm_tools_timeout_sec` (15s), `llm_extractor_timeout_sec` (8s, the memory extractor only), `llm_digest_timeout_sec` (8s, shared across #4/#5/#6), `llm_embedding_timeout_sec` (5s, used by #17 and #18 and the startup embed probe), `intent_judge_timeout_sec` (6s), `planner_timeout_sec` (3s). The pgvector path (#16) does not read this key: it clamps to `DEFAULT_TIMEOUT_SEC` (1s).
 - Caps: `agentic_max_turns` (8), `tool_search_max_calls` (3), `_LLM_MAX_SELECTED` (5), `_DIGEST_MAX_CHARS` (400), `_TOOL_DIGEST_MAX_CHARS` (600). Per-context `max_tokens` caps are listed above; classification budgets include reasoning plus the answer, and rewrite tasks scale with input length.
 - Runtime residency: `low_power_mode` skips startup LLM warmups and shortens Ollama `keep_alive` for intent judge and warmup calls from `"30m"` to `"1m"`. It does not change prompts, model selection, timeouts, or context limits.
 
@@ -262,9 +298,9 @@ Anything that reorders messages between calls, injects a changing value at the h
 ```
 user input
   └─▶ [2] Intent Judge            (voice only, SMALL)
-        └─▶ [7] Tool router (narrows catalogue for the planner)
+        └─▶ [7] Tool router (or [18] embeddings when strategy=embedding; narrows catalogue for the planner)
               └─▶ [12] Planner (gates memory; advisory for the router allow-list)
-                    ├─ plan requests searchMemory  → [3] Enrichment extract → [4] Memory digest (optional)
+                    ├─ plan requests searchMemory  → [3] Enrichment extract → [17] diary query embed → [4] Memory digest (optional)
                     ├─ plan empty (fail-open)      → [3] Enrichment extract → [4] Memory digest
                     └─ plan reply-only             → skip #3 and #4 entirely
                     └─▶ AGENTIC LOOP  (≤ agentic_max_turns)
@@ -276,8 +312,10 @@ user input
                                       └─ content → deliver immediately
                                       └─ if max turns → [6] Max-turn digest
                           └─▶ TTS / output
-                          └─▶ background: [9] summariser → [10] graph extract → [10b] fact hygiene → [11] best-child
+                          └─▶ background: [9] summariser → [17] diary write embed → [10] graph extract → [10b] fact hygiene → [11] best-child
 ```
+
+Embeddings run on their own model and route. [17] runs inside the enrichment and background edges above, [18] replaces the tool router's chat call only when `tool_selection_strategy: embedding`, and [16] never runs in the reply loop: the panel's memory search and document saves drive it.
 
 ## Optimisation ideas (seed list)
 
@@ -322,4 +360,4 @@ When you add or change a context, update `_CALLER_TO_CONTEXT` so it shows up in 
 
 ## Keep this doc in sync
 
-This graph is the reference for LLM-latency optimisation. Treat it as authoritative: whenever code changes affect an LLM call — a new context, a removed one, a changed model/timeout/cap/gating/prompt source, or a new data-flow edge — update this file in the same PR. If the update would be more than a one-line tweak, reflect it in the relevant `*.spec.md` too.
+This graph is the reference for LLM-latency optimisation. Treat it as authoritative: whenever code changes affect an LLM call — a new context, a removed one, a changed model/timeout/cap/gating/prompt source, or a new data-flow edge — update this file in the same PR. If the update would be more than a one-line tweak, reflect it in the relevant `*.spec.md` too. Embedding calls (#16 to #18) are LLM calls under this rule too, even though they return vectors rather than text.

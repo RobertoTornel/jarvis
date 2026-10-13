@@ -7,16 +7,18 @@ name rather than a persona hardcoded to "Claire".
 
 Always-loaded memory
 --------------------
-The persona prompt also carries Claire's memory **router** — one small main
-file (``<vault>/CLAIRE.md``) that holds pointers, never the facts themselves::
+The persona prompt also carries Claire's memory **router**, one small
+always-loaded document that holds pointers, never the facts themselves::
 
     build_system_prompt("Claire", load_default_router=True)
 
+By default the router is a row in the Postgres memory store; with the memory
+backend set to ``vault`` it is the file ``<vault>/CLAIRE.md`` instead.
+
 House rules this module implements:
 
-* the router is re-read **from disk on every assembly**, so memory is never
-  stale and correcting the file corrects behaviour on the very next reply, with
-  no restart;
+* the router is re-read **on every assembly**, so memory is never stale and
+  correcting it corrects behaviour on the very next reply, with no restart;
 * the rendered text is folded into the **system prompt** rather than appended
   as a chat message, so it costs a constant number of tokens per turn instead
   of growing the conversation history without bound (and quietly rotting it);
@@ -26,7 +28,7 @@ House rules this module implements:
   silently, and the persona prompt stays usable regardless;
 * ``router=None`` (the default) changes nothing for existing callers: the
   legacy prompt is returned byte-for-byte unless a router is supplied or the
-  default vault is asked for *and* actually holds a router file.
+  default router is asked for *and* actually exists.
 
 Path decisions are delegated to :mod:`claire.memory.notes`; nothing here
 duplicates vault layout logic, and the router module is imported lazily so a
@@ -36,6 +38,7 @@ this module.
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Tuple
 
 __all__ = [
@@ -136,7 +139,7 @@ _DEFAULT_ROUTER_BUDGET_BYTES: int = 6000
 
 
 class _AutoLoadRouter:
-    """Sentinel meaning "load the router from the default vault"."""
+    """Sentinel meaning "load the router from the configured backend"."""
 
     __slots__ = ()
 
@@ -169,12 +172,51 @@ def resolve_default_router_path():
     return resolve_router_path()
 
 
+_memory_backend_cached: Optional[str] = None
+
+
+def _memory_backend() -> str:
+    """Which long-term memory backend is configured: ``postgres`` or ``vault``.
+
+    ``CLAIRE_MEMORY_BACKEND`` in the environment wins, then ``config.json``.
+    Fails safe to ``postgres`` because the Markdown vault is retired — treating a
+    missing or unknown value as "vault" would point at a directory that no longer
+    exists. A downstream failure then surfaces as a visible
+    ``[memory-unavailable]`` marker rather than silent amnesia.
+
+    The config lookup is cached: this runs once per turn, and re-reading
+    ``config.json`` every turn would be pure overhead.
+    """
+    global _memory_backend_cached
+    env = (os.environ.get("CLAIRE_MEMORY_BACKEND") or "").strip().lower()
+    if env in ("postgres", "vault"):
+        return env
+    if _memory_backend_cached is not None:
+        return _memory_backend_cached
+    try:
+        from .config import load_settings
+
+        raw = str(getattr(load_settings(), "memory_backend", "") or "").strip().lower()
+    except Exception:
+        raw = "postgres"
+    _memory_backend_cached = raw if raw in ("postgres", "vault") else "postgres"
+    return _memory_backend_cached
+
+
 def load_router_from_vault(path=None):
-    """Load the always-loaded router from the default vault, or raise.
+    """Load the always-loaded router from the configured backend, or raise.
 
     Duck-typed on purpose: all this needs is whatever ``load_router(path)``
     returns exposing ``render_for_prompt() -> str``.
+
+    When the memory backend is Postgres there is no file to read: the router is a
+    row in ``memory_documents``, returned as a ``MemoryRouter`` subclass so the
+    rendering, truncation and budget behaviour are unchanged.
     """
+    if path is None and _memory_backend() == "postgres":
+        from .memory.pg_router import load_router_from_postgres
+
+        return load_router_from_postgres()
     module = _load_router_module()
     loader = getattr(module, "load_router", None)
     if not callable(loader):
@@ -224,8 +266,8 @@ def _memory_problem_section(marker: str, problem: str) -> str:
     """A usable, loudly-named memory section for a router that could not render."""
     return (
         f"{MEMORY_SECTION_HEADING}\n\n"
-        f"{marker} memory could not be loaded: {problem}. The router file is "
-        "re-read from disk on every request, so fixing it takes effect on the "
+        f"{marker} memory could not be loaded: {problem}. The router is "
+        "re-read on every request, so fixing it takes effect on the "
         "next reply with no restart."
     )
 
@@ -252,7 +294,7 @@ def build_memory_section(router) -> str:
     if size > budget:
         section += (
             f"\n\n{MEMORY_OVER_BUDGET_MARKER} the memory router renders to {size} "
-            f"bytes, over the {budget}-byte budget. Move detail into note files "
+            f"bytes, over the {budget}-byte budget. Move detail into notes "
             "and leave only pointers here: the router is a router, not a database."
         )
     return section
@@ -269,10 +311,14 @@ def _resolve_memory_section(
 
     * an explicit router object (``router``/``memory_router``) is rendered;
     * ``load_default_router=True`` (or ``router=AUTO_LOAD_ROUTER``) forces a read
-      of ``<vault>/CLAIRE.md``, failures included;
-    * ``load_default_router=None`` is automatic: the vault is read only if a
-      router file already exists there — so a machine with no vault keeps the
-      legacy prompt instead of acquiring a spurious warning.
+      of the configured backend's router, failures included;
+    * ``load_default_router=None`` is automatic: the router is loaded only when
+      it is already provisioned (a row in the store, or the vault file), so a
+      machine with no router keeps the legacy prompt instead of acquiring a
+      spurious warning.
+
+    The backend is the Postgres memory store by default; with the memory backend
+    set to ``vault`` the router is the file ``<vault>/CLAIRE.md`` instead.
 
     ``False`` (the default) never loads, which is what makes the no-argument
     call byte-identical to the pre-memory prompt.  ``None`` is returned when
@@ -292,6 +338,27 @@ def _resolve_memory_section(
         or explicit is AUTO_LOAD_ROUTER
         or load_default_router is True
     )
+
+    if _memory_backend() == "postgres":
+        # There is no vault file to stat any more, so "provisioned" means the
+        # router row exists. Everything downstream — including every marker — is
+        # the same code path, so a database outage reads as
+        # [memory-unavailable] rather than breaking the reply.
+        from .memory.pg_router import router_exists
+
+        if not forced and not router_exists():
+            return None
+        try:
+            loaded = load_router_from_vault()
+        except Exception as exc:
+            return _memory_problem_section(
+                MEMORY_UNAVAILABLE_MARKER, f"{type(exc).__name__}: {exc}"
+            )
+        if loaded is None:
+            return _memory_problem_section(
+                MEMORY_UNAVAILABLE_MARKER, "no router document in Postgres"
+            )
+        return build_memory_section(loaded)
 
     try:
         path = resolve_default_router_path()
@@ -342,10 +409,12 @@ def build_system_prompt(
     Memory: pass *router*/*memory_router* (anything exposing
     ``render_for_prompt() -> str``) to append its rendered text under
     ``## Memory (always loaded)``; pass ``load_default_router=True`` /
-    ``router=AUTO_LOAD_ROUTER`` to force a read of ``<vault>/CLAIRE.md``, whose
-    failures are reported inside the prompt; or pass
-    ``load_default_router=None`` to read that file only when it already exists.
-    With no router supplied the output is the legacy prompt, unchanged.  The
+    ``router=AUTO_LOAD_ROUTER`` to force a read of the configured backend's
+    router, whose failures are reported inside the prompt; or pass
+    ``load_default_router=None`` to load it only when it is already provisioned.
+    That backend is the Postgres memory store by default; with the memory backend
+    set to ``vault`` the router is the file ``<vault>/CLAIRE.md``.  With no
+    router supplied the output is the legacy prompt, unchanged.  The
     router is rendered on **every** call — no caching — so memory is never
     stale; the result is one string for the system prompt, never a new
     conversation message.

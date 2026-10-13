@@ -1,6 +1,6 @@
 # Memory Router
 
-The always-loaded memory file, `<vault>/CLAIRE.md`, and the rules that keep it from rotting.
+The vault backend's always-loaded memory file, `<vault>/CLAIRE.md`, and the rules that keep it from rotting.
 
 A router, not a database. It answers *"what do I know about, and where is it?"* — one line per
 fact, plus pointers into `notes/`. Anything bigger than a line belongs in a note, and only the
@@ -13,6 +13,9 @@ pointer stays here. See [MEMORY.md](../../docs/MEMORY.md) for the owner's guide 
 - Tests: `tests/test_memory_router.py`.
 - Owns: reading, byte-accounting, truncating and rendering `CLAIRE.md`; creating it from the
   built-in template when it is missing.
+- Shared rendering: `PostgresMemoryRouter` ([`pg_router.py`](pg_router.py)) reads the router
+  document from the store and inherits `render_for_prompt()`, the byte accounting and the
+  over-budget warning below; it overrides only the header and the read source.
 - Does **not** own: path resolution or frontmatter parsing — both come from
   [`notes.py`](notes.py) (`resolve_router_path()`, `parse_frontmatter()`,
   `ROUTER_BUDGET_BYTES`, `RouterNotFoundError`). No path logic is duplicated here.
@@ -73,14 +76,15 @@ Over budget, two things happen:
    never sees half a fact. A single first line larger than the whole budget means nothing is kept;
    the warning still says so.
 2. A **loud warning is prepended** (before the header and body), naming the real size, the budget
-   and the exact number of bytes dropped:
+   and the exact number of bytes dropped. The wording describes the router itself, never a file or
+   a directory, so the same notice holds whichever backend stores the document:
 
 ```
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-!! WARNING: YOUR ALWAYS-LOADED MEMORY (CLAIRE.md) IS OVER BUDGET AND WAS TRUNCATED
+!! WARNING: YOUR ALWAYS-LOADED MEMORY ROUTER IS OVER BUDGET AND WAS TRUNCATED
 !! Real size: 8214 bytes. Budget: 6000 bytes. Dropped: 2276 bytes.
-!! Those dropped bytes are NOT being loaded: the end of the file is invisible to me.
-!! Fix it by moving detail into notes/ and keeping only one-line pointers here.
+!! Those dropped bytes are NOT being loaded: the end of the router is invisible to me.
+!! Fix it by shortening the router and keeping detail in separate notes, which are searched on demand instead of always loaded.
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ```
 
@@ -89,10 +93,10 @@ silent. A router that quietly grew to 40 KB would degrade answers for weeks befo
 
 ### Re-read on every request — no caching
 
-`render_for_prompt()` reads the file from disk on **every** call. Nothing is memoised, not even for
-the duration of one object's life: the owner edits `CLAIRE.md`, and the next request already sees
-it. There is no restart, no reload endpoint and no cache to invalidate. Editing the file is the
-whole interface.
+`render_for_prompt()` re-reads the router on **every** call. Nothing is memoised, not even for
+the duration of one object's life: the owner edits `CLAIRE.md` or the router row, and the next
+request already sees it. There is no restart, no reload endpoint and no cache to invalidate.
+Editing the router is the whole interface.
 
 The rendered text is put into the **system prompt** each turn, never appended to conversation
 history. That is what makes it cost zero history tokens: re-rendering is flat, whereas appending

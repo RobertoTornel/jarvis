@@ -131,6 +131,53 @@ def _isolate_user_config_path(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_the_memory_vault(tmp_path_factory, monkeypatch):
+    """Never let a test write into the owner's real data directory.
+
+    The vault backend auto-creates ``CLAIRE.md`` from the built-in template when
+    the file is missing, which is the right behaviour for a fresh install.  It is
+    the wrong behaviour here: the suite selects the vault backend explicitly for
+    the legacy tests, so without this every run would recreate
+    ``~/.local/share/claire/vault`` -- the directory the owner deliberately
+    retired and archived when memory moved to Postgres.
+
+    Tests that pass an explicit ``vault_dir=`` are unaffected (an explicit
+    argument outranks the environment), and a test that monkeypatches
+    ``CLAIRE_VAULT_DIR`` itself still wins, because its patch is applied later.
+    """
+    from claire.memory import notes as _notes
+
+    monkeypatch.setenv(
+        _notes.VAULT_ENV_VAR, str(tmp_path_factory.mktemp("claire-vault"))
+    )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_vault_backend_for_the_existing_suite(monkeypatch):
+    """Pin the Markdown vault as the memory backend for the pre-existing suite.
+
+    Long-term memory moved to Postgres and ``postgres`` is the product default,
+    because a fresh install has no vault to read and a missing database should
+    surface as a named ``[memory-unavailable]`` marker rather than silent
+    amnesia.  Most of this suite, however, was written against the vault: those
+    tests build a temporary vault and assert on the notes in it.  They exercise
+    the legacy compatibility path, which still ships so that a rollback is a flag
+    flip, so they must *select* it explicitly instead of relying on it being the
+    default.
+
+    Tests that exercise Postgres opt in with
+    ``monkeypatch.setenv("CLAIRE_MEMORY_BACKEND", "postgres")``; the environment
+    check in :func:`claire.system_prompt._memory_backend` is what makes that
+    override win over this fixture.  The module-level cache is cleared too, so a
+    test cannot inherit a backend chosen by an earlier test.
+    """
+    monkeypatch.setenv("CLAIRE_MEMORY_BACKEND", "vault")
+    import claire.system_prompt as _system_prompt
+
+    monkeypatch.setattr(_system_prompt, "_memory_backend_cached", None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_control_socket_path(tmp_path_factory, monkeypatch):
     """Keep test instances off the real daemon's control socket.
 

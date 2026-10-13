@@ -121,6 +121,12 @@ class Settings:
     # ``CLAIRE_VAULT_DIR`` still overrides it for a single run.  See
     # ``claire.memory.notes.resolve_vault_dir`` and docs/OBSIDIAN.md.
     vault_dir: str
+    # Long-term memory backend. "postgres" reads/writes the pgvector store
+    # (the source of truth since the vault was retired); "vault" is the
+    # legacy Markdown path, kept only so a rollback is a flag flip.
+    memory_backend: str
+    # Optional DSN override; empty means read CLAIRE_PG_DSN / pg.env.
+    pg_dsn: str
 
     # LLM & AI Models
     # Provider-aware fields (see src/claire/llm/llm.spec.md). The
@@ -639,6 +645,10 @@ def get_default_config() -> Dict[str, Any]:
         # Markdown memory vault. Portable "~/..." form on purpose: this value
         # is shipped in examples/config.json; load_settings() expands it.
         "vault_dir": _default_vault_dir(),
+        # The vault is retired, so "postgres" is the correct default: defaulting
+        # to "vault" would point at a directory that no longer exists.
+        "memory_backend": "postgres",
+        "pg_dsn": "",
 
         # LLM & AI Models
         # Provider-aware fields. Fresh installs default to OmniRouter
@@ -984,6 +994,13 @@ def load_settings() -> Settings:
     vault_dir = (
         _expand_path(merged.get("vault_dir")) or _expand_path(_default_vault_dir())
     )
+    # Fail safe: an unrecognised backend must never silently select an
+    # unverified store, and a missing database must be a visible failure.
+    _memory_backend = str(merged.get("memory_backend", "postgres") or "").strip().lower()
+    if _memory_backend not in ("postgres", "vault"):
+        _memory_backend = "postgres"
+    memory_backend = _memory_backend
+    pg_dsn = str(merged.get("pg_dsn", "") or "").strip()
 
     ollama_base_url = str(merged.get("ollama_base_url"))
     ollama_embed_model = str(merged.get("ollama_embed_model"))
@@ -1343,6 +1360,8 @@ def load_settings() -> Settings:
         db_path=db_path,
         sqlite_vss_path=sqlite_vss_path,
         vault_dir=vault_dir,
+        memory_backend=memory_backend,
+        pg_dsn=pg_dsn,
 
         # LLM & AI Models — provider-aware
         llm_provider=llm_provider,
