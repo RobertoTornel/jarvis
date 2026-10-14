@@ -335,6 +335,14 @@ checker fail. Compare the record's total against a wall clock once, to catch a b
 contain the question or the answer by default, only lengths and flags, and `voice_debug` may be
 required to add text. The write must never block a turn: one bounded write per turn, on a queue.
 
+**In progress, 2026-10-14 (uncommitted and not yet verified).** Implemented in the working tree:
+`src/claire/turn_trace.py` with `turn_trace.spec.md`, stamps at all nine named stages, a bounded
+rotating writer that drops rather than blocks a turn, an inspection command
+`scripts/turn_trace.py`, and `tests/test_turn_trace.py` at 29 of 30 passing — the failing one is the
+writer's drop-on-full-queue test. **The full gate has not been run against it**, so this is a lead,
+not a fact. The session record, including three corrections to this page and the resume commands, is
+[`HANDOVER_SESSION.md`](HANDOVER_SESSION.md).
+
 ### 7.2 An answer-quality eval harness
 
 **What and why.** There is no way to know whether a change made Claire **dumber**, and the problem is
