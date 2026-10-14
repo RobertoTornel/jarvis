@@ -28,6 +28,11 @@ Design principles enforced by the engine:
 1. Redact
    - Redact input to remove sensitive data.
 
+1b. Open the turn's latency trace
+   - `turn_trace.begin_turn(redacted)` creates one `TurnTrace` for the turn and registers it for the router, the planner and the speaker. It holds lengths and flags only; question and answer text is added only when `voice_debug` is on. It never gates or delays the turn. See `src/claire/turn_trace.spec.md`.
+   - The `chat_with_messages` answer call stamps `llm_first_token` / `llm_last_token` and records the model the response says answered (`route_served`, alongside the `route_requested` from `cfg.llm_chat_model`), whether reasoning was present, and its character count. The answer call is not streamed, so the two token stamps coincide on a single-call turn.
+   - Both `return reply` paths call `_close_turn_trace(reply)`, which records the answer's length and schedules the record's write. The voice path speaks after the engine returns, so the listener and the TTS playback thread stamp the two audio stages and finish the record then; a text turn is written a few seconds later by the scheduler.
+
 2. Recent Dialogue Context
    - Include short-term dialogue memory (last 5 minutes) as prior messages.
    - The fetch returns not only user/assistant prose but also **tool-call and tool-result messages** from in-loop work in prior replies within the active conversation (capped per-prompt by `cfg.tool_carryover_max_turns` and `cfg.tool_carryover_per_entry_chars`, fence markers of UNTRUSTED WEB EXTRACT blocks preserved on truncation, payloads scrubbed including `tool_calls[*].function.arguments`). This lets follow-up turns reuse a prior `webSearch` / MCP result instead of re-fetching it. Carryover is captured at the end of each reply (success or error). It survives for the lifetime of the conversation and is cleared on (a) the `stop` tool, and (b) new-conversation entry, when `has_recent_messages()` was False at turn start.
@@ -390,5 +395,10 @@ Behaviour:
 ### Logging and Privacy
 - Use `debug_log` for key steps: `memory`, `planning`, and `voice` categories.
 - Avoid excessive logging; logs must remain readable and privacy-preserving.
+- Per-turn latency is recorded as one line per turn in
+  `~/.local/share/claire/turns.jsonl` (see `src/claire/turn_trace.spec.md`) and
+  mirrored once through `debug_log` under the `trace` category, which prints
+  only when `voice_debug` is on. The record carries no question or answer text
+  unless `voice_debug` is on; with it off there are only lengths and flags.
 
 

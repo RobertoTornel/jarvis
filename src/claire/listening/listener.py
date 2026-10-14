@@ -43,6 +43,7 @@ from .intent_judge import (
     warm_up_chat_model,
 )
 from ..debug import debug_enabled, debug_log
+from .. import turn_trace
 from ..llm import get_embedding_backend
 from ..utils.location import get_configured_city, is_location_available
 from ..utils.redact import redact as redact_secrets
@@ -1966,12 +1967,23 @@ class VoiceListener(threading.Thread):
             self.track_tts_start(reply)
             debug_log(f"starting TTS for reply ({len(reply)} chars)", "voice")
 
+            # The turn's speech starts here — before the TTS worker has
+            # produced a byte — and its first device byte (stamped in the TTS
+            # module from that worker) finishes the latency record. Until that
+            # byte lands, extend the engine's safety window so a slow first
+            # sentence is still recorded rather than truncated at 5 s.
+            turn_trace.mark("speech_start")
+            turn_trace.finish_turn_later(grace_sec=10.0)
+
             self.tts.speak(reply, completion_callback=_on_tts_complete,
                           duration_callback=_on_duration_known)
         else:
             debug_log(f"no TTS output: reply={bool(reply)}, tts={bool(self.tts)}, enabled={getattr(self.tts, 'enabled', False) if self.tts else False}", "voice")
             # Stop thinking tune if no TTS response
             self._stop_thinking_tune()
+            # No audio is coming: close the record now rather than leaving it
+            # to the engine's fallback window.
+            turn_trace.finish_turn_later(grace_sec=1.0)
 
     def _log_turn_latency(self, dispatched_at: float, stt_seconds: Optional[float],
                           reply_seconds: float, query: str) -> None:
@@ -2886,6 +2898,10 @@ class VoiceListener(threading.Thread):
             self._emit_low_confidence(event)
         if not self._transcription_is_current(result.capture_generation):
             return
+        # This utterance's decode is final: that is the turn's transcription
+        # end. The reply engine's trace is created a moment later, and picks
+        # this stamp up as its zero point (see claire.turn_trace).
+        turn_trace.note_transcription_end()
         self._last_detected_language = result.language
         text = result.text
         turn = getattr(result, "turn", None)

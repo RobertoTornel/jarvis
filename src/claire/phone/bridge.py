@@ -97,13 +97,17 @@ because the 411-on-every-GET bug lived precisely in the layer ``handle`` skips.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import re
 import secrets
+import socket
 import stat
+import struct
 import threading
 import time
 from dataclasses import dataclass, field
@@ -174,6 +178,7 @@ __all__ = [
     "default_photo_dir",
     "default_port",
     "is_loopback_host",
+    "is_tailscale_host",
     "media_type",
     "parse_bearer_token",
     "read_request_body",
@@ -752,7 +757,8 @@ class PublicBindRefusedError(PhoneBridgeError):
             f"refusing to bind the phone bridge to {host!r}: that is not a "
             "loopback address",
             remedy=(
-                "Traffic on this bridge is unencrypted plain HTTP, so a public "
+                "This is a non-loopback, non-Tailscale interface. Traffic on this "
+                "bridge is unencrypted plain HTTP, so a public "
                 "interface exposes your utterances, photos and location - and "
                 "the bearer token itself - to anyone on the network. Keep the "
                 f"default ({DEFAULT_HOST}) and reach it through a tunnel (for "
@@ -825,6 +831,40 @@ def is_loopback_host(host: Any) -> bool:
             return False
         return octets[0] == 127
     return False
+
+
+def _tailscale_interface_has_address(address: Any) -> bool:
+    """Best-effort check whether tailscale0 owns an IPv4 address."""
+    if address.version != 4:
+        return False
+    try:
+        request = struct.pack("256s", b"tailscale0"[:15])
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            result = fcntl.ioctl(sock.fileno(), 0x8915, request)  # SIOCGIFADDR
+        return ipaddress.ip_address(result[20:24]) == address
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def is_tailscale_host(host: Any) -> bool:
+    """Return whether *host* is a Tailscale CGNAT address or belongs to tailscale0.
+
+    Tailscale IPv4 addresses live in 100.64.0.0/10.  Also recognize the IPv4
+    address assigned to the conventional ``tailscale0`` interface, so this does
+    not depend on its address remaining within that pool.  Interface probing is
+    best-effort and deliberately Linux-specific; failure is not treated as proof.
+    """
+    if not host:
+        return False
+    text = str(host).strip().strip("[]")
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    tailscale_range = ipaddress.ip_network("100.64.0.0/10")
+    if address.version == 4 and address in tailscale_range:
+        return True
+    return _tailscale_interface_has_address(address)
 
 
 def check_token(expected: Optional[str], supplied: Optional[str]) -> bool:
@@ -923,13 +963,14 @@ def resolve_bind_host(
 ) -> str:
     """Validate a bind host, refusing a public interface unless opted in.
 
-    Loopback binds pass through silently.  A non-loopback host raises
-    :class:`PublicBindRefusedError` — *before* any socket is created — unless
+    Loopback and Tailscale binds pass through silently.  A non-loopback,
+    non-Tailscale host raises :class:`PublicBindRefusedError` — *before* any socket
+    is created — unless
     ``allow_public_bind`` is true, in which case a loud warning in plain words
     says the traffic is unencrypted and a tunnel is the right answer.
     """
     resolved = str(host or "").strip() or DEFAULT_HOST
-    if is_loopback_host(resolved):
+    if is_loopback_host(resolved) or is_tailscale_host(resolved):
         return resolved
     if not allow_public_bind:
         raise PublicBindRefusedError(resolved, port)

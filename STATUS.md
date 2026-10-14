@@ -135,8 +135,8 @@ remaining test runs.
 | Recogniser abort threshold | ~39 frames ≈ 780 ms before `is_ready()` | measured against the real library |
 | Endpoint latency | **0.679 s** (stable, 3 runs) | `scripts/measure_voice_latency.py --only endpoint_latency`; 800 ms configured endpoint window, real model, real wav |
 | Wake latency | *not measured yet* | needs the live microphone; the harness's text-only number (~8 µs) is the matcher's own cost, **not** acoustic wake latency, and is deliberately not presented as such |
-| First-audio latency (Fish) | *not measurable — account has no API credit* | `scripts/measure_voice_latency.py --only first_audio_latency --live-fish`; a live call returned HTTP 402 "Insufficient API credit" |
-| Barge-in latency | *not measurable — same cause* | needs Fish playback, which needs API credit |
+| First-audio latency (Fish) | **0.717 s** (median of 3: 0.717, 0.682, 1.067) | `python scripts/measure_voice_latency.py --only first_audio_latency --live-fish --json --quiet`; recorded in `/home/mana/Documents/Jarvis/optimizations/latency_voice_path.md` §4.4. Network-bound, so there is no local fix. The earlier HTTP 402 "Insufficient API credit" was an account-credit limit on that attempt, not a permanent impossibility |
+| Barge-in latency | *not measured* | Not an API-credit problem any more: first-audio latency measures on the same engine. It needs real Fish playback plus a live microphone, so the harness's `barge_in_latency` was never run (`latency_voice_path.md` §7) |
 | Wake false-positive rate | **0 / 26 ordinary words** wake her | guard suite over `clear, chair, declare, clue, clip, care, layer, player, clay, glare, flare, cheer, share, rare, core, score, card, car, air, lair, pair, hair, bear, pear` plus six ordinary sentences |
 | Wake false-positive rate (harness) | 0.35 — **misleading, see note** | the harness's generated list is synthetic *Claire* variants (`claier`, `clire`, `lcaire`), which are intended true positives, so this number is not a false-positive rate |
 
@@ -155,15 +155,18 @@ recorded here rather than quietly reported as a false-positive rate.
 - No microphone audio has been captured on this machine. Every recogniser
   measurement above is from wav files, not from the live input device. The owner
   chose to leave acoustic wake latency unmeasured for now.
-- **Fish Audio synthesis is blocked by the account's API credit, not by the
-  code.** A live request was authorised and attempted; the API answered
+- **Fish Audio synthesis hit an account-credit limit, not a code fault.** A live
+  request was authorised and attempted; the API answered
   **HTTP 402 "Insufficient API credit. API credit is managed independently from
-  platform credit."** The key authenticated successfully — a rejected credential
-  would be 401 — so the key is good and the API credit balance is empty. This is
+  platform credit."** The key authenticated successfully (a rejected credential
+  would be 401), so the key is good and the API credit balance was empty. This is
   a *different* balance from the platform credit shown in the Fish web UI, which
-  is what made the failure look surprising. Until credit is added, first-audio
-  latency and barge-in latency cannot be measured, and Claire cannot speak with
-  Fish: both must report this rather than pretend.
+  is what made the failure look surprising. The limit applied to that attempt,
+  not permanently: the free-tier model `s2.1-pro-free` answers the same harness,
+  and first-audio latency is measured at **0.717 s** (median of three), so
+  first-audio latency is no longer blocked on credit. Barge-in latency stays
+  unmeasured for a different reason: it needs real playback plus a live
+  microphone, and running it would make Claire speak aloud.
   - The failure path behaved correctly when it happened: the client classified
     402 as a dead key, rotated the pool, reported the exact reason, redacted the
     key to last-4 plus a fingerprint, kept the voice unchanged, and invented no
@@ -230,13 +233,16 @@ Recorded so they are not silently re-litigated later.
    previous default (`gemma4:e2b`) is an Ollama pull name and is not routable
    through OmniRouter. This id was verified reachable through the router. It is a
    provisional choice, revisitable in the panel (Wave 6).
-8. **Fish Audio is wired as config surface in Wave 0 but is not yet the default
-   engine.** `tts_engine` still defaults to `piper`; the Fish fields
+8. **Fish Audio is the default engine.** `tts_engine` defaults to `fish`
+   (`src/claire/config.py` line 731 and line 1108); the Fish fields
    (`fish_voice_id`, `fish_key_file`, `fish_latency`, `fish_model`) exist and
-   `"fish"` validates. The default flips in Wave 1 together with the `FishTTS`
-   engine, because the current TTS factory silently falls back to Piper for an
-   unknown engine name — pointing the default at a non-existent engine would be a
-   silent failure.
+   `"fish"` validates, and Piper and Chatterbox remain as offline fallbacks. An
+   unrecognised engine value is deliberately **not** coerced to a known one:
+   config load passes it through, and the TTS factory raises a `ValueError`
+   naming the supported engines instead of silently speaking in another voice
+   (`src/claire/output/tts.py`). The live config carries no `tts_engine` key at
+   all, so config load resolves the Fish default, and `fish_model` is the free
+   `s2.1-pro-free`.
 9. **Platform-only test suites deleted with their components.** `test_mlx_bundle`,
    `test_mlx_bundle_integration` and `test_install_cuda` exercise files deleted
    under N1 (`installer/`). They assert on `installer/` paths that no longer
@@ -538,13 +544,21 @@ UNMEASURED with a fix for each, exiting non-zero if anything is blocked. Every
 probe is individually guarded, so one exploding probe is reported as a problem
 instead of taking the report down.
 
-The recorded run on this machine: **11 READY, 6 BLOCKED, 3 UNMEASURED.**
+The recorded run on this machine: **16 READY, 1 BLOCKED, 3 UNMEASURED** of 20
+capabilities, the blocked one being `backups` (0 of 4 rotating slots). **Verified**
+by re-running `.venv/bin/python scripts/acceptance_check.py` for this correction,
+which reported `Summary: 16 READY, 1 BLOCKED, 3 UNMEASURED (20 capabilities)` and
+`Exit code: 1`, matching the owner's run on 2026-10-14. The three unmeasured are
+`wake_word`, `tts_synthesis` and `outreach_live`.
 
 The design rule that makes it worth having is that it must not overclaim. A
 capability that cannot be measured here is reported as unmeasurable **with the
-reason**, never as ready: no microphone has ever captured audio, the Fish account
-has no API credit so live speech cannot run, OCR has no engine, and there is no
-camera.
+reason**, never as ready: no microphone has ever captured audio, so `wake_word`
+has no acoustic number; `tts_synthesis` is unmeasured **by policy**, because a
+live synthesis call spends account credit and this check refuses to spend it, so
+it quotes the constant `FISH_LAST_LIVE_RESULT` (`HTTP 402 Insufficient API
+credit`) baked in from an earlier attempt rather than re-checking live; and
+`outreach_live` has no transport configured.
 
 ## Two integration faults found at the end, both real
 

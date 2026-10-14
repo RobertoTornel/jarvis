@@ -72,3 +72,10 @@ everywhere): **14 failed**. Against the real assembler: **14 passed**.
 
 Not wired into `listener.py` or `daemon.py` by design — the module stays
 self-contained until its caller is ready.
+
+## Relationship to the per-turn latency trace
+
+This module assembles the turn; it stamps nothing. The turn's
+`transcription_end` stage is stamped by the listener when it receives the final
+result (`listening.spec.md`, "Per-turn latency trace"), and the reply engine
+opens the rest of the record. See `src/claire/turn_trace.spec.md`.

@@ -227,6 +227,11 @@ CHAT_CANCEL_IPC_PREFIX = "__CHAT_CANCEL__"
 CHAT_NEW_SESSION_IPC_PREFIX = "__CHAT_NEW_SESSION__"
 CHAT_REWIND_IPC_PREFIX = "__CHAT_REWIND__:"
 CHAT_RESTORE_IPC_PREFIX = "__CHAT_RESTORE__:"
+# Per-turn latency records (work item 7.1). The panel asks for the last N and
+# gets them back on the same socket, so "why was that turn slow?" is answered
+# from the UI and not only from the journal; see scripts/turn_trace.py for the
+# same records from a shell.
+TURN_TRACE_IPC_PREFIX = "__TURN_TRACE__:"
 
 # Rejection feedback carries no transcript or confidence payload.
 VOICE_IPC_PREFIX = "__VOICE__:"
@@ -441,6 +446,7 @@ def _handle_control_line(line: str) -> bool:
         handle_chat_new_session_stdin_line,
         handle_chat_rewind_stdin_line,
         handle_chat_restore_stdin_line,
+        handle_turn_trace_stdin_line,
     ):
         try:
             if handler(line):
@@ -1008,6 +1014,66 @@ def handle_chat_restore_stdin_line(line: str) -> bool:
         debug_log("__CHAT_RESTORE__ messages not a list, ignored", "chat_ipc")
         return True
     set_chat_messages(messages)
+    return True
+
+
+def handle_turn_trace_stdin_line(line: str) -> bool:
+    """Answer a latency-record request on the control socket (work item 7.1).
+
+    Payload is ``{"last": N}`` (default 20, capped) plus an optional
+    ``"stage"`` to rank by one stage's duration, matching the flags
+    ``scripts/turn_trace.py`` takes. The records come back as the usual IPC
+    event so the panel can render them; they are the same JSON objects the
+    append-only file holds, and carry no question or answer text unless the
+    voice-debug setting put it there. Returns True when the line was this
+    request and was handled, False for anything else.
+    """
+    line = line.strip()
+    if not line.startswith(TURN_TRACE_IPC_PREFIX):
+        return False
+    import json
+    import os
+    from . import turn_trace
+    payload: dict = {}
+    try:
+        if line[len(TURN_TRACE_IPC_PREFIX):].strip():
+            payload = json.loads(line[len(TURN_TRACE_IPC_PREFIX):])
+    except Exception:
+        debug_log("malformed __TURN_TRACE__ line ignored", "turn_trace")
+        return True
+    if not isinstance(payload, dict):
+        payload = {}
+    try:
+        limit = int(payload.get("last", 20))
+    except Exception:
+        limit = 20
+    limit = max(0, min(limit, 500))
+    stage = str(payload.get("stage") or "").strip().lower() or None
+    # The reader never blocks the turn, but the writer may still be draining
+    # the newest record: give it the bounded moment it needs rather than
+    # answering a query made one instant too early.
+    try:
+        turn_trace.flush(0.5)
+    except Exception:
+        pass
+    records = turn_trace.read_records(limit=None)
+    if stage:
+        def _stage_rank(item):
+            span = turn_trace.stage_span(item, stage)
+            return -1.0 if span is None else float(span)
+
+        records = sorted(records, key=_stage_rank, reverse=True)[:limit]
+    elif limit:
+        records = records[-limit:]
+    else:
+        records = []
+    _emit_ipc_event(
+        TURN_TRACE_IPC_PREFIX, "records",
+        {"records": records, "path": str(turn_trace.trace_path()),
+         "enabled": turn_trace.tracing_enabled(),
+         "pid": os.getpid()},
+        "turn_trace",
+    )
     return True
 
 

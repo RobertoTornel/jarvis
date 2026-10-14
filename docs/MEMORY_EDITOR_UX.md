@@ -145,6 +145,8 @@ Identical order in `handle_memory_save` and `handle_memory_delete`, and in the p
 
 ## 2. Screens
 
+**Status (from the table at the top): implemented in part.** §1.0 lists the surface the panel ships; the screens, routes and query parameters below, including `?edit=` and `?new=`, are the proposal this document was written as and are not API.
+
 ### 2.1 S1 — Memory list (`GET /memory`)
 
 **Purpose:** scan, find, open or create notes; monitor the router budget at a glance.

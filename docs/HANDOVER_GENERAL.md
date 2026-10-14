@@ -335,13 +335,19 @@ checker fail. Compare the record's total against a wall clock once, to catch a b
 contain the question or the answer by default, only lengths and flags, and `voice_debug` may be
 required to add text. The write must never block a turn: one bounded write per turn, on a queue.
 
-**In progress, 2026-10-14 (uncommitted and not yet verified).** Implemented in the working tree:
-`src/claire/turn_trace.py` with `turn_trace.spec.md`, stamps at all nine named stages, a bounded
-rotating writer that drops rather than blocks a turn, an inspection command
-`scripts/turn_trace.py`, and `tests/test_turn_trace.py` at 29 of 30 passing — the failing one is the
-writer's drop-on-full-queue test. **The full gate has not been run against it**, so this is a lead,
-not a fact. The session record, including three corrections to this page and the resume commands, is
-[`HANDOVER_SESSION.md`](HANDOVER_SESSION.md).
+**Implemented, 2026-10-14 (uncommitted; partial verification).** The working tree contains
+`src/claire/turn_trace.py` and its contract `src/claire/turn_trace.spec.md`, stamps at the nine named
+stages, a bounded rotating writer that drops rather than blocks a turn, a control-socket reader, an
+inspection command `scripts/turn_trace.py`, and `tests/test_turn_trace.py`. The writer test failure
+was a test bug: it suppressed `_ensure_thread`, but `submit()` starts the worker through
+`_start_thread_locked`; the test now suppresses the actual start method. Targeted tests pass (**30
+passed**). The first full `tests/` gate reached 100% with one failure in the unrelated Piper download-retry test;
+that test passed alone. A second run was killed by SIGABRT at 31% inside a test calling native
+`sounddevice.OutputStream` from `tune_player.py:238`, while audio/listener threads were active. The
+suite did not complete; this matches the documented PortAudio instability and does not establish a
+tracing regression. An end-to-end text turn was driven over an isolated throwaway daemon and control
+socket, verifying trace generation, on-disk storage, socket queries, and `scripts/turn_trace.py` rendering.
+A real microphone voice turn with playback remains unexercised. See [`HANDOVER_SESSION.md`](HANDOVER_SESSION.md).
 
 ### 7.2 An answer-quality eval harness
 
@@ -355,11 +361,13 @@ was found by luck, not by tooling.
 speed, and without this the trade is invisible. Several items in this document cannot be attempted
 responsibly before it exists.
 
-**Where.** `evals/` already holds 44 modules and a pass-rate reporter (`evals/conftest.py` lines 300,
-434 and 443 to 483), driven by `scripts/run_evals.sh` with `scripts/merge_eval_reports.py`; its output,
-`EVALS.md`, is a two-model comparison dated 2026-05-04 rather than a graded regression gate, and it
-defaults to local Ollama models with an LLM judge. Work there, not in `tests/`: the gate must stay
-hermetic and fast.
+**Where.** `evals/` holds the existing 44-module model-comparison suite, driven by
+`scripts/run_evals.sh`; it is not a graded regression gate and defaults to local Ollama models with an
+LLM judge. A separate deterministic scorer now lives in `evals/outcome_eval.py`, with cases in
+`evals/outcome_cases.json` and the CLI `scripts/run_outcome_evals.py`. Its unit tests are in
+`evals/test_outcome_eval.py`; it makes no model calls and stays fast/offline. The eight starter cases
+cover arithmetic/date arithmetic, tool selection (including a reminder and a weather call), planning and
+follow-up; timers are not covered and there is no LLM tone judge.
 
 **Approach.** A small graded set of real tasks, grouped by what they exercise: arithmetic and date
 arithmetic, single- and multi-step tool selection, reminders and timers, multi-step planning, and
@@ -369,14 +377,17 @@ reports **pass rates**, never latency. Grade facts without an LLM judge wherever
 checkable; keep the judge for tone and helpfulness only. Keep the whole set small enough to run in a
 few minutes and to be read in full by one person.
 
-**Verify.** Run the set on the current tree to fix a baseline, then make a deliberate regression (for
-example disable the planner, or strip reasoning) and confirm the pass rate moves in the direction you
-expect. A harness that never fails is not a gate.
+**Verify.** The initial harness is deliberately an observation scorer, not an inference runner: score a
+recorded JSONL result set with `python scripts/run_outcome_evals.py --results results.jsonl`, or list
+its eight starter cases with `--show-cases`. A missing observation fails; per-case and grouped weighted
+pass rates are reported, and any less-than-perfect baseline exits nonzero. This keeps it hermetic and
+lets a caller capture model outputs through an independently chosen route. Baseline coverage still
+needs to be populated and reviewed before using it as a regression gate.
 
 **Risk.** Eval drift: cases overfit to the current prompt, or the set grows into a second test suite
 that nobody runs. Pin each case to an observable outcome, keep the set small, and review it whenever
-the system prompt changes. Each run spends gateway tokens, which is why it is on demand and never
-inside `pytest`.
+the system prompt changes. The scorer itself is hermetic and runs offline; capturing observations is
+a separate explicit step that may use a selected model/provider and spend gateway tokens.
 
 ### 7.3 Streaming the answer into speech: a documented negative result
 
@@ -488,6 +499,13 @@ served from the cache (fast, and `cache_source = 'semantic'` in the gateway log)
 bypass on: assert the second reaches upstream. Then assert the trace marks `cache_hit` and the bypass
 flag on the same turn.
 
+**Implemented status, 2026-10-14.** Turn records expose `cache_hit`, defaulting to `null` (unknown),
+and the trace summary makes that uncertainty explicit; no gateway response-side hit marker or reliable
+join has been verified. Therefore §7.4 is **not complete**: no cache bypass setting/header has been
+added, no turn is claimed to be a hit or miss, and no live same-prompt cache experiment was run. Keep
+this honest state rather than infer a cache result from latency. Next step remains investigating gateway
+metadata/join keys and then adding narrowly-scoped bypass control only if a safe use case is established.
+
 **Risk.** A blanket bypass makes every turn slower and spends money, so it is per turn, not global.
 A cache hit can also replay an id-less row: the measurement programme records a refusal-shaped answer
 from a stale hit (`/home/mana/Documents/Jarvis/optimizations/latencyreport.md`), which is why a
@@ -598,20 +616,15 @@ page unless marked otherwise.
   (line 697) and returns `unmeasured` citing the constant `FISH_LAST_LIVE_RESULT` at line 187, which
   is baked in from an earlier attempt rather than re-checked live. A measurement exists in the record;
   the readiness check declines to repeat it.
-- **`docs/subsystems/memory.md` and `src/claire/memory/router.spec.md`.** Both still describe markdown
-  and vault behaviour. `docs/subsystems/memory.md` carries 30 occurrences of "vault", 9 of "obsidian"
-  and 3 of "CLAIRE.md"; `router.spec.md` carries 4 of "vault" and 4 of "CLAIRE.md". Bring them to the
-  Postgres state (`docs/PGVECTOR.md`, `docs/PGVECTOR_DESIGN.md` and `src/claire/memory/pg.py` are the
-  current account).
-- **`src/claire/phone/bridge.py`: the non-loopback warning is not Tailscale-aware.** The docstring at
-  lines 56 to 62, the message at lines 752 to 765 and `resolve_bind_host` at line 919 (with
-  `allow_public_bind` at line 922 and the warning at line 936) treat every non-loopback bind as
-  exposed public HTTP. On this machine the bind is `100.104.1.69`, the `tailscale0` interface, so the
-  transport is already inside WireGuard and the bridge is not on the LAN or the internet. Make the
-  warning distinguish a Tailscale address (the `100.64.0.0/10` range, or being bound on `tailscale0`)
-  from a genuinely public bind: for the Tailscale case, say that the traffic is inside the tunnel and
-  the token is still plain HTTP **within** it. Keep the loud warning for anything else. A warning that
-  is usually wrong is ignored when it is right.
+- **Memory documentation correction.** The earlier claim that `docs/subsystems/memory.md` still needs
+  a Postgres rewrite is withdrawn: it already describes the Postgres state. The router spec was
+  updated in this working tree to match the actual Postgres-backed router.
+- **`src/claire/phone/bridge.py`: Tailscale-aware binding is implemented.**
+  IPv4 binds in `100.64.0.0/10` and addresses detected on `tailscale0` pass without the public warning.
+  Other non-loopback binds still require `allow_public_bind`; explicitly allowed public binds retain the loud exposure warning.
+  On this machine the bind is `100.104.1.69` on `tailscale0`: transport is inside WireGuard, while
+  application HTTP and the bearer token are unencrypted within that tunnel. Tests cover range
+  boundaries, interface detection and unchanged public-bind refusal/warning behavior.
 - **`docs/MEMORY_EDITOR_UX.md`: no defect, one optional improvement.** The document is honest about
   its own status: line 5 says it is "Implemented in part. §1.0 lists the surface the panel ships; the
   routes, parameters and fields elsewhere in §1 to §3 and §6 are the proposal this document was

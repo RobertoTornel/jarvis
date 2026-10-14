@@ -192,6 +192,33 @@ def _isolate_control_socket_path(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("CLAIRE_CONTROL_SOCKET", str(sandbox / "control.sock"))
 
 
+@pytest.fixture(scope="session")
+def _turn_trace_sandbox(tmp_path_factory):
+    """The one turn-trace file this test session may append to."""
+    return tmp_path_factory.mktemp("claire_turn_trace_sandbox") / "turns.jsonl"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_turn_trace(tmp_path_factory, monkeypatch, _turn_trace_sandbox):
+    """Keep per-turn latency records out of the owner's data directory.
+
+    ``claire.turn_trace`` appends one JSON object per turn to
+    ``~/.local/share/claire/turns.jsonl`` by default, which is the owner's real
+    file.  Every test run redirects that path and starts with no trace in
+    flight, so a test can drive the reply engine without writing to (or reading
+    from) the live records.  Tests that want their own file set
+    ``CLAIRE_TURN_TRACE_PATH`` themselves, which overrides this one.
+    """
+    from claire import turn_trace
+
+    monkeypatch.setenv(turn_trace.TRACE_PATH_ENV, str(_turn_trace_sandbox))
+    turn_trace.reset_for_tests()
+    try:
+        yield
+    finally:
+        turn_trace.reset_for_tests()
+
+
 @pytest.fixture
 def mock_config():
     """Provide a mock configuration for unit tests."""

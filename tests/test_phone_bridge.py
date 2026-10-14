@@ -69,6 +69,7 @@ from claire.phone.bridge import (
     check_token,
     default_host,
     is_loopback_host,
+    is_tailscale_host,
     media_type,
     parse_bearer_token,
     read_request_body,
@@ -988,6 +989,9 @@ def test_the_default_bind_host_is_loopback(tmp_path, monkeypatch):
         ("0.0.0.0", False),
         ("192.168.1.20", False),
         ("10.0.0.5", False),
+        ("100.64.0.1", False),
+        ("100.127.255.254", False),
+        ("100.128.0.1", False),
         ("example.com", False),
         ("", False),
         (None, False),
@@ -998,7 +1002,26 @@ def test_only_real_loopback_addresses_count_as_loopback(host, expected):
     assert is_loopback_host(host) is expected
 
 
-def test_a_public_bind_is_refused_without_the_opt_in(tmp_path):
+@pytest.mark.parametrize("host", ["100.64.0.1", "100.104.1.69", "100.127.255.254"])
+def test_tailscale_cgnat_binds_are_silent_and_need_no_opt_in(host, caplog, monkeypatch):
+    caplog.set_level(logging.WARNING, logger=LOG_NAME)
+    monkeypatch.setattr(bridge, "_tailscale_interface_has_address", lambda address: False)
+
+    assert resolve_bind_host(host, 8765) == host
+    assert caplog.text == ""
+
+
+def test_an_address_owned_by_tailscale0_is_silent_and_needs_no_opt_in(caplog, monkeypatch):
+    caplog.set_level(logging.WARNING, logger=LOG_NAME)
+    monkeypatch.setattr(bridge, "_tailscale_interface_has_address", lambda address: str(address) == "192.0.2.42")
+
+    assert is_tailscale_host("192.0.2.42")
+    assert resolve_bind_host("192.0.2.42", 8765) == "192.0.2.42"
+    assert caplog.text == ""
+
+
+def test_a_public_bind_is_refused_without_the_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(bridge, "_tailscale_interface_has_address", lambda address: False)
     with pytest.raises(PublicBindRefusedError) as excinfo:
         resolve_bind_host("0.0.0.0", 8765)
 
@@ -1010,6 +1033,8 @@ def test_a_public_bind_is_refused_without_the_opt_in(tmp_path):
 
 
 def test_a_public_bind_refusal_never_constructs_a_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(bridge, "_tailscale_interface_has_address", lambda address: False)
+
     def bomb(*args, **kwargs):  # pragma: no cover - must not run
         raise AssertionError("a server (and so a socket) was created despite the refusal")
 
@@ -1020,7 +1045,8 @@ def test_a_public_bind_refusal_never_constructs_a_server(tmp_path, monkeypatch):
         bridge.create_server(b, host="0.0.0.0", port=8765)
 
 
-def test_an_opted_in_public_bind_warns_loudly_in_plain_words(caplog):
+def test_an_opted_in_public_bind_warns_loudly_in_plain_words(caplog, monkeypatch):
+    monkeypatch.setattr(bridge, "_tailscale_interface_has_address", lambda address: False)
     caplog.set_level(logging.WARNING, logger=LOG_NAME)
 
     assert resolve_bind_host("0.0.0.0", 8765, allow_public_bind=True) == "0.0.0.0"

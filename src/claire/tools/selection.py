@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from ..debug import debug_log
+from ..turn_trace import traced_stage
 from ..llm import (
     LLMBackend,
     TASK_RETRIEVAL_DOCUMENT,
@@ -428,6 +429,7 @@ def _select_llm(
 # Public API
 # ---------------------------------------------------------------------------
 
+@traced_stage("router_start", "router_end")
 def select_tools(
     query: str,
     builtin_tools: Dict[str, "Tool"],

@@ -41,6 +41,7 @@ import re
 from typing import List, Optional, Sequence, Tuple
 
 from ..debug import debug_log
+from ..turn_trace import traced_stage
 from ..llm import get_llm_backend, resolve_model, Tier
 
 
@@ -421,6 +422,7 @@ def plan_has_unresolved_tool_steps(
     return not tool_names_in_plan(plan, known_names)
 
 
+@traced_stage("planner_start", "planner_end")
 def plan_query(
     cfg,
     query: str,

@@ -35,6 +35,7 @@ import wave
 from typing import Any, Callable, List, Optional
 
 from ..debug import debug_log
+from .. import turn_trace
 
 # Imported at module scope for the error *classes* only. Nothing here constructs
 # a FishClient or a FishKeyPool: the key file is not read and no socket is opened
@@ -1103,9 +1104,11 @@ class FishTTS:
                         current_rate = None  # a later sentence/utterance retries
                         continue
                 player = self.player
+                wrote_byte = False
                 if player is not None:
                     try:
                         player.write(payload)
+                        wrote_byte = True
                     except Exception as exc:
                         debug_log(f"Fish TTS: playback write failed: {exc}", "tts")
                         continue
@@ -1118,6 +1121,13 @@ class FishTTS:
                     continue
                 if new_utterance:
                     self._last_spoken_text = text
+                    # First byte of a new utterance: this is where the turn's
+                    # audio actually begins. The trace is the turn's, reached
+                    # from this worker thread; it is stamped and written only
+                    # once the listener has marked speech_start for the reply
+                    # (see claire.turn_trace.mark_reply_audio_start).
+                    if wrote_byte:
+                        turn_trace.mark_reply_audio_start()
                 self._utt_played_bytes[utterance_id] = (
                     self._utt_played_bytes.get(utterance_id, 0) + len(payload)
                 )

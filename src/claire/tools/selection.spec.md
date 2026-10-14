@@ -112,6 +112,13 @@ Missing embedding backends return all tools. Missing chat backends use keyword s
 
 Called from the reply engine (Step 6) before `generate_tools_json_schema()` and `generate_tools_description()`. The returned list replaces the current `allowed_tools = list(BUILTIN_TOOLS.keys())`.
 
+`select_tools` is the router stage of the per-turn latency trace: the
+`traced_stage("router_start", "router_end")` decorator stamps both ends around
+it on every return path, including an exception, so a turn records how long
+routing took. A turn where the engine skips the router (small talk, a
+hot-window cache hit) has no router stages, which is what happened. See
+`src/claire/turn_trace.spec.md`.
+
 ### Configuration
 
 - Key: `tool_selection_strategy`

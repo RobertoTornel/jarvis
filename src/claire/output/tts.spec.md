@@ -69,6 +69,25 @@ interrupted. A plain `str` left in the queue (the stop sentinel, or a producer
 that predates the type) is coerced to a callback-less `_SpeechItem`, so
 `""` still terminates the worker as before.
 
+## First audio byte (per-turn latency trace)
+
+Each engine stamps `first_audio_byte` at the moment speech actually reaches
+the output device, from its own worker thread, through
+`turn_trace.mark_reply_audio_start()`:
+
+- `FishTTS._play_loop`: the first successful `player.write(payload)` of a new
+  utterance.
+- `PiperTTS._speak_once`: immediately after `self._audio_stream.start()`.
+- `ChatterboxTTS._speak_once`: immediately after `pygame.mixer.music.play()`.
+
+The stamp is ignored until the listener has stamped `speech_start` for the
+turn, so an acknowledgement clip still draining from before the reply cannot
+be mistaken for the reply's audio; stray bytes are not attributed to a turn
+that is not speaking. The call also writes the turn's latency record, because
+the contract's last stage has then happened. A byte that is never produced
+leaves the record to the listener's and the engine's fallback windows. See
+`src/claire/turn_trace.spec.md`.
+
 ## Pre-recorded clips
 
 `output/clip_cache.py` renders a short phrase once and keeps it as a mono

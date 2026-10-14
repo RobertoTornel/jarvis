@@ -13,6 +13,7 @@ from ..tools.registry import run_tool_with_retries, generate_tools_description, 
 from ..tools.builtin.stop import STOP_SIGNAL
 from ..listening.wake_detection import CLAIRE_WAKE_ALIASES
 from ..debug import debug_log
+from .. import turn_trace
 from ..llm import (
     extract_text_from_response,
     get_embedding_backend,
@@ -33,13 +34,34 @@ def chat_with_messages(cfg, messages, *, timeout_sec=30.0, extra_options=None,
     to capture every chat call rather than reaching into the backend ABC.
     """
     backend = get_llm_backend(cfg)
-    return backend.chat(
+    trace = turn_trace.current_trace()
+    if trace is not None:
+        # The model asked for, before the call: the answer's own ``model``
+        # field below says which one actually served the turn.
+        trace.set_route(getattr(cfg, "llm_chat_model", None))
+    response = backend.chat(
         cfg.llm_chat_model, messages,
         timeout_sec=timeout_sec,
         extra_options=extra_options,
         tools=tools,
         thinking=thinking,
     )
+    if trace is not None:
+        # First and last token. This call is not streamed, so the earliest
+        # moment any generated text is observable is the response arriving,
+        # and both stamps are taken there; a turn's tool loop can make several
+        # calls, so ``llm_first_token`` keeps the first arrival and
+        # ``llm_last_token`` the most recent one. With a streaming call the
+        # two would separate; with this one they coincide, and the spec says
+        # so rather than pretending to a first-token time nobody measured.
+        trace.mark("llm_first_token")
+        trace.mark_latest("llm_last_token")
+        if isinstance(response, dict):
+            served = response.get("model")
+            if isinstance(served, str) and served:
+                trace.set_route_served(served)
+        trace.set_reasoning(turn_trace.reasoning_text_of(response))
+    return response
 from .enrichment import (
     extract_search_params_for_memory,
     digest_memory_for_query,
@@ -934,6 +956,26 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
     """
     # Step 1: Redact sensitive information
     redacted = redact(text)
+
+    # Step 1b: open this turn's latency trace. It records one monotonic stamp
+    # per stage plus the facts that make them interpretable (route actually
+    # served, reasoning length, cache marker) and holds no text unless the
+    # voice-debug setting is on. Instrumentation only: it never gates a turn.
+    _trace = turn_trace.begin_turn(redacted)
+
+    def _close_turn_trace(answer_text: Optional[str]) -> None:
+        """Record the answer's length/flags and schedule the record's write.
+
+        The voice path speaks *after* the engine returns, so the two audio
+        stamps land later and finish the record then; this scheduled write is
+        what guarantees a text turn — or a turn that never reaches a speaker —
+        is still written. See :mod:`claire.turn_trace`.
+        """
+        try:
+            _trace.set_answer(answer_text)
+            turn_trace.finish_turn_later(_trace)
+        except Exception:
+            pass
 
     # Step 2: Check for recent dialogue context
     # Context budget — bound the history handed to the model. Dialogue memory
@@ -2809,6 +2851,7 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
             except Exception as e:
                 debug_log(f"dialogue memory error: {e}", "memory")
 
+        _close_turn_trace(reply)
         return reply
 
     # Step 10: Output and memory update
@@ -2830,6 +2873,10 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
 
         # TTS output - callbacks handled by calling code
         if tts is not None and tts.enabled:
+            # This path speaks from inside the engine, so the turn's speech
+            # starts here; the first byte the TTS writes then finishes the
+            # record (see claire.turn_trace.mark_reply_audio_start).
+            turn_trace.mark("speech_start")
             tts.speak(safe_reply)
 
     # Step 11: Add to dialogue memory
@@ -2850,4 +2897,5 @@ def run_reply_engine(db: "Database", cfg, tts: Optional[Any],
         except Exception as e:
             debug_log(f"dialogue memory error: {e}", "memory")
 
+    _close_turn_trace(reply)
     return reply

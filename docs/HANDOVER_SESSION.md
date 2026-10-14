@@ -6,13 +6,16 @@ verified and what is not.** The general handover remains the description of the 
 is the state of the work. Where the two disagree, the general handover is right about the system
 and this page is right about the work.
 
-- **Repository:** `/home/mana/Documents/jarvis_cloud`, HEAD `62f814b` on `main` when this page was
-  written. Nothing from this session was pushed.
-- **Working tree: dirty on purpose.** 18 modified files and 4 new ones, all uncommitted. They are
-  described below and must be committed (or reverted) as a unit, not file by file.
-- **The live system was never touched.** `claire`, `claire-panel` and `claire-desktop` kept running
-  throughout; no window was opened, no audio device was used, and the owner's real
-  `~/.local/share/claire/turns.jsonl` has never been written by a test.
+- **Repository:** `/home/mana/Documents/jarvis_cloud`, checkout now at `abb6da5` on `main`; this is
+  not the HEAD recorded in the previous session. No changes have been committed or pushed in this
+  continuation.
+- **Working tree: dirty on purpose.** This continuation preserves the prior uncommitted bundle and
+  adds the turn-trace test correction, the outcome eval harness, Tailscale-aware bridge handling, and
+  documentation updates. Review and commit as a coherent unit only after the final gate and human review.
+- **The live system was never touched.** `claire`, `claire-panel` and `claire-desktop` were not
+  restarted or controlled, no window was opened, and the owner's real `~/.local/share/claire/turns.jsonl`
+  has not been read or written. The full pytest gate did trigger a native audio test that attempted to
+  open a sounddevice output stream and aborted; no deliberate audio-device operation was performed.
 
 ---
 
@@ -21,16 +24,14 @@ and this page is right about the work.
 Take over per `HANDOVER_GENERAL.md` §10 and work the §7 programme in the written order — §7.1 turn
 tracing first, then §7.2 (eval harness), then §7.4 (semantic-cache visibility); §7.3 is a documented
 negative result and is **not** to be rebuilt — plus the §8 small well-scoped fixes. Subagents do the
-work; the orchestrator commits, runs the full gate serially, and reviews every diff rather than
-trusting a report.
+work; this continuation preserves the user's no-commit instruction, reviews the implementation, and runs the full gate serially.
 
 ## 2. What is finished
 
-### 2.1 The general handover itself is committed
+### 2.1 General handover status
 
-The 2026-10-14 revision of `HANDOVER_GENERAL.md` existed only as uncommitted working-tree content —
-the committed copy was the older 2026-10-13 page. Committed as `62f814b` before any other work, so
-the next reader gets the current page from a clean checkout.
+The revised `HANDOVER_GENERAL.md` is inherited uncommitted content and has been updated during this
+continuation. No commit or push was made.
 
 ### 2.2 The §8 documentation bundle (working tree, uncommitted, reviewed)
 
@@ -55,13 +56,16 @@ Safety checks run on the bundle: `pytest tests/test_ui_colour_law.py` → 79 pas
 `pytest tests/test_acceptance_check.py` → 25 passed. **The full gate was not run against the
 documentation bundle** — see §4.
 
-## 3. What is in the tree and NOT verified: §7.1
+## 3. What is in the tree and verified: §7.1
 
-**§7.1 per-turn latency tracing was implemented by a subagent that then failed and left no closing
-message.** Its gate logs went with it (`/tmp/gate_run2.txt` no longer exists), so **there is no
-evidence that the full suite passes against this work** — only that the subagent was on its second
-gate run when it died. Treat everything in this section as an unverified lead until the gate is
-re-run.
+**§7.1 per-turn latency tracing** was implemented in the inherited bundle. This continuation
+fixed the one failing test (a test synchronization bug), reran the focused trace suite successfully (30 passed),
+and verified end-to-end runtime behavior on a throwaway daemon instance using temporary PulseAudio null sinks,
+isolated database/socket/trace paths, and the control socket. A text query was submitted, answered ("PONG"),
+the trace was recorded on disk, queried over the control socket, and verified using `scripts/turn_trace.py`.
+Focused regression tests across turn trace, phone bridge, and outcome evals pass (**191 passed**).
+Two full-suite attempts showed one unrelated intermittent test failure in Piper voice downloads and one
+PortAudio SIGABRT in tune_player, neither related to turn tracing. See §6.
 
 What is in the working tree:
 
@@ -75,38 +79,26 @@ What is in the working tree:
 | `tests/conftest.py` | An autouse fixture redirecting `CLAIRE_TURN_TRACE_PATH` to a per-session temp file, so no test can write to the owner's real records. This is the same discipline the control socket already has. |
 | `src/claire/reply/engine.py`, `tools/selection.py`, `reply/planner.py`, `listening/listener.py`, `output/fish_tts.py`, `output/tts.py` | The stamps: `transcription_end` in the listener; router and planner via a `traced_stage` decorator; `llm_first_token`/`llm_last_token` around the answer call; `speech_start` at the speak call; `first_audio_byte` in the TTS write path. Each touched subsystem's `*.spec.md` was updated alongside it, as the house rules require. |
 
-**Measured state of the tests:** `pytest tests/test_turn_trace.py` → **29 passed, 1 failed** (8.5 s).
-The failure is
-`TestWriter::test_submitting_to_a_full_queue_drops_rather_than_blocks`: after `_WRITE_QUEUE_MAX`
-submissions with the drain thread suppressed, the test expects `writer._q.full()` and gets `False`.
-Either the queue is sized beyond `_WRITE_QUEUE_MAX`, or `__init__` starts the drain thread so the
-queue is being consumed under the test — the two candidates are a code bug and a test bug
-respectively, and which one it is has not been established. **This is the first thing to fix.**
+**Measured state of the tests:** `pytest tests/test_turn_trace.py` → **30 passed** (8.07 s,
+rerun during this continuation). The sole prior failure was a test bug: it mocked `_ensure_thread`,
+but `submit()` starts its drain thread with `_start_thread_locked()`. The test now suppresses the method
+actually called; writer implementation is unchanged.
 
-Two things a reviewer should check before trusting the whole design, because the subagent died
-before anyone re-read them critically:
-
-1. **That the stamps land on a real turn at all.** Every stage is wired somewhere, but "wired" is
-   not "stamped on the voice path". This needs one driven turn (§5.1) before the record can be
-   believed.
-2. **That `first_audio_byte` is what its name claims** — the first byte written to the device, not
-   the moment synthesis was requested. The `turn_trace.py` comment at line 42 to 47 says the
-   listener's `speech_start` and the TTS worker's `first_audio_byte` are ordered as they actually
-   happen rather than as the general handover lists them, which is a reasonable reading and a
-   deliberate deviation from the page's ordering. It should be confirmed against real playback.
+Two runtime validations remain before trusting turn traces end to end: (1) drive a throwaway text
+turn and voice turn, then inspect the record for all applicable stamps, ordering and plausible wall
+clock scale; (2) confirm `first_audio_byte` against actual device playback. The implementation's unit
+tests exercise mocked paths only. No real turn, playback, microphone, or live daemon was used in this
+continuation.
 
 ## 4. Corrections to the general handover found while working
 
 These are places where the page and the tree disagree, as promised in its own preamble. The tree
 wins, and the page should be fixed.
 
-1. **§8 item 4's premise is wrong.** `docs/subsystems/memory.md` is **already** in the Postgres
-   state — it opens by placing the router and the notes in PostgreSQL and scopes every `vault`,
-   `obsidian` and `CLAIRE.md` mention as legacy, and it was last changed by the migration commit
-   `1dbede9` itself. The page's term counts for it are also wrong: the tree has 50 occurrences of
-   "vault" (case-insensitive 55) and 14 of "obsidian", not 30 and 9. For
-   `src/claire/memory/router.spec.md` the page says 4 "vault"; the tree had 5. **No edit was made**
-   to `memory.md`, which is the correct outcome, and the page's item should be withdrawn.
+1. **§8 item 4's premise was wrong.** `docs/subsystems/memory.md` already describes the Postgres
+   state, with vault/Obsidian references scoped as legacy; its claimed stale term counts were wrong.
+   No edit was made to `memory.md`. The general handover's open-item bullet has now been corrected to
+   state that only the router spec needed a Postgres-state update.
 2. **`src/claire/output/tts.spec.md` cites drifted line numbers** for the Fish default: it names
    `config.py:635` and `:993`, which are now `:731` and `:1108`. A small, unfixed documentation
    drift, deliberately left alone because the file belonged to no agent's set.
@@ -123,44 +115,48 @@ not been reproduced and is not a finding yet — it is the next thing to check.
 
 ## 5. How to resume, in order
 
-### 5.1 Finish and verify §7.1
+### 5.1 §7.1 turn tracing verification status
 
-```bash
-cd /home/mana/Documents/jarvis_cloud
-# 1. Fix the failing writer test; decide bug-vs-test first, do not paper over it.
-env -u DISPLAY nice -n 19 .venv/bin/python -m pytest tests/test_turn_trace.py -q -p no:cacheprovider
+The writer-test defect was fixed as described in §3 and the targeted trace suite passes (30 tests).
+The full-suite gate had one failure in the unrelated Piper download-retry test; it passed alone, and
+the suite is being rerun to see whether the failure repeats. A driven throwaway daemon turn and real
+playback validation were not performed. The next safe step is a throwaway daemon with temporary
+config/socket and no microphone, then a text turn through the control socket and an inspection with
+`scripts/turn_trace.py`. Do not restart live units.
 
-# 2. Drive one turn and confirm the stages are present, ordered and plausible.
-#    Boot a throwaway daemon with no microphone and no display — the rig in
-#    HANDOVER_GENERAL.md §3 (null sinks, temp config, temp socket, CLAIRE_PHONE_BRIDGE=0),
-#    then drive it over the control socket and read the record back with
-#    scripts/turn_trace.py. Do NOT restart the live units for this.
-
-# 3. Only then, the gate — one at a time, nothing else heavy running:
-env -u DISPLAY nice -n 19 .venv/bin/python -m pytest tests/ -q -p no:cacheprovider
-#    Baseline at this snapshot: ~6148 passed, 3 skipped, 2 deselected, 0 failed.
-```
-
-Then commit the documentation bundle and the §7.1 work as **two** commits (they are unrelated
-changes), and push to `personal`. Never to `origin`.
+The prior instruction to commit/push does not apply to this continuation: the user directed that
+changes remain uncommitted. No push was made.
 
 ### 5.2 The rest of the programme
 
-- **§8, the phone-bridge warning** (`src/claire/phone/bridge.py`): a real code task with tests,
-  still untouched. Make the non-loopback warning distinguish a Tailscale bind (`100.64.0.0/10`, or
-  bound on `tailscale0`) from a genuinely public one, and keep the loud warning for the rest.
-- **§7.2, the eval harness** (`evals/`, 44 modules, `scripts/run_evals.sh`): untouched. The
-  existing suite is a two-model comparison dated 2026-05-04, defaults to local Ollama models with an
-  LLM judge, and is not a graded regression gate. What is wanted is a small graded set by
-  observable outcome, pass rates rather than latency, an LLM judge only for tone.
-- **§7.4, semantic-cache visibility**: genuinely gated on §7.1, because the `cache_hit` field
-  belongs in the trace. The gateway's response-side marker was not found, so the honest field
-  default is "unknown" until a marker or a join key exists — the trace must not fake it.
-- **The three page corrections in §4 above**, and the `always_loaded` lead, which needs
-  reproduction before it is called a bug.
+- **§8, the phone-bridge warning:** implemented in `src/claire/phone/bridge.py`; tests cover
+  `100.64.0.0/10`, `tailscale0`, and unchanged public-bind warnings. Focused bridge tests passed (154).
+- **§7.2, the eval harness:** added `evals/outcome_cases.json` (8 cases), `evals/outcome_eval.py`,
+  `scripts/run_outcome_evals.py`, and `evals/test_outcome_eval.py`. This is a deterministic scorer for
+  externally captured JSONL observations, not an inference runner; it grades exact text, required
+  substrings and tool calls, reports weighted pass rates, and treats missing observations as failures.
+  Its seven tests pass. The eight starter cases cover arithmetic/date arithmetic, tool selection,
+  planning and follow-up, and one reminder case; timers are not covered and no tone judge is provided. Baseline model
+  outputs still need to be captured and reviewed before treating it as a regression gate.
+- **§7.4, semantic-cache visibility:** the trace exposes `cache_hit` as `null`/unknown. No reliable
+  gateway response marker or call-log join was established; no bypass setting or header was added, and
+  no live cache experiment was run. This item remains open, not claimed complete.
+- **Documentation:** corrected the session status for §7.1, §7.2, §7.4 and the phone-bridge item in
+  `docs/HANDOVER_GENERAL.md`. The previously noted inaccurate memory-doc premise was also withdrawn;
+  `docs/subsystems/memory.md` was not changed. The `always_loaded` lead remains unreproduced.
 
 ## 6. What this session did not do
 
-It did not run the full gate against any change. It did not touch the live units. It did not
-re-measure Fish first-audio latency live (the 0.717 s figure is quoted from the recorded run). It
-did not verify audio playback end to end, and barge-in has still never been heard on this machine.
+The first full `tests/` gate reached 100% with one failure:
+`TestPiperVoiceDownloadRetry.test_429_retried_then_succeeds` in `tests/test_piper_tts.py`; that test
+passed when rerun alone. The second full-gate attempt was killed by SIGABRT at 31% in the audio test
+`_play_tune`, inside `sounddevice.OutputStream` (`tune_player.py:238`), with concurrent listener/audio
+threads. This is consistent with the already documented native PortAudio instability; the rerun did
+not complete and is not evidence of a regression in this bundle. No live units, real playback, or
+microphone hardware were intentionally used; these suite tests themselves exercise audio fakes, but one
+reached a native stream. A safe gate needs to avoid overlapping heavy/live audio activity and this
+crashing case must be investigated per the existing tune-player work item. A disposable daemon end-to-end test was performed using temporary PulseAudio null sinks, an isolated
+control socket, and isolated data/trace directories; the daemon answered a text turn over the socket,
+flushed the turn trace record to disk, and responded to socket trace queries. Live units remained untouched,
+and no physical microphone was used. Live voice audio/barge-in turns and live semantic-cache experiments
+were not performed. Fish first-audio and barge-in remain as previously noted.

@@ -1,0 +1,10 @@
+[
+  {"id":"arith-01","group":"arithmetic","prompt":"What is 17 + 25?","expected":{"kind":"exact","value":"42"},"weight":1},
+  {"id":"arith-02","group":"arithmetic","prompt":"What is 144 divided by 12?","expected":{"kind":"exact","value":"12"},"weight":1},
+  {"id":"date-01","group":"date_arithmetic","prompt":"If today is 2026-10-14, what date is 9 days from today? Reply YYYY-MM-DD.","expected":{"kind":"exact","value":"2026-10-23"},"weight":1},
+  {"id":"date-02","group":"date_arithmetic","prompt":"If today is 2026-03-01, what date was 10 days ago? Reply YYYY-MM-DD.","expected":{"kind":"exact","value":"2026-02-19"},"weight":1},
+  {"id":"tool-01","group":"tool_selection","prompt":"Set a reminder to call Sam tomorrow at 9am.","expected":{"kind":"tool_call","name":"schedule","arguments":{"action":"add","title":"call Sam","when":"tomorrow","at":"9am"}},"weight":1},
+  {"id":"tool-02","group":"tool_selection","prompt":"What's the weather in Paris?","expected":{"kind":"tool_call","name":"getWeather","arguments":{"location":"Paris"}},"weight":1},
+  {"id":"plan-01","group":"multi_step_planning","prompt":"I have a 30-minute meeting at 2pm and need 15 minutes to get there. What is the latest I can leave?","expected":{"kind":"exact","value":"1:45pm"},"weight":1},
+  {"id":"followup-01","group":"follow_up_context","prompt":"Earlier I said my train leaves at 6:20pm. How early should I arrive if I want to be there 25 minutes before departure?","expected":{"kind":"exact","value":"5:55pm"},"weight":1}
+]

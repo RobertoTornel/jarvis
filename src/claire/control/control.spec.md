@@ -55,8 +55,17 @@ One message per line: `PREFIX + json.dumps(payload) + "\n"`, using the daemon's 
 constants, so `chat_window`'s existing parser reads socket lines unchanged.
 
 - UI → daemon: `__CHAT_QUERY__:{"text": "..."}`, bare `__CHAT_CANCEL__`, bare
-  `__CHAT_NEW_SESSION__`, `__CHAT_REWIND__:…`, `__CHAT_RESTORE__:…`
-- daemon → UI: `__CHAT__:{"type": ..., "data": ...}`, `__VOICE__:…`, diary chunks
+  `__CHAT_NEW_SESSION__`, `__CHAT_REWIND__:…`, `__CHAT_RESTORE__:…`,
+  `__TURN_TRACE__:{"last": N, "stage": "router"}`
+- daemon → UI: `__CHAT__:{"type": ..., "data": ...}`, `__VOICE__:…`, diary chunks,
+  `__TURN_TRACE__:{"type": "records", "data": {"records": [...], "path": ..., "enabled": ...}}`
+
+`__TURN_TRACE__:` returns the last N per-turn latency records (work item 7.1) so
+the panel can show why a turn was slow without reading
+`~/.local/share/claire/turns.jsonl` itself; `"stage"` ranks by one stage's
+duration, matching `scripts/turn_trace.py`. The records are the file's own JSON
+objects and carry no question or answer text unless `voice_debug` put it there
+(`src/claire/turn_trace.spec.md`).
 
 `_handle_control_line` tries the daemon's own `handle_*_stdin_line` handlers in order.
 Nothing new is accepted, which is the point: there is no second protocol to keep in step.

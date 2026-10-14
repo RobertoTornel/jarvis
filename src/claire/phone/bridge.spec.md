@@ -192,10 +192,14 @@ handed out exactly once, by the next poll, and never again.
   `$CLAIRE_PHONE_HOST` / `$CLAIRE_PHONE_PORT` override it.
 * `is_loopback_host` accepts `localhost`, `127.0.0.0/8` and `::1` only. A *name
   that resolves* to loopback is not accepted: DNS is not a security decision.
+* `is_tailscale_host` accepts IPv4 addresses in `100.64.0.0/10` and best-effort
+  detects an address assigned to Linux `tailscale0`. These binds are not treated
+  as public: the transport is inside the WireGuard tailnet, while application
+  HTTP and the bearer token are still unencrypted within that tunnel.
 * `resolve_bind_host` raises `PublicBindRefusedError` — **before** any server
-  object exists, so a refusal cannot have opened a port — unless the caller
-  passes `allow_public_bind=True`.
-* The warning, when opted in, is in plain words:
+  object exists — for non-loopback, non-Tailscale binds unless the caller passes
+  `allow_public_bind=True`.
+* Non-Tailscale non-loopback warning, when opted in, is in plain words:
 
   > SECURITY: the phone bridge is bound to `<host>:<port>`, which is NOT
   > loopback. Everything the phone sends — utterances, photos, your location —

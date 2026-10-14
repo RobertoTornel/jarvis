@@ -161,6 +161,12 @@ The planner prompt instructs the model to emit:
 
 ### Engine integration
 
+`plan_query` is the planner stage of the per-turn latency trace: the
+`traced_stage("planner_start", "planner_end")` decorator stamps both ends
+around it on every return path, including an exception. A turn the engine
+skips the planner for (the fast-path skip above) has no planner stages at all,
+which is what happened. See `src/claire/turn_trace.spec.md`.
+
 The engine consumes the plan in two phases.
 
 **Phase 1 — preparation gating (before the turn loop starts):**

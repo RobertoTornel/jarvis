@@ -570,6 +570,24 @@ stateDiagram-v2
     DuringTTS --> WakeWord: Stop command detected
 ```
 
+### Per-turn latency trace (the listener's stamps)
+
+The listener owns two of the turn's latency stages
+(`src/claire/turn_trace.spec.md`):
+
+- **Transcription end** — `_handle_transcription_result`, as soon as the
+  transcript for the utterance is final, calls
+  `turn_trace.note_transcription_end()`. The reply engine's trace is created a
+  moment later and consumes that stamp as its zero point, so a voice record's
+  `transcription_end` offset is `0.0`. A transcript that is never dispatched
+  leaves its stamp to expire unread.
+- **Speech start** — immediately before the reply's
+  `self.tts.speak(reply, ...)` call, `_dispatch_query` stamps `speech_start` and
+  extends the record's write window to 10 s. The TTS worker's first device byte
+  then stamps `first_audio_byte` and writes the record; a turn with no TTS
+  output schedules the write itself after 1 s. Both are instrumentation only:
+  neither gates, reorders nor delays the turn.
+
 ## Audio Pipeline
 
 ```

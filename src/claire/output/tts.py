@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from ..debug import debug_log
 from ..utils.audio_lock import portaudio_lock
+from .. import turn_trace
 
 
 # ============================================================================
@@ -602,6 +603,9 @@ class ChatterboxTTS:
                 pygame.mixer.init(frequency=self._model.sr, size=-16, channels=1, buffer=1024)
                 pygame.mixer.music.load(tmp_path)
                 pygame.mixer.music.play()
+                # First byte of this utterance reaches the device here; this is
+                # where the turn's audio begins (see claire.turn_trace).
+                turn_trace.mark_reply_audio_start()
 
                 # Wait for playback to complete or interruption
                 while pygame.mixer.music.get_busy():
@@ -997,6 +1001,10 @@ class PiperTTS:
                         callback=audio_callback,
                     )
                     self._audio_stream.start()
+                    # The stream is live: the first byte is on its way to the
+                    # device, which is this turn's first audio byte (see
+                    # claire.turn_trace.mark_reply_audio_start).
+                    turn_trace.mark_reply_audio_start()
 
             # Wait for playback to complete
             try:
