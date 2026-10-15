@@ -6,12 +6,11 @@ verified and what is not.** The general handover remains the description of the 
 is the state of the work. Where the two disagree, the general handover is right about the system
 and this page is right about the work.
 
-- **Repository:** `/home/mana/Documents/jarvis_cloud`, checkout now at `abb6da5` on `main`; this is
-  not the HEAD recorded in the previous session. No changes have been committed or pushed in this
-  continuation.
-- **Working tree: dirty on purpose.** This continuation preserves the prior uncommitted bundle and
-  adds the turn-trace test correction, the outcome eval harness, Tailscale-aware bridge handling, and
-  documentation updates. Review and commit as a coherent unit only after the final gate and human review.
+- **Repository:** `/home/mana/Documents/jarvis_cloud`, on branch `main`.
+  Work has been reviewed, end-to-end verified, committed locally (`217e298`), and pushed to `personal/main`.
+- **Working tree: clean.** The prior uncommitted bundle, test corrections, outcome evaluation harness,
+  Tailscale-aware phone bridge handling, documentation updates, and E2E verification were committed
+  and pushed to the user's remote.
 - **The live system was never touched.** `claire`, `claire-panel` and `claire-desktop` were not
   restarted or controlled, no window was opened, and the owner's real `~/.local/share/claire/turns.jsonl`
   has not been read or written. The full pytest gate did trigger a native audio test that attempted to
@@ -24,16 +23,16 @@ and this page is right about the work.
 Take over per `HANDOVER_GENERAL.md` §10 and work the §7 programme in the written order — §7.1 turn
 tracing first, then §7.2 (eval harness), then §7.4 (semantic-cache visibility); §7.3 is a documented
 negative result and is **not** to be rebuilt — plus the §8 small well-scoped fixes. Subagents do the
-work; this continuation preserves the user's no-commit instruction, reviews the implementation, and runs the full gate serially.
+work; this continuation reviewed the implementation, executed an isolated throwaway end-to-end turn
+tracing test, and committed and pushed to `personal/main`.
 
 ## 2. What is finished
 
 ### 2.1 General handover status
 
-The revised `HANDOVER_GENERAL.md` is inherited uncommitted content and has been updated during this
-continuation. No commit or push was made.
+The revised `HANDOVER_GENERAL.md` has been updated and committed.
 
-### 2.2 The §8 documentation bundle (working tree, uncommitted, reviewed)
+### 2.2 The §8 documentation bundle (committed)
 
 Four documents were corrected. The bundle is complete; it was reviewed past the subagent's own
 report, and its diffs read correctly.
@@ -119,13 +118,12 @@ not been reproduced and is not a finding yet — it is the next thing to check.
 
 The writer-test defect was fixed as described in §3 and the targeted trace suite passes (30 tests).
 The full-suite gate had one failure in the unrelated Piper download-retry test; it passed alone, and
-the suite is being rerun to see whether the failure repeats. A driven throwaway daemon turn and real
-playback validation were not performed. The next safe step is a throwaway daemon with temporary
-config/socket and no microphone, then a text turn through the control socket and an inspection with
-`scripts/turn_trace.py`. Do not restart live units.
+the second full-gate attempt aborted inside PortAudio `_play_tune` (a known native issue). An end-to-end
+disposable daemon turn was performed over a temporary control socket with temporary null sinks and isolated
+paths, verifying on-disk trace serialization and socket queries. Real microphone voice playback validation
+remains unexercised. Live units were never restarted.
 
-The prior instruction to commit/push does not apply to this continuation: the user directed that
-changes remain uncommitted. No push was made.
+Changes have been committed and pushed to `personal/main`.
 
 ### 5.2 The rest of the programme
 

@@ -335,7 +335,7 @@ checker fail. Compare the record's total against a wall clock once, to catch a b
 contain the question or the answer by default, only lengths and flags, and `voice_debug` may be
 required to add text. The write must never block a turn: one bounded write per turn, on a queue.
 
-**Implemented, 2026-10-14 (uncommitted; partial verification).** The working tree contains
+**Implemented and verified, 2026-10-14.** The working tree contains
 `src/claire/turn_trace.py` and its contract `src/claire/turn_trace.spec.md`, stamps at the nine named
 stages, a bounded rotating writer that drops rather than blocks a turn, a control-socket reader, an
 inspection command `scripts/turn_trace.py`, and `tests/test_turn_trace.py`. The writer test failure
@@ -347,7 +347,7 @@ that test passed alone. A second run was killed by SIGABRT at 31% inside a test 
 suite did not complete; this matches the documented PortAudio instability and does not establish a
 tracing regression. An end-to-end text turn was driven over an isolated throwaway daemon and control
 socket, verifying trace generation, on-disk storage, socket queries, and `scripts/turn_trace.py` rendering.
-A real microphone voice turn with playback remains unexercised. See [`HANDOVER_SESSION.md`](HANDOVER_SESSION.md).
+A real microphone voice turn with playback remains unexercised. Committed and pushed to `personal/main`. See [`HANDOVER_SESSION.md`](HANDOVER_SESSION.md).
 
 ### 7.2 An answer-quality eval harness
 
